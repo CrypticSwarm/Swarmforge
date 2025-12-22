@@ -1,6 +1,5 @@
 SHELL := /bin/bash
 
-# ---- Config ----
 NETWORK      ?= opencode-net
 
 OLLAMA_IMG   ?= ollama/ollama
@@ -11,10 +10,10 @@ OLLAMA_CTX   ?= 32768
 OPENCODE_IMG ?= opencode:local
 OPENCODE_CTR ?= opencode
 
-# Default to trixie-slim; override with: make build_opencode DEBIAN_TAG=bookworm-slim
+# Allows overriding base debian image tag
 DEBIAN_TAG   ?= trixie-slim
 
-# Host identity (Linux)
+# Ensure inner UID and GID are mapped correctly to avoid permission issues
 UID          := $(shell id -u)
 GID          := $(shell id -g)
 
@@ -45,7 +44,7 @@ run_opencode: opencode_network
 stop_opencode:
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
 
-run_ollama:
+run_ollama: opencode_network
 	@docker rm -f $(OLLAMA_CTR) >/dev/null 2>&1 || true
 	docker run -d --rm --name $(OLLAMA_CTR) \
 	  --network $(NETWORK) \
