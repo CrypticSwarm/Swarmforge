@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (opencode-net)",
+      "options": {
+        "baseURL": "http://ollama:11434/v1",
+        "apiKey": "ollama"
+      },
+      "models": {
+        "llama3.1:8b": {
+          "name": "llama3.1"
+        },
+        "gpt-oss:20b": {
+          "name": "gpt-oss-20b"
+        },
+        "devstral-small-2:24b": {
+          "name": "devstral-small-2"
+        }
+      }
+    }
+  }
+}
+
