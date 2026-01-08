@@ -10,11 +10,14 @@
         "apiKey": "ollama"
       },
       "models": {
-        "llama3.1:8b": {
-          "name": "llama3.1"
-        },
         "gpt-oss:20b": {
           "name": "gpt-oss-20b"
+        },
+        "gpt-oss:120b": {
+          "name": "gpt-oss-120b"
+        },
+        "llama3.1:8b": {
+          "name": "llama3.1"
         },
         "devstral-small-2:24b": {
           "name": "devstral-small-2"
