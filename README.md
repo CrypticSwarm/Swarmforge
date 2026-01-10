@@ -11,7 +11,9 @@ Run the installer to add common shell helpers:
 ./install.sh
 ```
 
-The script appends an `oc` alias to your existing `~/.bashrc`, pointing to `make -C <repo> run_opencode PROJECT_DIR=$(pwd)` so you can launch OpenCode from any directory. If `~/.bashrc` is missing, create it first before rerunning the installer.
+The script appends an `oc` alias to your existing `~/.bashrc`, pointing to `make -C <repo> run_opencode PROJECT_DIR=$(pwd)` so you can launch OpenCode from any directory.
+Pass any `make` overrides directly (for example `oc PROFILE=work DATA_DIR=~/.local/share/opencode-work`, or prefix them as environment variables like `PROFILE=work oc`) to map work/personal sessions to distinct profiles and storage roots.
+If `~/.bashrc` is missing, create it first before rerunning the installer.
 
 ## Ollama
 

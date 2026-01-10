@@ -10,6 +10,10 @@ OLLAMA_CTX   ?= 32768
 OPENCODE_IMG ?= opencode:local
 OPENCODE_CTR ?= opencode
 
+PROFILE      ?=
+DATA_DIR     ?= $(HOME)/.local/share/opencode
+OPENCODE_ARGS ?=
+
 # Allows overriding base debian image tag
 DEBIAN_TAG   ?= trixie-slim
 
@@ -18,6 +22,11 @@ UID          := $(shell id -u)
 GID          := $(shell id -g)
 
 PROJECT_DIR  := $(CURDIR)
+
+PROFILE_FLAG :=
+ifneq ($(strip $(PROFILE)),)
+PROFILE_FLAG := --profile $(PROFILE)
+endif
 
 .PHONY: opencode_network build_opencode run_opencode stop_opencode run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small
@@ -33,7 +42,7 @@ build_opencode:
 
 run_opencode: opencode_network
 	@mkdir -p "$(CURDIR)/opencode/config"
-	@mkdir -p "$(HOME)/.local/share/opencode"
+	@mkdir -p "$(DATA_DIR)"
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
 	docker run -it --rm --name $(OPENCODE_CTR) \
 	  --network $(NETWORK) \
@@ -41,8 +50,8 @@ run_opencode: opencode_network
 	  -e OPENCODE_GID=$(GID) \
 	  -v "$(PROJECT_DIR)":/workspace \
 		-v "$(CURDIR)/opencode/config":/home/opencode/.config/opencode \
-		-v "$(HOME)/.local/share/opencode":/home/opencode/.local/share/opencode \
-	  $(OPENCODE_IMG)
+		-v "$(DATA_DIR)":/home/opencode/.local/share/opencode \
+	  $(OPENCODE_IMG) $(PROFILE_FLAG) $(OPENCODE_ARGS)
 
 stop_opencode:
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
