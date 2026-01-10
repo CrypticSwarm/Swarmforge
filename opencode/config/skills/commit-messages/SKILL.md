@@ -7,6 +7,8 @@ description: MUST be activated when the user asks to write, edit, or review a Gi
 
 Use this workflow whenever you need to write or review a Git commit message.
 
+**Response discipline:** When fulfilling this skill, output only the commit message text (subject line plus optional body) and nothing else.
+
 ## Agent workflow
 
 Aim for messages that help a reviewer (often future you) understand intent.
