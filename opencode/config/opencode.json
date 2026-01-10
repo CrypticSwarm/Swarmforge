@@ -5,6 +5,7 @@
     "skills/skill-follower.md",
     "skills/copy-etiquette.md"
   ],
+  "theme": "tokyonight",
   "provider": {
     "ollama": {
       "npm": "@ai-sdk/openai-compatible",
