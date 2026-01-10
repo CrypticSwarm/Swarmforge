@@ -13,6 +13,8 @@ OPENCODE_CTR ?= opencode
 PROFILE      ?=
 DATA_DIR     ?= $(HOME)/.local/share/opencode
 OPENCODE_ARGS ?=
+GITCONFIG_FILE ?= $(HOME)/.gitconfig
+GITCONFIG_FLAG := $(strip $(if $(wildcard $(GITCONFIG_FILE)),-v "$(GITCONFIG_FILE)":/home/opencode/.gitconfig:ro,))
 
 # Allows overriding base debian image tag
 DEBIAN_TAG   ?= trixie-slim
@@ -50,7 +52,7 @@ run_opencode: opencode_network
 	  -e OPENCODE_GID=$(GID) \
 	  -v "$(PROJECT_DIR)":/workspace \
 		-v "$(CURDIR)/opencode/config":/home/opencode/.config/opencode \
-		-v "$(DATA_DIR)":/home/opencode/.local/share/opencode \
+		-v "$(DATA_DIR)":/home/opencode/.local/share/opencode$(if $(GITCONFIG_FLAG), $(GITCONFIG_FLAG)) \
 	  $(OPENCODE_IMG) $(PROFILE_FLAG) $(OPENCODE_ARGS)
 
 stop_opencode:
