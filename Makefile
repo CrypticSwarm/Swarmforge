@@ -32,6 +32,8 @@ build_opencode:
 	  -t $(OPENCODE_IMG) opencode
 
 run_opencode: opencode_network
+	@mkdir -p "$(CURDIR)/opencode/config"
+	@mkdir -p "$(CURDIR)/opencode/data"
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
 	docker run -it --rm --name $(OPENCODE_CTR) \
 	  --network $(NETWORK) \
@@ -39,6 +41,7 @@ run_opencode: opencode_network
 	  -e OPENCODE_GID=$(GID) \
 	  -v "$(PROJECT_DIR)":/workspace \
 		-v "$(CURDIR)/opencode/config":/home/opencode/.config/opencode \
+		-v "$(CURDIR)/opencode/data":/home/opencode/.local/share/opencode \
 	  $(OPENCODE_IMG)
 
 stop_opencode:
