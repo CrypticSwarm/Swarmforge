@@ -12,16 +12,21 @@ Use this workflow whenever you need to write or review a Git commit message.
 Aim for messages that help a reviewer (often future you) understand intent.
 
 1. Identify the user-visible intent (what changes when applied).
-2. Draft an imperative subject that states that intent.
-3. Add a body if the subject can't carry the full story.
-4. Ensure the commits in a PR "tell a story" (each subject advances it).
-5. Re-check for clarity without reading the diff.
+2. If the diff includes multiple changes, pick the **primary feature/outcome**.
+3. Draft an imperative subject that leads with that primary feature.
+   - Heuristic: `Verb + user-facing object + benefit`
+4. Add a body to capture secondary context (enablers, constraints, risk).
+5. Ensure the commits in a PR "tell a story" (each subject advances it).
+6. Re-check for clarity without reading the diff.
 
 ## Format
 
 ### Subject line (first line)
 - Capitalize the first word.
 - Keep it short: aim for **50 characters or less**.
+- Lead with the **primary user-visible feature/outcome**.
+  - Prefer: `Persist session data between runs`
+  - Avoid: `Prepare host dirs for Docker run`
 - Use the **imperative mood** (describe what the commit does when applied):
   - Good: `Add caching to user lookup`
   - Bad: `Added caching to user lookup`
@@ -35,6 +40,8 @@ Aim for messages that help a reviewer (often future you) understand intent.
 ### Body (optional)
 - Wrap paragraphs to **~72 columns**.
 - Focus on **why** and **impact** (rationale, constraints, tradeoffs, risk).
+- Use the body for **secondary details** (enabling work, implementation notes,
+  migration, risk) so the subject can stay feature-first.
 - Prefer intent and constraints over a narration of the diff.
 - Answer at least one of:
   - Why was this necessary?
@@ -54,11 +61,12 @@ Aim for messages that help a reviewer (often future you) understand intent.
 ## Template
 
 ```
-Summarize change in 50 chars or less
+<Primary feature/outcome in <=50 chars>
 
-Explain why this change is necessary. Wrap at 72 columns.
+<1–2 sentences on why/impact. Wrap at ~72 cols.>
+<Optional: enabling details or risks if needed>
 
-- Optional bullets for details
+- Optional bullets for secondary details
 - Use hanging indents for wrapped lines
 ```
 
@@ -67,10 +75,12 @@ Explain why this change is necessary. Wrap at 72 columns.
 Before finalizing:
 - Subject is imperative and <= ~50 chars.
 - Subject is a single sentence, no period.
+- Subject describes the **primary feature/outcome** (not setup steps).
+- Subject answers: "What new capability/behavior do we get?"
 - Subject describes behavior/intent (not "WIP", "misc", "updates").
 - Blank line between subject and body.
 - Body wrapped ~72 columns.
-- Body focuses on rationale/impact (not a diff recap).
+- Body captures secondary details and rationale (not a diff recap).
 - Bullets are consistently formatted.
 
 ## Examples
@@ -82,6 +92,16 @@ Fix nil deref in session refresh
 ```
 
 Good (with body):
+
+```
+Persist opencode session data between runs
+
+Mount the host data directory into the container so sessions survive
+recreating the container. Pre-create the config/data directories to
+avoid volume mount errors on fresh checkouts.
+```
+
+Another good (with body):
 
 ```
 Improve retry behavior for upload requests
@@ -152,5 +172,9 @@ Conflicts:
 
 - Don't mix subject and body without a blank line.
 - Don't use past tense in the subject (`Fixed`, `Added`).
+- Don't lead the subject with implementation details when there is a
+  user-visible feature (put enabling work in the body).
+- Don't use vague subjects (`Refactor`, `Cleanup`) unless that is the
+  actual primary outcome.
 - Don't pack multiple unrelated changes into one subject.
 - Don't rely on the body to fix a vague subject; make the subject do real work.
