@@ -6,6 +6,7 @@ A lightweight reference that keeps copy clean, precise, and consistent.
 
 - **Avoid em-dashes.** When an em-dash would be required prefer a single `-`.
 - **Use straight quotes.** Prefer straight quotes `"` and `'` rather than curly/opening or closing quotes.
+- **Avoid the ellipsis glyph.** Replace `…` with three periods `...` so ellipses stay consistent.
 
 ## Tone & Wording
 
