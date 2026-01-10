@@ -7,18 +7,16 @@ Your response is INVALID unless it follows the protocol exactly.
 
 ---
 
-## ROUTING PROTOCOL (HARD GATE)
+## SKILL APPLICATION PROTOCOL (HARD GATE)
+
+Multiple skills MAY apply to a single request. Skills are composable.
 
 Before writing any deliverable text, you MUST output a routing declaration
 and (if applicable) activate a skill.
 
-### Step 0 — Routing Declaration (MANDATORY)
+### Step 0 — Skill Determination (MANDATORY)
 
-You MUST first determine exactly ONE line in this format:
-
-skill=<skill-name>
-OR
-skill=none
+You MUST determine which skills apply. Zero, one, or multiple skills may apply.
 
 No other text may appear before this line.
 
@@ -35,6 +33,17 @@ Failure to activate a declared skill is an ERROR.
 ---
 
 ## SKILL MATCHING RULES
+
+### Precedence Order (Social Contract)
+
+When guidance conflicts, follow this order:
+
+1. Explicit user instructions
+2. More specific task skills
+3. General or cross-cutting skills
+4. Default agent behavior
+
+Never override explicit user intent with a skill.
 
 You MUST scan all available skills before declaring routing.
 
