@@ -1,6 +1,6 @@
 ---
 name: skill-writer
-description: Guidance for creating, editing, or maintaining agent skills; invoke this whenever you create, revise, or otherwise modify a skill package.
+description: MUST be activated when creating, editing, or maintaining agent skills (SKILL.md, skill structure, triggers, or workflows). Use whenever writing or revising a skill package, skill description, or activation behavior.
 ---
 
 # Skill Writer
@@ -17,6 +17,11 @@ Use this guide whenever you need to create, revise, or maintain a skill (a modul
 Keep every skill lean. Assume the agent already knows general programming, writing, and reasoning; only include content that is unique to the domain or workflow.
 
 ## Core Principles
+
+4. **Implicit vs explicit activation.**
+   - Skills may be activated explicitly via the `skill` tool or implicitly via strong trigger language.
+   - For fragile or critical workflows, assume explicit activation.
+   - For common, narrow tasks (e.g. commit messages), optimize for implicit activation through the description.
 
 1. **Protect the context window.** Every token in a skill competes with live conversation history. Prefer short, actionable guidance over essays. Use tables, bullets, or concise examples instead of prose.
 2. **Match specificity to task fragility.**
@@ -40,12 +45,17 @@ skill-name/
 
 ### SKILL.md
 - YAML frontmatter **must** contain `name` and `description` only.
-- Description doubles as the trigger text. Include what the skill covers **and** the cues that should activate it.
+- Description doubles as the trigger text and is ALWAYS visible to the agent.
+- Write descriptions as **activation CTAs**, not summaries.
+  - Prefer imperative language ("MUST be activated when...").
+  - Enumerate concrete user phrases and artifacts.
+  - Be explicit about scope and boundaries.
+- Use descriptions to support **implicit activation**, especially for smaller models.
 - Body should focus on workflows, decision trees, and how to use bundled resources. Avoid "When to Use This Skill" sections (that belongs in `description`).
 
 ### Optional Bundled Resources
 
-| Directory    | Include when…                                          | Notes |
+| Directory    | Include when...                                          | Notes |
 |--------------|--------------------------------------------------------|-------|
 | `scripts/`   | Code must be reused verbatim or requires determinism   | Keep lightweight; test representative scripts |
 | `references/`| Documentation/schema/policies exceed a few paragraphs  | Link from `SKILL.md` with guidance on when to read |

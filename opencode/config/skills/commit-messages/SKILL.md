@@ -1,6 +1,6 @@
 ---
 name: commit-messages
-description: Draft/review Git commit messages; activate when the user asks for a commit message (git commit, staged changes).
+description: MUST be activated when the user asks to write, edit, or review a Git commit message, including `git commit`, commit summaries, staged changes, or PR commit wording.
 ---
 
 # Commit Messages
