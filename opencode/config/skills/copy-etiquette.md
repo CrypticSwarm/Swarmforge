@@ -26,3 +26,4 @@ A lightweight reference that keeps copy clean, precise, and consistent.
 
 - Prefer shorter lines, ideally one sentence per line. This works better with line-based editors and produces cleaner, more reviewable git diffs.
 - Markdown rendering naturally flows adjacent lines together, so sentence-per-line formatting preserves visual output while improving edit history and collaboration.
+- Prefer linking when referencing other files. When the context is the file’s title rather than its filename, ensure the link text uses the title.
