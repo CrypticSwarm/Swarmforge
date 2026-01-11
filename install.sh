@@ -13,7 +13,7 @@ main() {
 
     local alias_line
     printf -v alias_line "alias oc='make -C %q run_opencode PROJECT_DIR=\$(pwd)'" "$script_dir"
-    local marker="# Added by LLM tools installer"
+    local marker="# Added by Swarmforge installer"
 
     if grep -Fxq "$alias_line" "$target" 2>/dev/null; then
         echo "Alias already configured in $target"

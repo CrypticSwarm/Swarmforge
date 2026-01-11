@@ -1,7 +1,9 @@
-# LLM experiments
+# Swarmforge
 
-Aim is to build a repetoire of tools leveraging LLMs.
-This includes tools for running LLMs locally in a safe way without giving access to the full filesystem.
+**Swarmforge: The foundation for forging robust systems and dependable tools**
+
+Swarmforge is a builder-focused environment for designing, refining, and reusing processes and the tools they produce.
+It emphasizes robustness, constraint-driven design, and interoperability over ad-hoc interaction or one-off execution.
 
 ## Installation
 

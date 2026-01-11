@@ -7,7 +7,7 @@
 ## Repo Overview
 - `Makefile` orchestrates the local containers (`build_opencode`, `run_opencode`, `run_ollama`, etc.) and is the preferred entry point for automation.
 - `install.sh` appends an `oc` helper alias that shells out to `make -C <repo> run_opencode`; keep it POSIX-compliant because it is sourced in user shells.
-- `opencode/` is the Docker build context for the OpenCode harness. Its `config/` subdirectory (including `skills/`) is bind-mounted into the running container, so edits there immediately affect the agent runtime.
+- `opencode/` is the Docker build context for the OpenCode harness, which provides a constrained execution environment for building and refining systems and tools.
 - `ollama/` stores persistent Ollama state. Do not add large model blobs to git—only configuration or lightweight defaults belong here.
 
 ## Coding Conventions
