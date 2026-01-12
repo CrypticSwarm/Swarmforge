@@ -8,7 +8,7 @@ OLLAMA_PORT  ?= 11434
 OLLAMA_CTX   ?= 32768
 
 OPENCODE_IMG ?= opencode:local
-OPENCODE_CTR ?= opencode
+OPENCODE_CTR ?= opencode-$(PROJECT_NAME)
 
 PROFILE      ?=
 DATA_DIR     ?= $(HOME)/.local/share/opencode
@@ -24,6 +24,7 @@ UID          := $(shell id -u)
 GID          := $(shell id -g)
 
 PROJECT_DIR  := $(CURDIR)
+PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
 
 PROFILE_FLAG :=
 ifneq ($(strip $(PROFILE)),)
