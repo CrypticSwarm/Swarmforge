@@ -7,15 +7,45 @@ It emphasizes robustness, constraint-driven design, and interoperability over ad
 
 ## Installation
 
-Run the installer to add common shell helpers:
+1. Add the shell helper alias:
 
 ```
 ./install.sh
 ```
 
-The script appends an `oc` alias to your existing `~/.bashrc`, pointing to `make -C <repo> run_opencode PROJECT_DIR=$(pwd)` so you can launch OpenCode from any directory.
-Pass any `make` overrides directly (for example `oc PROFILE=work DATA_DIR=~/.local/share/opencode-work`, or prefix them as environment variables like `PROFILE=work oc`) to map work/personal sessions to distinct profiles and storage roots.
+This appends an `oc` alias to your `~/.bashrc` that shells out to `make -C <repo> run_opencode PROJECT_DIR=$(pwd)`.
 If `~/.bashrc` is missing, create it first before rerunning the installer.
+
+2. Build the OpenCode container image:
+
+```
+make build_opencode
+```
+
+The image includes a Debian base plus the toolchain used by the harness (Node.js and Python; see `opencode/Dockerfile` for the currently configured versions).
+
+3. Run from your project directory:
+
+- Basic usage: `oc`
+- Pass overrides either as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
+
+### Multiple aliases (work/personal)
+
+You can define multiple aliases that point at the same Swarmforge checkout but use different storage roots and git identities (for example: work keys vs personal keys).
+
+Example:
+
+```bash
+alias ocd='make -C PATH_TO_SWARMFORGE run_opencode PROJECT_DIR=$(pwd) DATA_DIR=$HOME/.local/share/opencode-work GITCONFIG_FILE=$HOME/.gitconfig-agent'
+```
+
+`GITCONFIG_FILE` is useful if you keep an agent-specific git config rather than using your default `~/.gitconfig`.
+
+### Git repos and `.git` access
+
+`PROJECT_DIR` is what gets mounted into the container. If you run from a subdirectory of a git repo, the container will not see the repo’s `.git/` directory (and git-related workflows like `/commit` will be limited).
+
+To enable git tooling, either run `oc` from the repo root, or set `PROJECT_DIR` to the top-level directory (for example `PROJECT_DIR=$(git rev-parse --show-toplevel)`).
 
 ## Ollama
 
@@ -24,6 +54,19 @@ Run an LLMs locally.
 ## OpenCode
 
 Test harness that has a standard set of tools exposed to LLM geared at editing code.
+
+## Commands
+
+Slash commands are stored under `opencode/config/command/` (and optionally `.opencode/command/` for repo-local commands).
+To run one, start your prompt with the command name (for example `/commit` will inject [`opencode/config/command/commit.md`](opencode/config/command/commit.md)).
+
+Command prompt files often include `!` shell-expansion blocks, for example:
+
+```
+!`git status --short`
+```
+
+OpenCode runs these shell commands and injects their output into the prompt context, so the agent sees the live repo state without you copy/pasting it.
 
 ## Skills
 
