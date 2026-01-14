@@ -119,5 +119,7 @@ test: opencode_network
 	    --model "$(MODEL)" \
 	    --eval-model "$(EVAL_MODEL)" \
 	    --timeout-s "$(TEST_TIMEOUT_S)" \
+	    --color always \
+	    --report-cost \
 	    $(if $(TEST_ENABLE_JUDGE),--enable-judge,) \
 	    $(if $(TEST_SKILL),--skill "$(TEST_SKILL)",)
