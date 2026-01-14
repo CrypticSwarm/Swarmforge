@@ -44,7 +44,12 @@ Guardrails:
 
 ## How to Propose New Skills
 
-Propose a new skill only when the conversation reveals a repeatable task pattern.
+Propose a new skill only when it clears this bar:
+
+- The workflow is likely to recur.
+- The conversation showed repeated friction (clarification loops, missed context,
+  or recurring mistakes).
+- The fix can’t be captured as a small edit to an existing skill.
 
 For each candidate skill, provide:
 
