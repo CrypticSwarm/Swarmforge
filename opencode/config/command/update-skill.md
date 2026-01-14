@@ -19,13 +19,13 @@ Current working tree:
 !`git status --short`
 
 Available global skills (if present):
-!`ls opencode/config/skills 2>/dev/null || true`
+!`ls opencode/config/skills 2>/dev/null || ls ~/.config/opencode/skills 2>/dev/null || true`
 
 Available local skills (if present):
 !`test -d .opencode/skills && ls .opencode/skills || true`
 
 Locate the target skill directory and apply the requested changes.
-- Global skills live in `opencode/config/skills/<skill-name>/SKILL.md`.
+- Global skills live in `<global-config>/skills/<skill-name>/SKILL.md` where `<global-config>` is `opencode/config` if present in the workspace, otherwise `~/.config/opencode`.
 - Local skills live in `.opencode/skills/<skill-name>/SKILL.md`.
 
 Constraints:
@@ -33,7 +33,7 @@ Constraints:
 - Make minimal, focused edits consistent with the repo style.
 
 If the change implies a new or updated slash command, locate and update the corresponding command prompt:
-- Global: `opencode/config/command/<command-name>.md`
+- Global: `<global-config>/command/<command-name>.md` (use `opencode/config` if present in the workspace, otherwise `~/.config/opencode`)
 - Local: `.opencode/command/<command-name>.md`
 
 If no command exists but one is warranted, ask before creating it (confirm command name + expected `$ARGUMENTS`).

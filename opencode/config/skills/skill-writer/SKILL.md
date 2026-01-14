@@ -63,6 +63,24 @@ skill-name/
 
 Keep references one hop away from `SKILL.md` (no deep nesting). For reference files >100 lines, add a mini table of contents so the agent can skim quickly.
 
+## Locating skills and commands
+
+First determine the global config directory:
+
+- If the workspace contains `opencode/config/`, treat that as the canonical, versioned global config directory.
+- Otherwise, use `~/.config/opencode/` (for example, when running OpenCode against a different repo where the global config is mounted into the environment).
+
+Then locate artifacts by scope:
+
+- Global skills: `<global-config>/skills/<skill-name>/SKILL.md`
+- Global commands: `<global-config>/command/<command-name>.md`
+- Local skills: `.opencode/skills/<skill-name>/SKILL.md`
+- Local commands: `.opencode/command/<command-name>.md`
+
+Confirm the target file exists before editing. If multiple copies are found, clarify with the user which one should be updated.
+
+When a change touches shared paths or cross-cutting guidance, run a repo-wide search across the relevant skill and command directories (for example, `rg -n "<pattern>" opencode/config ~/.config/opencode .opencode`), then update all matching prompts/skills consistently.
+
 ## What Not to Include
 
 Do **not** add auxiliary docs like `README.md`, changelogs, or installation guides. Skills should contain only what another agent instance needs to execute the work - no meta commentary.
@@ -74,7 +92,7 @@ Follow these steps in order unless you have explicit reason to skip one:
 1. **Collect concrete examples.** Ask users for realistic requests the skill must solve. Identify triggers and boundaries.
 2. **Plan reusable resources.** For each example, note which scripts, references, or assets would save time when repeated.
 3. **Decide whether to add a slash command.** If the skill will be used repeatedly, benefits from injecting context (git status/diff, logs, file lists), or needs a standard argument shape, add a slash command alongside the skill.
-   - Global commands live in `opencode/config/command/`.
+   - Global commands live under the global config directory (use `opencode/config/command/` when it exists in the workspace; otherwise use `~/.config/opencode/command/`).
    - Project-local commands live in `.opencode/command/`.
    - Command prompts should: (1) activate the relevant skill first, (2) validate `$ARGUMENTS` (ask and stop if missing), and (3) include only small, high-signal `!` context blocks.
 4. **Initialize the skeleton.** Run tooling (e.g., `scripts/init_skill.py <skill-name> --path <dir>`) to scaffold `SKILL.md`, `scripts/`, `references/`, and `assets/`.
