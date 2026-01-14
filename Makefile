@@ -14,6 +14,13 @@ PROFILE      ?=
 DATA_DIR     ?= $(HOME)/.local/share/opencode
 OPENCODE_ARGS ?=
 GITCONFIG_FILE ?= $(HOME)/.gitconfig
+
+MODEL        ?=
+EVAL_MODEL   ?= $(MODEL)
+TEST_SKILL   ?=
+TEST_DATA_DIR ?= $(DATA_DIR)
+TEST_ENABLE_JUDGE ?=
+TEST_TIMEOUT_S ?= 600
 GITCONFIG_FLAG := $(strip $(if $(wildcard $(GITCONFIG_FILE)),-v "$(GITCONFIG_FILE)":/home/opencode/.gitconfig:ro,))
 
 # Allows overriding base debian image tag
@@ -32,7 +39,7 @@ PROFILE_FLAG := --profile $(PROFILE)
 endif
 
 .PHONY: opencode_network build_opencode run_opencode stop_opencode run_ollama logs_ollama stop_ollama gpu_stat clean \
-	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small
+	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test
 
 opencode_network:
 	@docker network inspect $(NETWORK) >/dev/null 2>&1 || docker network create $(NETWORK) >/dev/null
@@ -94,3 +101,23 @@ run_gpt-oss-120b:
 
 run_devstral2_small:
 	docker exec -it ollama ollama run devstral-small-2:24b
+
+test: opencode_network
+	@if [ -z "$(strip $(MODEL))" ]; then \
+		printf '%s\n' "MODEL is required (example: make test MODEL=ollama/llama3.1)"; \
+		exit 2; \
+	fi
+	@mkdir -p "$(TEST_DATA_DIR)"
+	docker run --rm \
+	  --network $(NETWORK) \
+	  -e HOME=/home/opencode \
+	  -v "$(PROJECT_DIR)":/workspace \
+	  -v "$(CURDIR)/opencode/config":/home/opencode/.config/opencode \
+	  -v "$(TEST_DATA_DIR)":/home/opencode/.local/share/opencode \
+	  --entrypoint python \
+	  $(OPENCODE_IMG) /workspace/scripts/test_skills.py \
+	    --model "$(MODEL)" \
+	    --eval-model "$(EVAL_MODEL)" \
+	    --timeout-s "$(TEST_TIMEOUT_S)" \
+	    $(if $(TEST_ENABLE_JUDGE),--enable-judge,) \
+	    $(if $(TEST_SKILL),--skill "$(TEST_SKILL)",)

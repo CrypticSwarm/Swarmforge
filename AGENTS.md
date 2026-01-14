@@ -19,6 +19,8 @@
 ## Build, Test, and Run
 - Build the OpenCode image with `make build_opencode` after changing anything under `opencode/`.
 - Launch a development session via `make run_opencode PROFILE=<name> DATA_DIR=<path?>` (defaults are fine for local work). The target automatically mounts project files and skills.
+- Run the skill test harness via `make test MODEL=<provider/model>`.
+- Filter skill tests with `TEST_SKILL=<skill-name>` and adjust timeouts with `TEST_TIMEOUT_S=<seconds>`.
 - Start the local Ollama service with `make run_ollama` when testing models; pair it with `make stop_ollama` and `make clean` to tear everything down.
 - Use `gpu_stat` (wraps `nvidia-smi`) to confirm GPU availability before running high-memory models.
 

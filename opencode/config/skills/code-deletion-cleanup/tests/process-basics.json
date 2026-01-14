@@ -1,0 +1,20 @@
+{
+  "skill": "code-deletion-cleanup",
+  "prompt": "Activate the code-deletion-cleanup skill before taking any other action.\n\nYou are asked to delete a deprecated feature named 'invite-users'.\nThe feature had an HTTP endpoint, a CLI command, and a scheduled job.\nProvide a deletion plan and cleanup checklist.\nUse a deletion queue and explicitly call out entry points and non-code dependencies.\nDo not claim to have searched any repo, and do not invent code.\n",
+  "expect": {
+    "must_match": [
+      "Loaded skill: code-deletion-cleanup",
+      "Deletion Queue",
+      "entry point",
+      "Queue now:"
+    ],
+    "must_not_match": [],
+    "must_tool": [
+      "todowrite"
+    ],
+    "must_not_tool": []
+  },
+  "judge": {
+    "enabled": false
+  }
+}

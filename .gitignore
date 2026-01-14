@@ -1,1 +1,8 @@
 opencode/data
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Local skill test state (optional)
+.opencode-test-data/
