@@ -73,10 +73,14 @@ Follow these steps in order unless you have explicit reason to skip one:
 
 1. **Collect concrete examples.** Ask users for realistic requests the skill must solve. Identify triggers and boundaries.
 2. **Plan reusable resources.** For each example, note which scripts, references, or assets would save time when repeated.
-3. **Initialize the skeleton.** Run tooling (e.g., `scripts/init_skill.py <skill-name> --path <dir>`) to scaffold `SKILL.md`, `scripts/`, `references/`, and `assets/`.
-4. **Implement resources first.** Create/update scripts, references, and assets identified in step 2. Delete template files you do not need.
-5. **Write `SKILL.md`.** Use imperative voice, emphasize decision points, reference supporting files explicitly ("For tracked changes see `references/redlining.md`"). Keep it <500 lines; move details to references when longer.
-6. **Package & validate.** Run `scripts/package_skill.py <path/to/skill>` (optionally with an output dir). Fix any validation errors (frontmatter, structure, description quality) before distributing.
+3. **Decide whether to add a slash command.** If the skill will be used repeatedly, benefits from injecting context (git status/diff, logs, file lists), or needs a standard argument shape, add a slash command alongside the skill.
+   - Global commands live in `opencode/config/command/`.
+   - Project-local commands live in `.opencode/command/`.
+   - Command prompts should: (1) activate the relevant skill first, (2) validate `$ARGUMENTS` (ask and stop if missing), and (3) include only small, high-signal `!` context blocks.
+4. **Initialize the skeleton.** Run tooling (e.g., `scripts/init_skill.py <skill-name> --path <dir>`) to scaffold `SKILL.md`, `scripts/`, `references/`, and `assets/`.
+5. **Implement resources first.** Create/update scripts, references, and assets identified in step 2. Delete template files you do not need.
+6. **Write `SKILL.md`.** Use imperative voice, emphasize decision points, reference supporting files explicitly ("For tracked changes see `references/redlining.md`"). Keep it <500 lines; move details to references when longer.
+7. **Package & validate.** Run `scripts/package_skill.py <path/to/skill>` (optionally with an output dir). Fix any validation errors (frontmatter, structure, description quality) before distributing.
 
 ## Design Patterns
 
