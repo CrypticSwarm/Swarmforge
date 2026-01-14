@@ -144,6 +144,17 @@ This changes default client construction and will break callers relying on the
 implicit region. Update callers to pass `region` explicitly.
 ```
 
+### Amend (`git commit --amend`)
+- Start from the previous commit message (`git log -1 --pretty=%B`) and adjust
+  only what the newly-staged changes alter.
+- Prefer evaluating the *combined* amended change set rather than only the
+  staged delta:
+  - `git diff HEAD^ --cached`
+- If there are no staged changes (`git diff --cached` is empty), call out the
+  gap and ask whether the user intends a message-only amend.
+- Avoid referencing implementation details that won’t exist after the amend
+  (e.g., temporary scaffolding removed by the staged changes).
+
 ## Conflict resolution
 
 When resolving merge/rebase conflicts, make the subject describe what happened:
