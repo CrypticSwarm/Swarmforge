@@ -72,8 +72,14 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 # Install OpenCode
-RUN curl -fsSL https://opencode.ai/install | bash \
-  && install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode
+#
+# OpenCode updates frequently; this build arg lets us selectively bust the
+# Docker layer cache for just the install step.
+ARG OPENCODE_INSTALL_BUST=0
+RUN set -eux; \
+  echo "Installing OpenCode (cache bust: ${OPENCODE_INSTALL_BUST})"; \
+  curl -fsSL https://opencode.ai/install | bash; \
+  install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode
 
 WORKDIR /workspace
 

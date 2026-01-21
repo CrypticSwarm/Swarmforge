@@ -15,6 +15,9 @@ DATA_DIR     ?= $(HOME)/.local/share/opencode
 OPENCODE_ARGS ?=
 GITCONFIG_FILE ?= $(HOME)/.gitconfig
 
+# Set this to a changing value to refresh the `curl https://opencode.ai/install` layer.
+OPENCODE_INSTALL_BUST ?= 0
+
 MODEL        ?=
 EVAL_MODEL   ?= $(MODEL)
 TEST_SKILL   ?=
@@ -38,7 +41,7 @@ ifneq ($(strip $(PROFILE)),)
 PROFILE_FLAG := --profile $(PROFILE)
 endif
 
-.PHONY: opencode_network build_opencode run_opencode stop_opencode run_ollama logs_ollama stop_ollama gpu_stat clean \
+.PHONY: opencode_network build_opencode update_opencode run_opencode stop_opencode run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test
 
 opencode_network:
@@ -48,7 +51,12 @@ opencode_network:
 build_opencode:
 	docker build \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
+	  --build-arg OPENCODE_INSTALL_BUST=$(OPENCODE_INSTALL_BUST) \
 	  -t $(OPENCODE_IMG) opencode
+
+# Rebuild only from the OpenCode install step onward.
+update_opencode:
+	$(MAKE) build_opencode OPENCODE_INSTALL_BUST=$(shell date +%s)
 
 run_opencode: opencode_network
 	@mkdir -p "$(CURDIR)/opencode/config"
