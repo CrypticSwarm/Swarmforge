@@ -9,12 +9,15 @@ It emphasizes robustness, constraint-driven design, and interoperability over ad
 
 1. Add the shell helper alias:
 
-```
-./install.sh
+```bash
+bash ./install.sh
 ```
 
-This appends an `oc` alias to your `~/.bashrc` that shells out to `make -C <repo> run_opencode PROJECT_DIR=$(pwd)`.
-If `~/.bashrc` is missing, create it first before rerunning the installer.
+This appends an `oc` alias to your shell rc file so it shells out to `make -C <repo> run_opencode PROJECT_DIR=$(pwd)`.
+The installer is a Bash script (uses Bash arrays), so run it with `bash` even if your login shell is Zsh.
+On macOS the installer prefers `~/.zshrc` (the default since Catalina) and falls back to `~/.bash_profile` for legacy Bash shells, so you do not need to create `~/.bashrc` manually.
+Because macOS login shells source `.bash_profile` before `.bashrc`, keeping the alias in whichever file the installer chose ensures it loads during Terminal launches.
+Override the target explicitly by running `OC_RC_FILE=/path/to/rc bash ./install.sh`.
 
 2. Build the OpenCode container image:
 
