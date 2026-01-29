@@ -1,7 +1,7 @@
 ---
 description: Delete code with thorough cleanup
 agent: build
-model: openai/gpt-5.1-codex
+model: openai/gpt-5.2-codex
 ---
 Activate the code-deletion-cleanup skill before taking any other action.
 
