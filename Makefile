@@ -14,6 +14,7 @@ PROFILE      ?=
 DATA_DIR     ?= $(HOME)/.local/share/opencode
 OPENCODE_ARGS ?=
 GITCONFIG_FILE ?= $(HOME)/.gitconfig
+OPENCODE_ENV_FILE ?= $(PROJECT_DIR)/.swarmforge/env
 
 # Set this to a changing value to refresh the `curl https://opencode.ai/install` layer.
 OPENCODE_INSTALL_BUST ?= 0
@@ -25,6 +26,7 @@ TEST_DATA_DIR ?= $(DATA_DIR)
 TEST_ENABLE_JUDGE ?=
 TEST_TIMEOUT_S ?= 600
 GITCONFIG_FLAG := $(strip $(if $(wildcard $(GITCONFIG_FILE)),-v "$(GITCONFIG_FILE)":/home/opencode/.gitconfig:ro,))
+OPENCODE_ENV_FLAG := $(strip $(if $(wildcard $(OPENCODE_ENV_FILE)),--env-file "$(OPENCODE_ENV_FILE)",))
 
 # Allows overriding base debian image tag
 DEBIAN_TAG   ?= trixie-slim
@@ -69,6 +71,7 @@ run_opencode: opencode_network
 	  -v "$(PROJECT_DIR)":/workspace \
 		-v "$(CURDIR)/opencode/config":/home/opencode/.config/opencode \
 		-v "$(DATA_DIR)":/home/opencode/.local/share/opencode$(if $(GITCONFIG_FLAG), $(GITCONFIG_FLAG)) \
+	  $(OPENCODE_ENV_FLAG) \
 	  $(OPENCODE_IMG) $(PROFILE_FLAG) $(OPENCODE_ARGS)
 
 stop_opencode:

@@ -32,6 +32,11 @@ The image includes a Debian base plus the toolchain used by the harness (Node.js
 - Basic usage: `oc`
 - Pass overrides either as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
 
+### Repo-local env vars
+
+`make run_opencode` will load a repo-local env file if it exists at `.swarmforge/env`.
+Override with `OPENCODE_ENV_FILE=/path/to/env make run_opencode`.
+
 ### Multiple aliases (work/personal)
 
 You can define multiple aliases that point at the same Swarmforge checkout but use different storage roots and git identities (for example: work keys vs personal keys).
