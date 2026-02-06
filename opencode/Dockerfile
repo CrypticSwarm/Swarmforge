@@ -44,6 +44,7 @@ FROM debian:${DEBIAN_TAG}
 
 ARG PYTHON_VERSION
 ARG NODE_MAJOR
+ARG BEADS_VERSION=v0.49.4
 
 ENV PATH="/opt/python/bin:${PATH}"
 
@@ -64,6 +65,15 @@ RUN set -eux; \
         tini; \
     curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
+    beads_arch="$(dpkg --print-architecture)"; \
+    beads_archive="beads_${BEADS_VERSION#v}_linux_${beads_arch}.tar.gz"; \
+    curl -fsSL "https://github.com/steveyegge/beads/releases/download/${BEADS_VERSION}/${beads_archive}" -o /tmp/beads.tar.gz; \
+    curl -fsSL "https://github.com/steveyegge/beads/releases/download/${BEADS_VERSION}/checksums.txt" -o /tmp/beads-checksums.txt; \
+    beads_sha256="$(grep "${beads_archive}" /tmp/beads-checksums.txt | awk '{print $1}')"; \
+    echo "${beads_sha256}  /tmp/beads.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/beads.tar.gz -C /usr/local/bin bd; \
+    ln -sf bd /usr/local/bin/beads; \
+    rm -f /tmp/beads.tar.gz /tmp/beads-checksums.txt; \
     PYTHON_MINOR="${PYTHON_VERSION%.*}"; \
     ln -sf /opt/python/bin/python${PYTHON_MINOR} /usr/local/bin/python3; \
     ln -sf /opt/python/bin/python${PYTHON_MINOR} /usr/local/bin/python; \
