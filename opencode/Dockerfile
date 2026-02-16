@@ -53,13 +53,24 @@ COPY --from=python-builder /opt/python /opt/python
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
+        build-essential \
         ca-certificates \
+        ccache \
+        clang \
+        cmake \
         curl \
+        gdb \
         git \
         gnupg \
         gosu \
         less \
+        libclang-rt-dev \
+        libcurl4-openssl-dev \
+        libssl-dev \
+        lldb \
+        ninja-build \
         openssh-client \
+        pkg-config \
         ripgrep \
         tar \
         tini; \
