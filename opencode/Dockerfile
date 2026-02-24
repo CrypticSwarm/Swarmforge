@@ -57,6 +57,7 @@ RUN set -eux; \
         ca-certificates \
         ccache \
         clang \
+        clang-format \
         cmake \
         curl \
         gdb \
