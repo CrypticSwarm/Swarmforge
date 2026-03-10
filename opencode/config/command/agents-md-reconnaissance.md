@@ -1,7 +1,6 @@
 ---
 description: Generate or refine a directory-specific AGENTS.md through multi-phase codebase reconnaissance
 agent: build
-model: anthropic/claude-opus-4-6
 ---
 Activate the agents-md-reconnaissance skill before taking any other action.
 
