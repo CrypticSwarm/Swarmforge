@@ -45,8 +45,10 @@ FROM debian:${DEBIAN_TAG}
 ARG PYTHON_VERSION
 ARG NODE_MAJOR
 ARG BEADS_VERSION=v0.49.4
+ARG PLAYWRIGHT_VERSION=1.55.0
 
 ENV PATH="/opt/python/bin:${PATH}"
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 COPY --from=python-builder /opt/python /opt/python
 
@@ -77,6 +79,7 @@ RUN set -eux; \
         tini; \
     curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
+    npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps chromium; \
     beads_arch="$(dpkg --print-architecture)"; \
     beads_archive="beads_${BEADS_VERSION#v}_linux_${beads_arch}.tar.gz"; \
     curl -fsSL "https://github.com/steveyegge/beads/releases/download/${BEADS_VERSION}/${beads_archive}" -o /tmp/beads.tar.gz; \
