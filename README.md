@@ -49,11 +49,12 @@ alias ocd='make -C PATH_TO_SWARMFORGE run_opencode PROJECT_DIR=$(pwd) DATA_DIR=$
 
 `GITCONFIG_FILE` is useful if you keep an agent-specific git config rather than using your default `~/.gitconfig`.
 
-### Git repos and `.git` access
+### Git repos and worktrees
 
-`PROJECT_DIR` is what gets mounted into the container. If you run from a subdirectory of a git repo, the container will not see the repo’s `.git/` directory (and git-related workflows like `/commit` will be limited).
+`make run_opencode` auto-detects the git root from `PROJECT_DIR` and mounts that root at `/workspace`.
+If the target is a linked git worktree, it also mounts the shared git common directory so git operations keep working inside the container.
 
-To enable git tooling, either run `oc` from the repo root, or set `PROJECT_DIR` to the top-level directory (for example `PROJECT_DIR=$(git rev-parse --show-toplevel)`).
+This means `oc` works from repo roots, subdirectories, and linked worktrees without extra flags.
 
 ## Ollama
 

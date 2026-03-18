@@ -25,9 +25,6 @@ TEST_SKILL   ?=
 TEST_DATA_DIR ?= $(DATA_DIR)
 TEST_ENABLE_JUDGE ?=
 TEST_TIMEOUT_S ?= 600
-GITCONFIG_FLAG := $(strip $(if $(wildcard $(GITCONFIG_FILE)),-v "$(GITCONFIG_FILE)":/home/opencode/.gitconfig:ro,))
-OPENCODE_ENV_FLAG := $(strip $(if $(wildcard $(OPENCODE_ENV_FILE)),--env-file "$(OPENCODE_ENV_FILE)",))
-
 # Allows overriding base debian image tag
 DEBIAN_TAG   ?= trixie-slim
 
@@ -64,15 +61,38 @@ run_opencode: opencode_network
 	@mkdir -p "$(CURDIR)/opencode/config"
 	@mkdir -p "$(DATA_DIR)"
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
-	docker run -it --rm --name $(OPENCODE_CTR) \
-	  --network $(NETWORK) \
-	  -e OPENCODE_UID=$(UID) \
-	  -e OPENCODE_GID=$(GID) \
-	  -v "$(PROJECT_DIR)":/workspace \
-		-v "$(CURDIR)/opencode/config":/home/opencode/.config/opencode \
-		-v "$(DATA_DIR)":/home/opencode/.local/share/opencode$(if $(GITCONFIG_FLAG), $(GITCONFIG_FLAG)) \
-	  $(OPENCODE_ENV_FLAG) \
-	  $(OPENCODE_IMG) $(PROFILE_FLAG) $(OPENCODE_ARGS)
+	@set -euo pipefail; \
+	workspace_dir="$$(git -C "$(PROJECT_DIR)" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$(PROJECT_DIR)")"; \
+	git_common_dir="$$(git -C "$$workspace_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"; \
+	if [ -n "$$git_common_dir" ] && [ "$$git_common_dir" != "$$workspace_dir/.git" ]; then \
+		printf '%s\n' "Detected git worktree; mounting common git dir: $$git_common_dir"; \
+		git_common_mount=(-v "$$git_common_dir":"$$git_common_dir"); \
+	else \
+		git_common_mount=(); \
+	fi; \
+	if [ -f "$(GITCONFIG_FILE)" ]; then \
+		gitconfig_mount=(-v "$(GITCONFIG_FILE)":/home/opencode/.gitconfig:ro); \
+	else \
+		gitconfig_mount=(); \
+	fi; \
+	if [ -f "$(OPENCODE_ENV_FILE)" ]; then \
+		env_file_flag=(--env-file "$(OPENCODE_ENV_FILE)"); \
+	else \
+		env_file_flag=(); \
+	fi; \
+	set -x; \
+	docker run -it --rm --name "$(OPENCODE_CTR)" \
+	  --network "$(NETWORK)" \
+	  -e OPENCODE_UID="$(UID)" \
+	  -e OPENCODE_GID="$(GID)" \
+	  -v "$$workspace_dir":/workspace \
+	  -v "$(CURDIR)/opencode/config":/home/opencode/.config/opencode \
+	  -v "$(DATA_DIR)":/home/opencode/.local/share/opencode \
+	  "$${git_common_mount[@]}" \
+	  "$${gitconfig_mount[@]}" \
+	  "$${env_file_flag[@]}" \
+	  $(OPENCODE_IMG) $(PROFILE_FLAG) $(OPENCODE_ARGS); \
+	set +x
 
 stop_opencode:
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
