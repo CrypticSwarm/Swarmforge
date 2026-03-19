@@ -80,8 +80,9 @@ main() {
         echo "Created $target to hold shell customizations"
     fi
 
-    local alias_line
-    printf -v alias_line "alias oc='make -C %q run_opencode PROJECT_DIR=\$(pwd)'" "$script_dir"
+    local makefile_path alias_line
+    makefile_path="$script_dir/Makefile"
+    printf -v alias_line "alias oc='make -f %q run_opencode PROJECT_DIR=\$(pwd)'" "$makefile_path"
     local marker="# Added by Swarmforge installer"
 
     if grep -Fxq "$alias_line" "$target" 2>/dev/null; then

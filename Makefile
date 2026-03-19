@@ -32,6 +32,7 @@ DEBIAN_TAG   ?= trixie-slim
 UID          := $(shell id -u)
 GID          := $(shell id -g)
 
+SWARMFORGE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 PROJECT_DIR  := $(CURDIR)
 PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
 
@@ -51,14 +52,14 @@ build_opencode:
 	docker build \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
 	  --build-arg OPENCODE_INSTALL_BUST=$(OPENCODE_INSTALL_BUST) \
-	  -t $(OPENCODE_IMG) opencode
+	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)/opencode"
 
 # Rebuild only from the OpenCode install step onward.
 update_opencode:
 	$(MAKE) build_opencode OPENCODE_INSTALL_BUST=$(shell date +%s)
 
 run_opencode: opencode_network
-	@mkdir -p "$(CURDIR)/opencode/config"
+	@mkdir -p "$(SWARMFORGE_DIR)/opencode/config"
 	@mkdir -p "$(DATA_DIR)"
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
 	@set -euo pipefail; \
@@ -86,7 +87,7 @@ run_opencode: opencode_network
 	  -e OPENCODE_UID="$(UID)" \
 	  -e OPENCODE_GID="$(GID)" \
 	  -v "$$workspace_dir":/workspace \
-	  -v "$(CURDIR)/opencode/config":/home/opencode/.config/opencode \
+	  -v "$(SWARMFORGE_DIR)/opencode/config":/home/opencode/.config/opencode \
 	  -v "$(DATA_DIR)":/home/opencode/.local/share/opencode \
 	  "$${git_common_mount[@]}" \
 	  "$${gitconfig_mount[@]}" \
@@ -101,7 +102,7 @@ run_ollama: opencode_network
 	@docker rm -f $(OLLAMA_CTR) >/dev/null 2>&1 || true
 	docker run -d --rm --name $(OLLAMA_CTR) \
 	  --network $(NETWORK) \
-	  -v $(CURDIR)/ollama:/root/.ollama \
+	  -v $(SWARMFORGE_DIR)/ollama:/root/.ollama \
 	  -e OLLAMA_HOST=0.0.0.0:11434 \
 		-e OLLAMA_CONTEXT_LENGTH=$(OLLAMA_CTX) \
 	  -p $(OLLAMA_PORT):11434 \
@@ -143,7 +144,7 @@ test: opencode_network
 	  --network $(NETWORK) \
 	  -e HOME=/home/opencode \
 	  -v "$(PROJECT_DIR)":/workspace \
-	  -v "$(CURDIR)/opencode/config":/home/opencode/.config/opencode \
+	  -v "$(SWARMFORGE_DIR)/opencode/config":/home/opencode/.config/opencode \
 	  -v "$(TEST_DATA_DIR)":/home/opencode/.local/share/opencode \
 	  --entrypoint python \
 	  $(OPENCODE_IMG) /workspace/scripts/test_skills.py \
