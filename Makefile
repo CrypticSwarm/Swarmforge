@@ -89,9 +89,9 @@ run_opencode: opencode_network
 	  -v "$$workspace_dir":/workspace \
 	  -v "$(SWARMFORGE_DIR)/opencode/config":/home/opencode/.config/opencode \
 	  -v "$(DATA_DIR)":/home/opencode/.local/share/opencode \
-	  "$${git_common_mount[@]}" \
-	  "$${gitconfig_mount[@]}" \
-	  "$${env_file_flag[@]}" \
+	  $${git_common_mount[@]+"$${git_common_mount[@]}"} \
+	  $${gitconfig_mount[@]+"$${gitconfig_mount[@]}"} \
+	  $${env_file_flag[@]+"$${env_file_flag[@]}"} \
 	  $(OPENCODE_IMG) $(PROFILE_FLAG) $(OPENCODE_ARGS); \
 	set +x
 
