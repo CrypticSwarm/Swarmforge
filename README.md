@@ -56,6 +56,7 @@ alias ccd='make -C PATH_TO_SWARMFORGE run_claude PROJECT_DIR=$(pwd) CLAUDE_DATA_
 
 `GITCONFIG_FILE` is useful if you keep an agent-specific git config rather than using your default `~/.gitconfig`.
 For Claude Code, use separate `CLAUDE_DATA_DIR` roots to isolate work/personal logins and session state.
+`CLAUDE_HOME_DIR` defaults to `$(CLAUDE_DATA_DIR)/home`, and can be overridden directly if needed.
 
 ### Git repos and worktrees
 
@@ -75,7 +76,14 @@ Test harness that has a standard set of tools exposed to LLM geared at editing c
 ## Claude Code
 
 `make run_claude` starts a Claude Code container with the same workspace and git-worktree mounting behavior as `make run_opencode`.
-Claude state is persisted by mounting `$(CLAUDE_DATA_DIR)/home` to `/home/opencode`, which keeps account/session files such as `~/.claude/` and `~/.claude.json`.
+Claude state is persisted by mounting `$(CLAUDE_HOME_DIR)` to `/home/opencode`, which keeps account/session files such as `~/.claude/` and `~/.claude.json`.
+By default it mounts the repo to a stable path derived from the git remote slug and starts Claude there (while still mounting `/workspace` for compatibility), which improves session grouping across worktrees without relying on host-specific absolute paths.
+
+Session compatibility notes:
+
+- To reuse existing host-native Claude sessions directly, run with `CLAUDE_HOME_DIR=$HOME`.
+- GitHub remote slugs map to deterministic paths, for example `git@github.com:crypticswarm/Swarmforge.git` -> `/repos/crypticswarm/Swarmforge`.
+- Override slug detection with `CLAUDE_REPO_SLUG=crypticswarm/Swarmforge` and remote selection with `CLAUDE_REMOTE_NAME=<remote>`.
 
 It also mounts shared Swarmforge assets so both runtimes can access common resources:
 

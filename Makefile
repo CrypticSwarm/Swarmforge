@@ -16,7 +16,10 @@ PROFILE      ?=
 DATA_DIR     ?= $(HOME)/.local/share/opencode
 OPENCODE_ARGS ?=
 CLAUDE_DATA_DIR ?= $(HOME)/.local/share/claude
+CLAUDE_HOME_DIR ?= $(CLAUDE_DATA_DIR)/home
 CLAUDE_ARGS ?=
+CLAUDE_REPO_SLUG ?=
+CLAUDE_REMOTE_NAME ?= origin
 GITCONFIG_FILE ?= $(HOME)/.gitconfig
 ENV_FILE ?= $(PROJECT_DIR)/.swarmforge/env
 
@@ -60,7 +63,7 @@ CLAUDE_RUN_ENV := \
 	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command
 
 CLAUDE_RUN_MOUNTS := \
-	-v "$(CLAUDE_DATA_DIR)/home":/home/opencode \
+	-v "$(CLAUDE_HOME_DIR)":/home/opencode \
 	-v "$(SHARED_SKILLS_DIR)":/home/opencode/.swarmforge/skills:ro \
 	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro
 
@@ -88,6 +91,44 @@ define run_agent_container
 	else \
 		env_file_flag=(); \
 	fi; \
+	if [ "$(6)" = "repo-slug" ]; then \
+		repo_slug="$(CLAUDE_REPO_SLUG)"; \
+		if [ -z "$$repo_slug" ]; then \
+			remote_url="$$(git -C "$$workspace_dir" remote get-url "$(CLAUDE_REMOTE_NAME)" 2>/dev/null || true)"; \
+			if [ -n "$$remote_url" ]; then \
+				remote_slug="$$remote_url"; \
+				remote_slug="$${remote_slug%.git}"; \
+				case "$$remote_slug" in \
+					*://*) remote_slug="$${remote_slug#*://}" ;; \
+				esac; \
+				remote_slug="$${remote_slug#*@}"; \
+				remote_slug="$${remote_slug/:/\/}"; \
+				remote_slug="$${remote_slug#/}"; \
+				case "$$remote_slug" in \
+					github.com/*/*) repo_slug="$${remote_slug#github.com/}" ;; \
+					*/*) repo_slug="$${remote_slug#*/}" ;; \
+				esac; \
+			fi; \
+		fi; \
+		if [ -z "$$repo_slug" ]; then \
+			repo_slug="$$(basename "$$workspace_dir")"; \
+		fi; \
+		repo_slug="$$(printf '%s' "$$repo_slug" | tr '\\\\' '/' | tr -cs '[:alnum:]._/-' '-')"; \
+		while [ "$${repo_slug#/}" != "$$repo_slug" ]; do repo_slug="$${repo_slug#/}"; done; \
+		while [ "$${repo_slug%/}" != "$$repo_slug" ]; do repo_slug="$${repo_slug%/}"; done; \
+		if [ -z "$$repo_slug" ]; then \
+			repo_slug="$$(basename "$$workspace_dir")"; \
+		fi; \
+		repo_mount_path="/repos/$$repo_slug"; \
+		workspace_path_mount=(-v "$$workspace_dir":"$$repo_mount_path"); \
+		workdir_flag=(-w "$$repo_mount_path"); \
+	elif [ -z "$(6)" ]; then \
+		workspace_path_mount=(); \
+		workdir_flag=(); \
+	else \
+		printf '%s\n' "Unsupported workdir mode: $(6)" >&2; \
+		exit 2; \
+	fi; \
 	set -x; \
 	docker run -it --rm --name "$(1)" \
 	  --network "$(NETWORK)" \
@@ -95,10 +136,12 @@ define run_agent_container
 	  -e OPENCODE_GID="$(GID)" \
 	  $(2) \
 	  -v "$$workspace_dir":/workspace \
+	  $${workspace_path_mount[@]+"$${workspace_path_mount[@]}"} \
 	  $(3) \
 	  $${git_common_mount[@]+"$${git_common_mount[@]}"} \
 	  $${gitconfig_mount[@]+"$${gitconfig_mount[@]}"} \
 	  $${env_file_flag[@]+"$${env_file_flag[@]}"} \
+	  $${workdir_flag[@]+"$${workdir_flag[@]}"} \
 	  $(4) $(5); \
 	set +x
 endef
@@ -134,15 +177,17 @@ update_claude:
 run_opencode: opencode_network
 	@mkdir -p "$(OPENCODE_CONFIG_DIR)"
 	@mkdir -p "$(DATA_DIR)"
-	$(call run_agent_container,$(OPENCODE_CTR),,$(OPENCODE_RUN_MOUNTS),$(OPENCODE_IMG),$(PROFILE_FLAG) $(OPENCODE_ARGS))
+	$(call run_agent_container,$(OPENCODE_CTR),,$(OPENCODE_RUN_MOUNTS),$(OPENCODE_IMG),$(PROFILE_FLAG) $(OPENCODE_ARGS),)
 
 stop_opencode:
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
 
 run_claude: opencode_network
-	@mkdir -p "$(CLAUDE_DATA_DIR)/home"
-	@mkdir -p "$(CLAUDE_DATA_DIR)/home/.swarmforge"
-	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS))
+	@mkdir -p "$(CLAUDE_HOME_DIR)"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/skills"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/command"
+	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS),repo-slug)
 
 stop_claude:
 	@docker rm -f $(CLAUDE_CTR) >/dev/null 2>&1 || true
