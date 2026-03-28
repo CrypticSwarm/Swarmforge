@@ -40,7 +40,7 @@ RUN set -eux; \
     make install; \
     rm -rf /tmp/python.tgz /tmp/Python-${PYTHON_VERSION}
 
-FROM debian:${DEBIAN_TAG}
+FROM debian:${DEBIAN_TAG} AS runtime-base
 
 ARG PYTHON_VERSION
 ARG NODE_MAJOR
@@ -96,19 +96,43 @@ RUN set -eux; \
     ln -sf /opt/python/bin/pip${PYTHON_MINOR} /usr/local/bin/pip; \
     rm -rf /var/lib/apt/lists/*
 
-# Install OpenCode
-#
-# OpenCode updates frequently; this build arg lets us selectively bust the
-# Docker layer cache for just the install step.
-ARG OPENCODE_INSTALL_BUST=0
-RUN set -eux; \
-  echo "Installing OpenCode (cache bust: ${OPENCODE_INSTALL_BUST})"; \
-  curl -fsSL https://opencode.ai/install | bash; \
-  install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode
-
 WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
 RUN chmod +x /usr/local/bin/opencode-entrypoint.sh
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/opencode-entrypoint.sh"]
+
+FROM runtime-base AS agent-runtime
+
+ARG AGENT=opencode
+ARG OPENCODE_INSTALL_BUST=0
+ARG CLAUDE_INSTALL_BUST=0
+RUN set -eux; \
+  case "${AGENT}" in \
+    opencode) \
+      echo "Installing OpenCode (cache bust: ${OPENCODE_INSTALL_BUST})"; \
+      curl -fsSL https://opencode.ai/install | bash; \
+      install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode; \
+      ;; \
+    claude) \
+      echo "Installing Claude Code (cache bust: ${CLAUDE_INSTALL_BUST})"; \
+      curl -fsSL https://claude.ai/install.sh | bash; \
+      claude_bin="$(readlink -f /root/.local/bin/claude)"; \
+      install -m 0755 "${claude_bin}" /usr/local/bin/claude; \
+      rm -rf /root/.claude /root/.claude.json /root/.local/share/claude; \
+      rm -f /root/.local/bin/claude; \
+      ;; \
+    *) \
+      printf '%s\n' "Unsupported AGENT: ${AGENT}" >&2; \
+      exit 1; \
+      ;; \
+  esac
+
+ENV SWARMFORGE_AGENT_BIN=${AGENT}
+
+FROM agent-runtime AS opencode-runtime
+
+FROM agent-runtime AS claude-runtime
+
+FROM opencode-runtime AS default

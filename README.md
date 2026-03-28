@@ -19,23 +19,29 @@ On macOS the installer prefers `~/.zshrc` (the default since Catalina) and falls
 Because macOS login shells source `.bash_profile` before `.bashrc`, keeping the alias in whichever file the installer chose ensures it loads during Terminal launches.
 Override the target explicitly by running `OC_RC_FILE=/path/to/rc bash ./install.sh`.
 
-2. Build the OpenCode container image:
+2. Build one or both container images:
 
 ```
 make build_opencode
+make build_claude
 ```
 
-The image includes a Debian base plus the toolchain used by the harness (Node.js and Python; see `opencode/Dockerfile` for the currently configured versions).
+Both images share the same Debian base and toolchain (Node.js + Python; see `opencode/Dockerfile` for configured versions).
+Build targets pass `AGENT=opencode|claude` so only the requested agent install step runs (works with both legacy Docker builder and BuildKit).
 
 3. Run from your project directory:
 
-- Basic usage: `oc`
-- Pass overrides either as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
+- OpenCode: `oc`
+- Claude Code: `make run_claude PROJECT_DIR=$(pwd)`
+- Pass OpenCode overrides either as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
 
 ### Repo-local env vars
 
-`make run_opencode` will load a repo-local env file if it exists at `.swarmforge/env`.
-Override with `OPENCODE_ENV_FILE=/path/to/env make run_opencode`.
+`make run_opencode` loads a repo-local env file if it exists at `.swarmforge/env`.
+Override with `ENV_FILE=/path/to/env make run_opencode`.
+
+`make run_claude` uses the same repo-local env file path.
+Override with `ENV_FILE=/path/to/env make run_claude PROJECT_DIR=$(pwd)`.
 
 ### Multiple aliases (work/personal)
 
@@ -45,9 +51,11 @@ Example:
 
 ```bash
 alias ocd='make -C PATH_TO_SWARMFORGE run_opencode PROJECT_DIR=$(pwd) DATA_DIR=$HOME/.local/share/opencode-work GITCONFIG_FILE=$HOME/.gitconfig-agent'
+alias ccd='make -C PATH_TO_SWARMFORGE run_claude PROJECT_DIR=$(pwd) CLAUDE_DATA_DIR=$HOME/.local/share/claude-work GITCONFIG_FILE=$HOME/.gitconfig-agent'
 ```
 
 `GITCONFIG_FILE` is useful if you keep an agent-specific git config rather than using your default `~/.gitconfig`.
+For Claude Code, use separate `CLAUDE_DATA_DIR` roots to isolate work/personal logins and session state.
 
 ### Git repos and worktrees
 
@@ -63,6 +71,19 @@ Run an LLMs locally.
 ## OpenCode
 
 Test harness that has a standard set of tools exposed to LLM geared at editing code.
+
+## Claude Code
+
+`make run_claude` starts a Claude Code container with the same workspace and git-worktree mounting behavior as `make run_opencode`.
+Claude state is persisted by mounting `$(CLAUDE_DATA_DIR)/home` to `/home/opencode`, which keeps account/session files such as `~/.claude/` and `~/.claude.json`.
+
+It also mounts shared Swarmforge assets so both runtimes can access common resources:
+
+- `opencode/config/skills/` -> `/home/opencode/.swarmforge/skills`
+- `opencode/config/command/` -> `/home/opencode/.swarmforge/command`
+
+Those paths are exported in-container as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
+When launching Claude Code, the container entrypoint links these into `~/.claude/skills/` and `~/.claude/commands/` (without overwriting existing user items), so Claude can discover them as native skills/commands.
 
 ## Commands
 
