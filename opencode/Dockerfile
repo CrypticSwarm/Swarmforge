@@ -53,6 +53,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 COPY --from=python-builder /opt/python /opt/python
 
 RUN set -eux; \
+    export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         build-essential \
@@ -76,7 +77,8 @@ RUN set -eux; \
         pkg-config \
         ripgrep \
         tar \
-        tini; \
+        tini \
+        tzdata; \
     curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
     npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps chromium; \

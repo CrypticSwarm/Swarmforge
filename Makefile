@@ -36,6 +36,8 @@ TEST_ENABLE_JUDGE ?=
 TEST_TIMEOUT_S ?= 600
 # Allows overriding base debian image tag
 DEBIAN_TAG   ?= trixie-slim
+# Default timezone passed at runtime (override with TIMEZONE=Region/City)
+TIMEZONE     ?= Etc/UTC
 
 # Ensure inner UID and GID are mapped correctly to avoid permission issues
 UID          := $(shell id -u)
@@ -134,6 +136,7 @@ define run_agent_container
 	  --network "$(NETWORK)" \
 	  -e OPENCODE_UID="$(UID)" \
 	  -e OPENCODE_GID="$(GID)" \
+	  -e TZ="$(TIMEZONE)" \
 	  $(2) \
 	  -v "$$workspace_dir":/workspace \
 	  $${workspace_path_mount[@]+"$${workspace_path_mount[@]}"} \

@@ -34,6 +34,7 @@ Build targets pass `AGENT=opencode|claude` so only the requested agent install s
 - OpenCode: `oc`
 - Claude Code: `make run_claude PROJECT_DIR=$(pwd)`
 - Pass OpenCode overrides either as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
+- Override container timezone per run (affects git commit timestamps): `oc TIMEZONE=America/New_York` or `make run_claude PROJECT_DIR=$(pwd) TIMEZONE=America/New_York`.
 
 ### Repo-local env vars
 
@@ -42,6 +43,8 @@ Override with `ENV_FILE=/path/to/env make run_opencode`.
 
 `make run_claude` uses the same repo-local env file path.
 Override with `ENV_FILE=/path/to/env make run_claude PROJECT_DIR=$(pwd)`.
+
+Both `make run_opencode` and `make run_claude` support `TIMEZONE=<Region/City>` (default: `Etc/UTC`) and pass it as `TZ` into the container.
 
 ### Multiple aliases (work/personal)
 

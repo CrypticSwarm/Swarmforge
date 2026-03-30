@@ -11,6 +11,21 @@ OPENCODE_HOME="/home/${OPENCODE_USER}"
 AGENT_BIN="${SWARMFORGE_AGENT_BIN:-opencode}"
 AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 
+configure_timezone() {
+  timezone="${TZ:-}"
+
+  [ -n "${timezone}" ] || return 0
+
+  zoneinfo_path="/usr/share/zoneinfo/${timezone}"
+  if [ ! -f "${zoneinfo_path}" ]; then
+    printf '%s\n' "Warning: TZ '${timezone}' not found under /usr/share/zoneinfo; keeping image default timezone" >&2
+    return 0
+  fi
+
+  ln -snf "${zoneinfo_path}" /etc/localtime
+  printf '%s\n' "${timezone}" >/etc/timezone
+}
+
 link_shared_claude_skills() {
   skills_src="${SWARMFORGE_SKILLS_DIR:-}"
   [ -n "${skills_src}" ] || return 0
@@ -65,6 +80,8 @@ fi
 if [ "$(id -u)" -ne 0 ]; then
   exec "${AGENT_BIN_PATH}" "$@"
 fi
+
+configure_timezone
 
 # Ensure group exists for the target GID
 if ! getent group "${OPENCODE_GID}" >/dev/null 2>&1; then
