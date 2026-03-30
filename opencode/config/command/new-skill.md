@@ -1,7 +1,6 @@
 ---
 description: Create a new skill package (global or local)
 agent: build
-model: openai/gpt-5.2
 ---
 Activate the skill-writer skill before taking any other action.
 

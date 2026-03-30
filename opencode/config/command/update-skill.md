@@ -1,7 +1,6 @@
 ---
 description: Update an existing skill package
 agent: build
-model: openai/gpt-5.2
 ---
 Activate the skill-writer skill before taking any other action.
 

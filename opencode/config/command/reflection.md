@@ -1,7 +1,6 @@
 ---
 description: Reflect on the current conversation to improve skills
 agent: build
-model: openai/gpt-5.2
 ---
 Activate the skill-reflection skill before taking any other action.
 

@@ -1,7 +1,6 @@
 ---
 description: Create or update a slash command prompt
 agent: build
-model: openai/gpt-5.2
 ---
 Activate the general-software-engineering skill before taking any other action.
 
