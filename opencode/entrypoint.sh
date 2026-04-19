@@ -71,6 +71,52 @@ link_shared_claude_commands() {
   done
 }
 
+merge_config_layer() {
+  src_dir="${1}"
+  dst_dir="${2}"
+
+  [ -n "${src_dir}" ] || return 0
+  [ -d "${src_dir}" ] || return 0
+
+  # Use a tar stream to avoid bind-mount same-file copy errors.
+  (
+    cd "${src_dir}" && tar -cf - .
+  ) | (
+    cd "${dst_dir}" && tar -xf -
+  )
+}
+
+prepare_layered_config() {
+  config_dst="${1}"
+  user_config_src="${2:-}"
+  org_config_src="${3:-}"
+  repo_config_src="${4:-}"
+  reset_config="${5:-0}"
+
+  if [ "${reset_config}" = "1" ]; then
+    rm -rf "${config_dst}"
+  fi
+
+  mkdir -p "${config_dst}"
+
+  # Merge order (lowest to highest precedence): user -> org -> repo
+  merge_config_layer "${user_config_src}" "${config_dst}"
+  merge_config_layer "${org_config_src}" "${config_dst}"
+  merge_config_layer "${repo_config_src}" "${config_dst}"
+}
+
+prepare_agent_config() {
+  config_dest="${SWARMFORGE_CONFIG_DEST:-}"
+  [ -n "${config_dest}" ] || return 0
+
+  prepare_layered_config \
+    "${config_dest}" \
+    "${SWARMFORGE_CONFIG_USER_DIR:-}" \
+    "${SWARMFORGE_CONFIG_ORG_DIR:-}" \
+    "${SWARMFORGE_CONFIG_REPO_DIR:-}" \
+    "${SWARMFORGE_CONFIG_RESET:-0}"
+}
+
 if [ ! -x "${AGENT_BIN_PATH}" ]; then
   printf '%s\n' "Agent binary not found: ${AGENT_BIN_PATH}" >&2
   exit 127
@@ -96,6 +142,8 @@ if ! getent passwd "${OPENCODE_UID}" >/dev/null 2>&1; then
     --home "${OPENCODE_HOME}" \
     "${OPENCODE_USER}" >/dev/null 2>&1 || true
 fi
+
+prepare_agent_config
 
 chown -R "${OPENCODE_UID}:${OPENCODE_GID}" "${OPENCODE_HOME}" 2>/dev/null || true
 chown -R "${OPENCODE_UID}:${OPENCODE_GID}" /workspace 2>/dev/null || true

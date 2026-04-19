@@ -51,23 +51,41 @@ PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
 OPENCODE_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode/config
 SHARED_SKILLS_DIR ?= $(OPENCODE_CONFIG_DIR)/skills
 SHARED_COMMAND_DIR ?= $(OPENCODE_CONFIG_DIR)/command
+SWARMFORGE_ORG_CONFIG_ROOT ?=
 
 PROFILE_FLAG :=
 ifneq ($(strip $(PROFILE)),)
 PROFILE_FLAG := --profile $(PROFILE)
 endif
 
-OPENCODE_RUN_MOUNTS := \
-	-v "$(OPENCODE_CONFIG_DIR)":/home/opencode/.config/opencode \
+SWARMFORGE_LAYER_MOUNTS = \
+	-v "$(SWARMFORGE_USER_CONFIG_DIR)":/tmp/swarmforge-config/user:ro \
+	$(if $(and $(strip $(SWARMFORGE_ORG_CONFIG_DIR)),$(wildcard $(SWARMFORGE_ORG_CONFIG_DIR))),-v "$(SWARMFORGE_ORG_CONFIG_DIR)":/tmp/swarmforge-config/org:ro,) \
+	$(if $(and $(strip $(SWARMFORGE_REPO_CONFIG_DIR)),$(wildcard $(SWARMFORGE_REPO_CONFIG_DIR))),-v "$(SWARMFORGE_REPO_CONFIG_DIR)":/tmp/swarmforge-config/repo:ro,) \
+
+SWARMFORGE_LAYER_ENV = \
+	-e SWARMFORGE_CONFIG_USER_DIR=/tmp/swarmforge-config/user \
+	-e SWARMFORGE_CONFIG_ORG_DIR=/tmp/swarmforge-config/org \
+	-e SWARMFORGE_CONFIG_REPO_DIR=/tmp/swarmforge-config/repo \
+	-e SWARMFORGE_CONFIG_DEST=$(SWARMFORGE_CONFIG_DEST) \
+	-e SWARMFORGE_CONFIG_RESET=$(SWARMFORGE_CONFIG_RESET)
+
+OPENCODE_RUN_MOUNTS = \
+	$(SWARMFORGE_LAYER_MOUNTS) \
 	-v "$(DATA_DIR)":/home/opencode/.local/share/opencode
 
-CLAUDE_RUN_ENV := \
+OPENCODE_RUN_ENV = \
+	$(SWARMFORGE_LAYER_ENV)
+
+CLAUDE_RUN_ENV = \
 	-e SWARMFORGE_AGENT_BIN=claude \
+	$(SWARMFORGE_LAYER_ENV) \
 	-e SWARMFORGE_SKILLS_DIR=/home/opencode/.swarmforge/skills \
 	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command
 
-CLAUDE_RUN_MOUNTS := \
+CLAUDE_RUN_MOUNTS = \
 	-v "$(CLAUDE_HOME_DIR)":/home/opencode \
+	$(SWARMFORGE_LAYER_MOUNTS) \
 	-v "$(SHARED_SKILLS_DIR)":/home/opencode/.swarmforge/skills:ro \
 	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro
 
@@ -180,16 +198,28 @@ build_claude:
 update_claude:
 	$(MAKE) build_claude CLAUDE_INSTALL_BUST=$(shell date +%s)
 
+run_opencode: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.config/opencode
+run_opencode: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode,)
+run_opencode: SWARMFORGE_REPO_CONFIG_DIR ?= $(OPENCODE_CONFIG_DIR)
+run_opencode: SWARMFORGE_CONFIG_DEST ?= /home/opencode/.config/opencode
+run_opencode: SWARMFORGE_CONFIG_RESET ?= 1
 run_opencode: opencode_network
-	@mkdir -p "$(OPENCODE_CONFIG_DIR)"
+	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
+	@mkdir -p "$(SWARMFORGE_REPO_CONFIG_DIR)"
 	@mkdir -p "$(DATA_DIR)"
-	$(call run_agent_container,$(OPENCODE_CTR),,$(OPENCODE_RUN_MOUNTS),$(OPENCODE_IMG),$(PROFILE_FLAG) $(OPENCODE_ARGS),)
+	$(call run_agent_container,$(OPENCODE_CTR),$(OPENCODE_RUN_ENV),$(OPENCODE_RUN_MOUNTS),$(OPENCODE_IMG),$(PROFILE_FLAG) $(OPENCODE_ARGS),)
 
 stop_opencode:
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
 
+run_claude: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.claude
+run_claude: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude,)
+run_claude: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode/config/claude
+run_claude: SWARMFORGE_CONFIG_DEST ?= /home/opencode/.claude
+run_claude: SWARMFORGE_CONFIG_RESET ?= 0
 run_claude: opencode_network
 	@mkdir -p "$(CLAUDE_HOME_DIR)"
+	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/skills"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/command"

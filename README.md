@@ -67,6 +67,17 @@ alias ccd='make -C PATH_TO_SWARMFORGE run_claude PROJECT_DIR=$(pwd) CLAUDE_DATA_
 `GITCONFIG_FILE` is useful if you keep an agent-specific git config rather than using your default `~/.gitconfig`.
 For Claude Code, use separate `CLAUDE_DATA_DIR` roots to isolate work/personal logins and session state.
 `CLAUDE_HOME_DIR` defaults to `$(CLAUDE_DATA_DIR)/home`, and can be overridden directly if needed.
+Config layering is controlled with shared variables: `SWARMFORGE_USER_CONFIG_DIR`, `SWARMFORGE_ORG_CONFIG_DIR`, and `SWARMFORGE_REPO_CONFIG_DIR`.
+If your org config repo has both agent layouts, you can set `SWARMFORGE_ORG_CONFIG_ROOT=/path/to/org-repo` and defaults resolve to:
+- OpenCode: `$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode`
+- Claude: `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude`
+
+Important: `SWARMFORGE_REPO_CONFIG_DIR` refers to the Swarmforge checkout (the harness repo), not the active working project mounted at `/workspace`.
+By default this means:
+- `run_opencode` uses `$(SWARMFORGE_DIR)/opencode/config`
+- `run_claude` uses `$(SWARMFORGE_DIR)/opencode/config/claude` (if present)
+
+Project-local config in the working repo is still handled by the agent tools themselves (for example `.opencode/`), independent of this Swarmforge layering.
 
 ### Git repos and worktrees
 
@@ -103,6 +114,13 @@ It also mounts shared Swarmforge assets so both runtimes can access common resou
 Those paths are exported in-container as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
 When launching Claude Code, the container entrypoint links these into `~/.claude/skills/` and `~/.claude/commands/` (without overwriting existing user items), so Claude can discover them as native skills/commands.
 
+Claude config layering uses three sources (lowest to highest precedence):
+- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude` for `run_claude`)
+- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude` when `SWARMFORGE_ORG_CONFIG_ROOT` is set)
+- `SWARMFORGE_REPO_CONFIG_DIR` (default `opencode/config/claude` for `run_claude`, if present)
+
+At startup these are merged into `~/.claude` inside the container, so personal defaults can be overlaid with org settings and repo-local overrides.
+
 ## Commands
 
 Slash commands are stored under `opencode/config/command/` (and optionally `.opencode/command/` for repo-local commands).
@@ -120,8 +138,13 @@ OpenCode runs these shell commands and injects their output into the prompt cont
 
 Skills are stored under `opencode/config/skills/`.
 
-When you run OpenCode via `make run_opencode`, the entire `opencode/config/` directory is mounted into the container at `/home/opencode/.config/opencode` (see `Makefile`).
-This means skills in `opencode/config/skills/` are exposed inside the container by default.
+When you run OpenCode via `make run_opencode`, config is layered from three sources (lowest to highest precedence):
+- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.config/opencode` for `run_opencode`)
+- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode` when `SWARMFORGE_ORG_CONFIG_ROOT` is set)
+- `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/config` for `run_opencode`)
+
+At container startup these layers are merged into `/home/opencode/.config/opencode`, so Swarmforge-layer files can override org files, and org files can override personal defaults.
+This keeps skills in `opencode/config/skills/` exposed by default while still allowing personal and org-specific overlays.
 
 OpenCode auto-discovers skills from that directory and uses only the YAML frontmatter (`name` + `description`) for discovery.
 The full `SKILL.md` body is loaded on-demand when a skill is invoked, which helps keep the default context small.
