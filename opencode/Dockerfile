@@ -109,12 +109,17 @@ FROM runtime-base AS agent-runtime
 
 ARG AGENT=opencode
 ARG OPENCODE_INSTALL_BUST=0
+ARG OPENCODE_VERSION=
 ARG CLAUDE_INSTALL_BUST=0
 RUN set -eux; \
   case "${AGENT}" in \
     opencode) \
       echo "Installing OpenCode (cache bust: ${OPENCODE_INSTALL_BUST})"; \
-      curl -fsSL https://opencode.ai/install | bash; \
+      if [ -n "${OPENCODE_VERSION}" ]; then \
+        curl -fsSL https://opencode.ai/install | bash -s -- --version "${OPENCODE_VERSION}"; \
+      else \
+        curl -fsSL https://opencode.ai/install | bash; \
+      fi; \
       install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode; \
       ;; \
     claude) \

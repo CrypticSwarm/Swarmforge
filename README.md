@@ -26,6 +26,13 @@ make build_opencode
 make build_claude
 ```
 
+To pin OpenCode to a specific release instead of latest:
+
+```bash
+make build_opencode OPENCODE_VERSION=1.4.14
+make update_opencode OPENCODE_VERSION=1.4.14
+```
+
 Both images share the same Debian base and toolchain (Node.js + Python; see `opencode/Dockerfile` for configured versions).
 Build targets pass `AGENT=opencode|claude` so only the requested agent install step runs (works with both legacy Docker builder and BuildKit).
 

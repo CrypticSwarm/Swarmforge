@@ -25,6 +25,8 @@ ENV_FILE ?= $(PROJECT_DIR)/.swarmforge/env
 
 # Set this to a changing value to refresh the `curl https://opencode.ai/install` layer.
 OPENCODE_INSTALL_BUST ?= 0
+# Optional OpenCode version pin (example: 1.4.14)
+OPENCODE_VERSION ?=
 # Set this to a changing value to refresh the `curl https://claude.ai/install.sh` layer.
 CLAUDE_INSTALL_BUST ?= 0
 
@@ -157,6 +159,7 @@ build_opencode:
 	docker build \
 	  --target opencode-runtime \
 	  --build-arg AGENT=opencode \
+	  --build-arg OPENCODE_VERSION=$(OPENCODE_VERSION) \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
 	  --build-arg OPENCODE_INSTALL_BUST=$(OPENCODE_INSTALL_BUST) \
 	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)/opencode"
