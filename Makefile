@@ -264,6 +264,15 @@ run_gpt-oss-120b:
 run_devstral2_small:
 	docker exec -it ollama ollama run devstral-small-2:24b
 
+run_qwen_3-5-27b:
+	docker exec -it ollama ollama run qwen3.5:27b
+
+run_qwen_3-5-35b:
+	docker exec -it ollama ollama run qwen3.5:35b
+
+run_gemma4_26b:
+	docker exec -it ollama ollama run gemma4:26b
+
 test: opencode_network
 	@if [ -z "$(strip $(MODEL))" ]; then \
 		printf '%s\n' "MODEL is required (example: make test MODEL=ollama/llama3.1)"; \
