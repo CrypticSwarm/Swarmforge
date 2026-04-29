@@ -112,7 +112,15 @@ It also mounts shared Swarmforge assets so both runtimes can access common resou
 - `opencode/config/command/` -> `/home/opencode/.swarmforge/command`
 
 Those paths are exported in-container as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
-When launching Claude Code, the container entrypoint links these into `~/.claude/skills/` and `~/.claude/commands/` (without overwriting existing user items), so Claude can discover them as native skills/commands.
+When launching Claude Code, the container entrypoint copies these into `~/.claude/skills/` and `~/.claude/commands/` so Claude can discover them as native skills/commands.
+Top-level entries are replaced wholesale on each run (so stale symlinks left by older entrypoint logic and outdated copies get refreshed), and the layered config merge skips `skills/` and `commands/` for the Claude agent to avoid colliding with this step.
+
+You can ship project-local skills/commands in your workspace and have them overlay the harness defaults. The entrypoint looks for them in this preference order:
+
+- skills: `<workspace>/.agents/skills/` (preferred), falling back to `<workspace>/.opencode/skills/`
+- commands: `<workspace>/.agents/commands/` (preferred), falling back to `<workspace>/.opencode/command/` or `<workspace>/.opencode/commands/`
+
+Workspace entries override harness entries with the same name.
 
 Claude config layering uses three sources (lowest to highest precedence):
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude` for `run_claude`)
@@ -145,6 +153,25 @@ When you run OpenCode via `make run_opencode`, config is layered from three sour
 
 At container startup these layers are merged into `/home/opencode/.config/opencode`, so Swarmforge-layer files can override org files, and org files can override personal defaults.
 This keeps skills in `opencode/config/skills/` exposed by default while still allowing personal and org-specific overlays.
+
+For `opencode.json`, layers are merged by key (not plain file overwrite), which lets org-level MCP servers in `.opencode/opencode.json` remain available even when the Swarmforge repo layer also defines `opencode.json`.
+
+You can also define MCP servers directly in a project-local `.opencode/opencode.json` file. Example:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "org-server": {
+      "type": "remote",
+      "url": "https://mcp.example.com",
+      "enabled": true
+    }
+  }
+}
+```
+
+That is often the cleanest place for OpenCode MCP definitions when you want them attached to a specific repo.
 
 OpenCode auto-discovers skills from that directory and uses only the YAML frontmatter (`name` + `description`) for discovery.
 The full `SKILL.md` body is loaded on-demand when a skill is invoked, which helps keep the default context small.

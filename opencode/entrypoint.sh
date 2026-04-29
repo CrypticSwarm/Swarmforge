@@ -26,48 +26,69 @@ configure_timezone() {
   printf '%s\n' "${timezone}" >/etc/timezone
 }
 
-link_shared_claude_skills() {
-  skills_src="${SWARMFORGE_SKILLS_DIR:-}"
-  [ -n "${skills_src}" ] || return 0
-  [ -d "${skills_src}" ] || return 0
+# Copy each top-level entry from src_dir into dst_dir, replacing whatever is
+# at the destination (file, directory, or stale symlink). Top-level entries
+# are replaced wholesale; this is intentionally not a deep merge so that
+# stale per-entry symlinks left behind by earlier versions of this entrypoint
+# get cleaned up on the next run.
+copy_dir_entries() {
+  src_dir="${1}"
+  dst_dir="${2}"
 
-  skills_dst="${OPENCODE_HOME}/.claude/skills"
-  mkdir -p "${skills_dst}"
+  [ -n "${src_dir}" ] || return 0
+  [ -d "${src_dir}" ] || return 0
 
-  for skill_dir in "${skills_src}"/*; do
-    [ -d "${skill_dir}" ] || continue
-    [ -f "${skill_dir}/SKILL.md" ] || continue
+  mkdir -p "${dst_dir}"
 
-    skill_name="$(basename "${skill_dir}")"
-    skill_target="${skills_dst}/${skill_name}"
+  for entry in "${src_dir}"/*; do
+    # Guard against a literal pattern when the directory is empty.
+    [ -e "${entry}" ] || [ -L "${entry}" ] || continue
 
-    if [ -e "${skill_target}" ] || [ -L "${skill_target}" ]; then
-      continue
-    fi
+    name="$(basename "${entry}")"
+    target="${dst_dir}/${name}"
 
-    ln -s "${skill_dir}" "${skill_target}" || true
+    rm -rf "${target}"
+    cp -a "${entry}" "${target}"
   done
 }
 
-link_shared_claude_commands() {
-  commands_src="${SWARMFORGE_COMMAND_DIR:-}"
-  [ -n "${commands_src}" ] || return 0
-  [ -d "${commands_src}" ] || return 0
+# Populate ~/.claude/skills and ~/.claude/commands for the Claude agent.
+#
+# Sources are applied lowest- to highest-precedence:
+#   1. Harness shared assets (mounted via SWARMFORGE_SKILLS_DIR /
+#      SWARMFORGE_COMMAND_DIR).
+#   2. Workspace overlay: <workspace>/.agents/{skills,commands} preferred;
+#      falls back to <workspace>/.opencode/{skills,command}.
+#
+# Entries are copied (not symlinked) so subsequent runs against a persistent
+# CLAUDE_HOME_DIR can replace them idempotently without colliding with the
+# layered tar merge.
+copy_claude_shared_assets() {
+  workspace_dir="${1:-/workspace}"
 
+  skills_dst="${OPENCODE_HOME}/.claude/skills"
   commands_dst="${OPENCODE_HOME}/.claude/commands"
-  mkdir -p "${commands_dst}"
 
-  for command_file in "${commands_src}"/*.md; do
-    [ -f "${command_file}" ] || continue
+  copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
+  copy_dir_entries "${SWARMFORGE_COMMAND_DIR:-}" "${commands_dst}"
 
-    command_name="$(basename "${command_file}")"
-    command_target="${commands_dst}/${command_name}"
-
-    if [ -e "${command_target}" ] || [ -L "${command_target}" ]; then
-      continue
+  for candidate in \
+    "${workspace_dir}/.agents/skills" \
+    "${workspace_dir}/.opencode/skills"; do
+    if [ -d "${candidate}" ]; then
+      copy_dir_entries "${candidate}" "${skills_dst}"
+      break
     fi
+  done
 
-    ln -s "${command_file}" "${command_target}" || true
+  for candidate in \
+    "${workspace_dir}/.agents/commands" \
+    "${workspace_dir}/.opencode/command" \
+    "${workspace_dir}/.opencode/commands"; do
+    if [ -d "${candidate}" ]; then
+      copy_dir_entries "${candidate}" "${commands_dst}"
+      break
+    fi
   done
 }
 
@@ -78,12 +99,73 @@ merge_config_layer() {
   [ -n "${src_dir}" ] || return 0
   [ -d "${src_dir}" ] || return 0
 
+  # Skip when src and dst resolve to the same underlying directory (for
+  # example when CLAUDE_HOME_DIR=$HOME makes both layer paths bind-mounts of
+  # the host's ~/.claude). Otherwise tar would try to extract entries on top
+  # of themselves and abort.
+  src_id="$(stat -c '%d:%i' "${src_dir}" 2>/dev/null || true)"
+  dst_id="$(stat -c '%d:%i' "${dst_dir}" 2>/dev/null || true)"
+  if [ -n "${src_id}" ] && [ "${src_id}" = "${dst_id}" ]; then
+    return 0
+  fi
+
+  # For Claude, skills/ and commands/ are managed by copy_claude_shared_assets
+  # and may already exist (as directories or as stale symlinks left over from
+  # older entrypoint logic) at the destination. Excluding them here avoids
+  # `tar: ./skills: Cannot open: File exists` when the layered merge runs on
+  # a persistent CLAUDE_HOME_DIR that already contains those entries.
+  exclude_args="--exclude=./opencode.json"
+  if [ "${AGENT_BIN:-}" = "claude" ]; then
+    exclude_args="${exclude_args} --exclude=./skills --exclude=./commands"
+  fi
+
   # Use a tar stream to avoid bind-mount same-file copy errors.
+  # shellcheck disable=SC2086 # exclude_args intentionally word-split
   (
-    cd "${src_dir}" && tar -cf - .
+    cd "${src_dir}" && tar ${exclude_args} -cf - .
   ) | (
     cd "${dst_dir}" && tar -xf -
   )
+}
+
+merge_opencode_json() {
+  src_file="${1}"
+  dst_file="${2}"
+
+  [ -n "${src_file}" ] || return 0
+  [ -f "${src_file}" ] || return 0
+
+  if [ ! -f "${dst_file}" ]; then
+    cp -f "${src_file}" "${dst_file}"
+    return 0
+  fi
+
+  python3 - "${dst_file}" "${src_file}" <<'PY'
+import json
+import sys
+
+dst_path, src_path = sys.argv[1], sys.argv[2]
+
+def merge(base, override):
+    if isinstance(base, dict) and isinstance(override, dict):
+        out = dict(base)
+        for key, value in override.items():
+            if key in out:
+                out[key] = merge(out[key], value)
+            else:
+                out[key] = value
+        return out
+    return override
+
+with open(dst_path, "r", encoding="utf-8") as f:
+    dst = json.load(f)
+with open(src_path, "r", encoding="utf-8") as f:
+    src = json.load(f)
+
+with open(dst_path, "w", encoding="utf-8") as f:
+    json.dump(merge(dst, src), f, indent=2)
+    f.write("\n")
+PY
 }
 
 prepare_layered_config() {
@@ -101,8 +183,11 @@ prepare_layered_config() {
 
   # Merge order (lowest to highest precedence): user -> org -> repo
   merge_config_layer "${user_config_src}" "${config_dst}"
+  merge_opencode_json "${user_config_src}/opencode.json" "${config_dst}/opencode.json"
   merge_config_layer "${org_config_src}" "${config_dst}"
+  merge_opencode_json "${org_config_src}/opencode.json" "${config_dst}/opencode.json"
   merge_config_layer "${repo_config_src}" "${config_dst}"
+  merge_opencode_json "${repo_config_src}/opencode.json" "${config_dst}/opencode.json"
 }
 
 prepare_agent_config() {
@@ -149,8 +234,7 @@ chown -R "${OPENCODE_UID}:${OPENCODE_GID}" "${OPENCODE_HOME}" 2>/dev/null || tru
 chown -R "${OPENCODE_UID}:${OPENCODE_GID}" /workspace 2>/dev/null || true
 
 if [ "${AGENT_BIN}" = "claude" ]; then
-  link_shared_claude_skills
-  link_shared_claude_commands
+  copy_claude_shared_assets
 
   # Fix git worktree path resolution for bare-repo + worktree setups.
   #
