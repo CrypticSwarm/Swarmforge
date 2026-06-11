@@ -1,0 +1,16 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  translate-agents:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run agent translator tests
+        run: python3 scripts/test_translate_agents.py
+      - name: Check entrypoint syntax
+        run: sh -n opencode/entrypoint.sh
