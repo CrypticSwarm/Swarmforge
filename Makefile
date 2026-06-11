@@ -85,8 +85,16 @@ CLAUDE_RUN_ENV = \
 	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command \
 	-e SWARMFORGE_AGENTS_DIR=/home/opencode/.swarmforge/agents
 
+# skills/, commands/, and agents/ under ~/.claude are container-private tmpfs
+# masks over the shared persistent home. The entrypoint repopulates them from
+# this repo's sources on every run, so per-repo assets never accumulate in
+# CLAUDE_HOME_DIR or leak into other repos' sessions. skills mounts with exec
+# because skill packages may ship executable scripts.
 CLAUDE_RUN_MOUNTS = \
 	-v "$(CLAUDE_HOME_DIR)":/home/opencode \
+	--tmpfs /home/opencode/.claude/skills:exec \
+	--tmpfs /home/opencode/.claude/commands \
+	--tmpfs /home/opencode/.claude/agents \
 	$(SWARMFORGE_LAYER_MOUNTS) \
 	-v "$(SHARED_SKILLS_DIR)":/home/opencode/.swarmforge/skills:ro \
 	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro \
@@ -227,6 +235,9 @@ run_claude: opencode_network
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/skills"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/command"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/agents"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/skills"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/commands"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/agents"
 	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS),repo-slug)
 
 stop_claude:
