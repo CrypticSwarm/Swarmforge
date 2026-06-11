@@ -117,12 +117,8 @@ In-container `~/.claude/skills/`, `~/.claude/commands/`, and `~/.claude/agents/`
 All Swarmforge layers carry these assets in Swarmforge formats — skills and commands are portable and copied as-is, while agents use the unified format and are translated. Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude itself, outside the Swarmforge pipeline.
 This keeps per-repo skills, commands, and agents from accumulating in the persistent home and leaking into other repos' sessions; the layered config merge skips those three directories for the Claude agent for the same reason.
 
-You can ship project-local skills/commands in your workspace and have them overlay the harness defaults. The entrypoint looks for them in this preference order:
-
-- skills: `<workspace>/.agents/skills/` (preferred), falling back to `<workspace>/.opencode/skills/`
-- commands: `<workspace>/.agents/commands/` (preferred), falling back to `<workspace>/.opencode/command/` or `<workspace>/.opencode/commands/`
-
-Workspace entries override harness entries with the same name.
+You can ship project-local skills/commands in your workspace and have them overlay the harness defaults: the entrypoint reads `<workspace>/.agents/skills/` and `<workspace>/.agents/commands/`, and workspace entries override harness entries with the same name.
+Harness-native repo-local dirs (such as `<workspace>/.opencode/`) belong to their own harness and are not consumed for Claude.
 
 Claude config layering uses three sources (lowest to highest precedence):
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude` for `run_claude`)

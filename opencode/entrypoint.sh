@@ -59,8 +59,10 @@ copy_dir_entries() {
 #      across harnesses, so copying is the whole translation).
 #   2. Harness shared assets (mounted via SWARMFORGE_SKILLS_DIR /
 #      SWARMFORGE_COMMAND_DIR).
-#   3. Workspace overlay: <workspace>/.agents/{skills,commands} preferred;
-#      falls back to <workspace>/.opencode/{skills,command}.
+#   3. Workspace overlay: <workspace>/.agents/{skills,commands}.
+#
+# Harness-native repo-local dirs (such as <workspace>/.opencode) belong to
+# their own harness and are never consumed here.
 #
 # The destinations are container-private tmpfs mounts masking the shared
 # persistent home, so each container starts empty and sees only the layers
@@ -80,24 +82,8 @@ copy_claude_shared_assets() {
   copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
   copy_dir_entries "${SWARMFORGE_COMMAND_DIR:-}" "${commands_dst}"
 
-  for candidate in \
-    "${workspace_dir}/.agents/skills" \
-    "${workspace_dir}/.opencode/skills"; do
-    if [ -d "${candidate}" ]; then
-      copy_dir_entries "${candidate}" "${skills_dst}"
-      break
-    fi
-  done
-
-  for candidate in \
-    "${workspace_dir}/.agents/commands" \
-    "${workspace_dir}/.opencode/command" \
-    "${workspace_dir}/.opencode/commands"; do
-    if [ -d "${candidate}" ]; then
-      copy_dir_entries "${candidate}" "${commands_dst}"
-      break
-    fi
-  done
+  copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
+  copy_dir_entries "${workspace_dir}/.agents/commands" "${commands_dst}"
 }
 
 # Translate unified Swarmforge agent definitions into the running harness's
