@@ -92,6 +92,49 @@ copy_claude_shared_assets() {
   done
 }
 
+# Translate unified Swarmforge agent definitions into the running harness's
+# native subagent format.
+#
+# Unified definitions are markdown files whose YAML frontmatter is a superset
+# of the OpenCode agent schema (description, mode, model, temperature, tools)
+# plus optional per-harness override blocks (claude:, opencode:). One shared
+# translator (translate_agents.py) emits each harness's dialect, so adding a
+# new harness means adding an emitter there plus a case arm here.
+#
+# Sources are applied lowest- to highest-precedence (later files win by name):
+#   1. Claude: harness shared agents (mounted via SWARMFORGE_AGENTS_DIR).
+#      OpenCode: the layered config merge already landed unified agents at
+#      <config dest>/agents, so they are translated in place.
+#   2. Workspace overlay: <workspace>/.agents/agents (for Claude, falling
+#      back to <workspace>/.opencode/agents; OpenCode reads that natively).
+prepare_unified_agents() {
+  workspace_dir="${1:-/workspace}"
+  translator="/usr/local/lib/swarmforge/translate_agents.py"
+
+  [ -f "${translator}" ] || return 0
+
+  overlay_src="${workspace_dir}/.agents/agents"
+  case "${AGENT_BIN}" in
+    claude)
+      agents_dst="${OPENCODE_HOME}/.claude/agents"
+      shared_src="${SWARMFORGE_AGENTS_DIR:-}"
+      if [ ! -d "${overlay_src}" ]; then
+        overlay_src="${workspace_dir}/.opencode/agents"
+      fi
+      ;;
+    opencode)
+      agents_dst="${SWARMFORGE_CONFIG_DEST:-${OPENCODE_HOME}/.config/opencode}/agents"
+      shared_src="${agents_dst}"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  python3 "${translator}" "${AGENT_BIN}" "${agents_dst}" "${shared_src}" "${overlay_src}" \
+    || printf '%s\n' "Warning: unified agent translation failed for ${AGENT_BIN}; continuing" >&2
+}
+
 merge_config_layer() {
   src_dir="${1}"
   dst_dir="${2}"
@@ -229,6 +272,7 @@ if ! getent passwd "${OPENCODE_UID}" >/dev/null 2>&1; then
 fi
 
 prepare_agent_config
+prepare_unified_agents
 
 chown -R "${OPENCODE_UID}:${OPENCODE_GID}" "${OPENCODE_HOME}" 2>/dev/null || true
 chown -R "${OPENCODE_UID}:${OPENCODE_GID}" /workspace 2>/dev/null || true

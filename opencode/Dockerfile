@@ -91,6 +91,7 @@ RUN set -eux; \
 WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
+COPY translate_agents.py /usr/local/lib/swarmforge/translate_agents.py
 RUN chmod +x /usr/local/bin/opencode-entrypoint.sh
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/opencode-entrypoint.sh"]

@@ -129,6 +129,47 @@ Claude config layering uses three sources (lowest to highest precedence):
 
 At startup these are merged into `~/.claude` inside the container, so personal defaults can be overlaid with org settings and repo-local overrides.
 
+## Agents
+
+Subagent definitions are stored under `opencode/config/agents/` in a single unified format and rewritten to each harness's native dialect by the container entrypoint (`opencode/translate_agents.py`), the same way `.claude` assets are populated for Claude Code.
+
+A unified agent is a markdown file whose body is the agent's system prompt and whose YAML frontmatter is a superset of the OpenCode agent schema. The filename is the agent's identity (`reviewer.md` -> agent `reviewer`):
+
+```markdown
+---
+description: Reviews code and suggests improvements.
+mode: subagent
+temperature: 0.1
+model: anthropic/claude-sonnet-4-6
+tools:
+  write: false
+  edit: false
+  bash: false
+claude:
+  maxTurns: 12
+---
+
+You are the reviewer agent...
+```
+
+Field handling per harness:
+
+- `description` and the prompt body pass through everywhere.
+- `tools` uses OpenCode's lowercase tool ids mapped to booleans. For Claude Code, disabled tools become `disallowedTools` (`write: false` -> `disallowedTools: Write`); ids without a Claude equivalent are dropped.
+- `model` accepts a provider-qualified id (`anthropic/claude-sonnet-4-6`) which passes through to OpenCode and is stripped to the bare id for Claude Code (non-Anthropic providers are dropped), or a Claude alias (`sonnet`, `haiku`) which is Claude-only and dropped for OpenCode.
+- `mode`, `temperature`, and other OpenCode-only fields are dropped for Claude Code.
+- `claude:` / `opencode:` blocks merge verbatim into that harness's output frontmatter, for anything the unified fields don't cover.
+- `disable: true` passes through to OpenCode and skips emitting the agent for Claude Code.
+
+How the definitions reach each harness:
+
+- OpenCode: the layered config merge lands `agents/` in `~/.config/opencode/agents`, where the entrypoint translates the files in place (translation is idempotent, so already-native files are untouched).
+- Claude Code: `opencode/config/agents/` is mounted read-only at `/home/opencode/.swarmforge/agents` (exported as `SWARMFORGE_AGENTS_DIR`) and translated into `~/.claude/agents/`.
+
+Workspace overlays follow the skills/commands convention: `<workspace>/.agents/agents/` (for Claude Code, falling back to `<workspace>/.opencode/agents/`, which OpenCode already reads natively). Workspace entries override harness entries with the same filename.
+
+Run the translator's tests with `python3 scripts/test_translate_agents.py`.
+
 ## Commands
 
 Slash commands are stored under `opencode/config/command/` (and optionally `.opencode/command/` for repo-local commands).

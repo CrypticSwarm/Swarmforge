@@ -51,6 +51,7 @@ PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
 OPENCODE_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode/config
 SHARED_SKILLS_DIR ?= $(OPENCODE_CONFIG_DIR)/skills
 SHARED_COMMAND_DIR ?= $(OPENCODE_CONFIG_DIR)/command
+SHARED_AGENTS_DIR ?= $(OPENCODE_CONFIG_DIR)/agents
 SWARMFORGE_ORG_CONFIG_ROOT ?=
 
 PROFILE_FLAG :=
@@ -81,13 +82,15 @@ CLAUDE_RUN_ENV = \
 	-e SWARMFORGE_AGENT_BIN=claude \
 	$(SWARMFORGE_LAYER_ENV) \
 	-e SWARMFORGE_SKILLS_DIR=/home/opencode/.swarmforge/skills \
-	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command
+	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command \
+	-e SWARMFORGE_AGENTS_DIR=/home/opencode/.swarmforge/agents
 
 CLAUDE_RUN_MOUNTS = \
 	-v "$(CLAUDE_HOME_DIR)":/home/opencode \
 	$(SWARMFORGE_LAYER_MOUNTS) \
 	-v "$(SHARED_SKILLS_DIR)":/home/opencode/.swarmforge/skills:ro \
-	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro
+	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro \
+	-v "$(SHARED_AGENTS_DIR)":/home/opencode/.swarmforge/agents:ro
 
 .PHONY: opencode_network build_opencode update_opencode build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test
@@ -223,6 +226,7 @@ run_claude: opencode_network
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/skills"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/command"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/agents"
 	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS),repo-slug)
 
 stop_claude:
