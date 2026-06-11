@@ -95,46 +95,40 @@ copy_claude_shared_assets() {
 # translator (translate_agents.py) emits each harness's dialect, so adding a
 # new harness means adding an emitter there plus a case arm here.
 #
-# Every Swarmforge layer carries agents in the unified format; harness-native
-# dialects belong in the harness's own repo-local discovery (for example
-# <workspace>/.claude/agents or <workspace>/.opencode/agents), which the
-# harness reads directly without Swarmforge involvement.
+# Unified Swarmforge agent definitions live under <dir>/agents in the
+# harness-neutral .swarmforge asset layers, mounted read-only via
+# SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR, plus <workspace>/.swarmforge/agents.
+# One definition serves every harness; native agents/ directories inside
+# harness config dirs are never transported by Swarmforge -- those belong to
+# the harness's own discovery (for example <workspace>/.claude/agents or
+# <workspace>/.opencode/agents).
 #
-# Sources are applied lowest- to highest-precedence (later files win by name):
-#   1. Claude only: user then org config-layer agents/ (the layered merge
-#      intentionally skips agents/; ~/.claude/agents is a container-private
-#      tmpfs populated solely here).
-#   2. Claude: harness shared agents (mounted via SWARMFORGE_AGENTS_DIR).
-#      OpenCode: the layered config merge already landed every layer's
-#      unified agents at <config dest>/agents, so they are translated
-#      in place.
-#   3. Workspace overlay: <workspace>/.agents/agents.
+# Sources are identical for every harness and applied lowest- to
+# highest-precedence (later files win by name): user, org, repo asset
+# layers, then the workspace overlay. Only the destination differs.
 prepare_unified_agents() {
   workspace_dir="${1:-/workspace}"
   translator="/usr/local/lib/swarmforge/translate_agents.py"
 
   [ -f "${translator}" ] || return 0
 
-  overlay_src="${workspace_dir}/.agents/agents"
   case "${AGENT_BIN}" in
     claude)
       agents_dst="${OPENCODE_HOME}/.claude/agents"
-      set -- \
-        "${SWARMFORGE_CONFIG_USER_DIR:-}/agents" \
-        "${SWARMFORGE_CONFIG_ORG_DIR:-}/agents" \
-        "${SWARMFORGE_AGENTS_DIR:-}" \
-        "${overlay_src}"
       ;;
     opencode)
       agents_dst="${SWARMFORGE_CONFIG_DEST:-${OPENCODE_HOME}/.config/opencode}/agents"
-      set -- "${agents_dst}" "${overlay_src}"
       ;;
     *)
       return 0
       ;;
   esac
 
-  python3 "${translator}" "${AGENT_BIN}" "${agents_dst}" "$@" \
+  python3 "${translator}" "${AGENT_BIN}" "${agents_dst}" \
+    "${SWARMFORGE_ASSETS_USER_DIR:-}/agents" \
+    "${SWARMFORGE_ASSETS_ORG_DIR:-}/agents" \
+    "${SWARMFORGE_ASSETS_REPO_DIR:-}/agents" \
+    "${workspace_dir}/.swarmforge/agents" \
     || printf '%s\n' "Warning: unified agent translation failed for ${AGENT_BIN}; continuing" >&2
 }
 
@@ -155,13 +149,17 @@ merge_config_layer() {
     return 0
   fi
 
+  # .swarmforge/ asset dirs are read via their own mounts, never through the
+  # config merge, so transporting them here would only litter the dest (or,
+  # for Claude, accumulate junk in the persistent home).
+  #
   # For Claude, skills/, commands/, and agents/ are container-private tmpfs
   # masks over the shared persistent home, populated exclusively by
   # copy_claude_shared_assets and prepare_unified_agents from this repo's
   # sources. Excluding them from the layered merge keeps host-side strays
   # (for example user-layer agents accumulated by older entrypoint logic)
   # from reappearing in the container.
-  exclude_args="--exclude=./opencode.json"
+  exclude_args="--exclude=./opencode.json --exclude=./.swarmforge"
   if [ "${AGENT_BIN:-}" = "claude" ]; then
     exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./agents"
   fi

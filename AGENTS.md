@@ -15,7 +15,7 @@
 - Prefer `make` variables and targets over ad-hoc scripts so contributors can compose workflows via the existing Makefile.
 - Keep Dockerfiles Debian-based (see `DEBIAN_TAG`) and avoid pinning GPU driver versions inside the image; rely on host NVIDIA tooling instead.
 - When editing skills under `opencode/config/skills/`, ensure YAML frontmatter only contains `name` and `description`, and keep the detailed guidance in the corresponding `SKILL.md` body.
-- Subagent definitions under `opencode/config/agents/` use the unified agent format documented in `README.md` (`## Agents`); the entrypoint rewrites them per harness via `opencode/translate_agents.py`, so never hand-write harness-specific dialects there.
+- Subagent definitions under `opencode/config/.swarmforge/agents/` use the unified agent format documented in `README.md` (`## Agents`); the entrypoint rewrites them per harness via `opencode/translate_agents.py`, so never hand-write harness-specific dialects there.
 
 ## Build, Test, and Run
 - Build the OpenCode image with `make build_opencode` after changing anything under `opencode/`.

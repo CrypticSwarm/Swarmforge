@@ -114,7 +114,7 @@ It also mounts shared Swarmforge assets so both runtimes can access common resou
 Those paths are exported in-container as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
 When launching Claude Code, the container entrypoint copies these into `~/.claude/skills/` and `~/.claude/commands/` so Claude can discover them as native skills/commands.
 In-container `~/.claude/skills/`, `~/.claude/commands/`, and `~/.claude/agents/` are container-private tmpfs mounts that mask the shared persistent `CLAUDE_HOME_DIR`: each container starts them empty and the entrypoint repopulates them, lowest to highest precedence, from the user and org config layers, the harness shared assets, and the current workspace's overlays.
-All Swarmforge layers carry these assets in Swarmforge formats — skills and commands are portable and copied as-is, while agents use the unified format and are translated. Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude itself, outside the Swarmforge pipeline.
+All Swarmforge layers carry these assets in Swarmforge formats — skills and commands are portable and copied as-is, while agents use the unified format and are translated from the harness-neutral `.swarmforge/agents/` layers described under `## Agents`. Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude itself, outside the Swarmforge pipeline.
 This keeps per-repo skills, commands, and agents from accumulating in the persistent home and leaking into other repos' sessions; the layered config merge skips those three directories for the Claude agent for the same reason.
 
 You can ship project-local skills/commands in your workspace and have them overlay the harness defaults: the entrypoint reads `<workspace>/.agents/skills/` and `<workspace>/.agents/commands/`, and workspace entries override harness entries with the same name.
@@ -129,7 +129,7 @@ At startup these are merged into `~/.claude` inside the container, so personal d
 
 ## Agents
 
-Subagent definitions are stored under `opencode/config/agents/` in a single unified format and rewritten to each harness's native dialect by the container entrypoint (`opencode/translate_agents.py`), the same way `.claude` assets are populated for Claude Code.
+Subagent definitions are stored under `opencode/config/.swarmforge/agents/` in a single unified format and rewritten to each harness's native dialect by the container entrypoint (`opencode/translate_agents.py`), the same way `.claude` assets are populated for Claude Code.
 
 A unified agent is a markdown file whose body is the agent's system prompt and whose YAML frontmatter is a superset of the OpenCode agent schema. The filename is the agent's identity (`reviewer.md` -> agent `reviewer`):
 
@@ -159,14 +159,16 @@ Field handling per harness:
 - `claude:` / `opencode:` blocks merge verbatim into that harness's output frontmatter, for anything the unified fields don't cover.
 - `disable: true` passes through to OpenCode and skips emitting the agent for Claude Code.
 
-Every Swarmforge layer — user, org, and repo config dirs plus the workspace overlay — carries agents in this unified format. Harness-native definitions belong in the harness's own repo-local directories (`<workspace>/.claude/agents/`, `<workspace>/.opencode/agents/`), which each harness discovers directly without Swarmforge involvement.
+Unified agents live in harness-neutral `.swarmforge/agents/` directories — one definition serves every harness, so the layers are deliberately not harness-specific. Lowest to highest precedence:
 
-How the definitions reach each harness:
+- user: `~/.swarmforge/agents/` (override with `SWARMFORGE_USER_ASSETS_DIR`)
+- org: `$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge/agents/` (override with `SWARMFORGE_ORG_ASSETS_DIR`)
+- repo: `opencode/config/.swarmforge/agents/` (override with `SWARMFORGE_REPO_ASSETS_DIR`)
+- workspace: `<workspace>/.swarmforge/agents/`
 
-- OpenCode: the layered config merge lands every layer's `agents/` in `~/.config/opencode/agents`, where the entrypoint translates the files in place (translation is idempotent, so re-running is harmless).
-- Claude Code: user- and org-layer `agents/` dirs, then `opencode/config/agents/` (mounted read-only at `/home/opencode/.swarmforge/agents`, exported as `SWARMFORGE_AGENTS_DIR`), are translated into `~/.claude/agents/`, a container-private tmpfs scoped to the current repo.
+The asset layers are mounted read-only at `/tmp/swarmforge-assets/{user,org,repo}` (exported as `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR`), and the entrypoint translates the stacked sources — identical for every harness — into the harness's native location: `~/.config/opencode/agents/` for OpenCode, `~/.claude/agents/` (a container-private tmpfs scoped to the current repo) for Claude Code. Later layers override earlier ones by filename.
 
-Workspace overlays follow the skills/commands convention: `<workspace>/.agents/agents/` holds unified definitions for every harness and overrides lower layers with the same filename.
+Native `agents/` directories are never transported by Swarmforge — harness-native definitions belong in the harness's own discovery (`<workspace>/.claude/agents/`, `<workspace>/.opencode/agents/`, or the harness's user-level config), which each harness reads directly. (Skills and commands keep their `.agents/{skills,commands}` workspace convention — those formats are portable across harnesses, while agents are Swarmforge-specific and translated.)
 
 Run the translator's tests with `python3 scripts/test_translate_agents.py`.
 
