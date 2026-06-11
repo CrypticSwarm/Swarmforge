@@ -52,6 +52,10 @@ OPENCODE_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode/config
 SHARED_SKILLS_DIR ?= $(OPENCODE_CONFIG_DIR)/skills
 SHARED_COMMAND_DIR ?= $(OPENCODE_CONFIG_DIR)/command
 SWARMFORGE_ORG_CONFIG_ROOT ?=
+# Harness-neutral Swarmforge asset layers (unified agents live in <dir>/agents).
+SWARMFORGE_USER_ASSETS_DIR ?= $(HOME)/.swarmforge
+SWARMFORGE_ORG_ASSETS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge,)
+SWARMFORGE_REPO_ASSETS_DIR ?= $(OPENCODE_CONFIG_DIR)/.swarmforge
 
 PROFILE_FLAG :=
 ifneq ($(strip $(PROFILE)),)
@@ -62,11 +66,17 @@ SWARMFORGE_LAYER_MOUNTS = \
 	-v "$(SWARMFORGE_USER_CONFIG_DIR)":/tmp/swarmforge-config/user:ro \
 	$(if $(and $(strip $(SWARMFORGE_ORG_CONFIG_DIR)),$(wildcard $(SWARMFORGE_ORG_CONFIG_DIR))),-v "$(SWARMFORGE_ORG_CONFIG_DIR)":/tmp/swarmforge-config/org:ro,) \
 	$(if $(and $(strip $(SWARMFORGE_REPO_CONFIG_DIR)),$(wildcard $(SWARMFORGE_REPO_CONFIG_DIR))),-v "$(SWARMFORGE_REPO_CONFIG_DIR)":/tmp/swarmforge-config/repo:ro,) \
+	$(if $(and $(strip $(SWARMFORGE_USER_ASSETS_DIR)),$(wildcard $(SWARMFORGE_USER_ASSETS_DIR))),-v "$(SWARMFORGE_USER_ASSETS_DIR)":/tmp/swarmforge-assets/user:ro,) \
+	$(if $(and $(strip $(SWARMFORGE_ORG_ASSETS_DIR)),$(wildcard $(SWARMFORGE_ORG_ASSETS_DIR))),-v "$(SWARMFORGE_ORG_ASSETS_DIR)":/tmp/swarmforge-assets/org:ro,) \
+	$(if $(and $(strip $(SWARMFORGE_REPO_ASSETS_DIR)),$(wildcard $(SWARMFORGE_REPO_ASSETS_DIR))),-v "$(SWARMFORGE_REPO_ASSETS_DIR)":/tmp/swarmforge-assets/repo:ro,) \
 
 SWARMFORGE_LAYER_ENV = \
 	-e SWARMFORGE_CONFIG_USER_DIR=/tmp/swarmforge-config/user \
 	-e SWARMFORGE_CONFIG_ORG_DIR=/tmp/swarmforge-config/org \
 	-e SWARMFORGE_CONFIG_REPO_DIR=/tmp/swarmforge-config/repo \
+	-e SWARMFORGE_ASSETS_USER_DIR=/tmp/swarmforge-assets/user \
+	-e SWARMFORGE_ASSETS_ORG_DIR=/tmp/swarmforge-assets/org \
+	-e SWARMFORGE_ASSETS_REPO_DIR=/tmp/swarmforge-assets/repo \
 	-e SWARMFORGE_CONFIG_DEST=$(SWARMFORGE_CONFIG_DEST) \
 	-e SWARMFORGE_CONFIG_RESET=$(SWARMFORGE_CONFIG_RESET)
 
@@ -83,8 +93,16 @@ CLAUDE_RUN_ENV = \
 	-e SWARMFORGE_SKILLS_DIR=/home/opencode/.swarmforge/skills \
 	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command
 
+# skills/, commands/, and agents/ under ~/.claude are container-private tmpfs
+# masks over the shared persistent home. The entrypoint repopulates them from
+# this repo's sources on every run, so per-repo assets never accumulate in
+# CLAUDE_HOME_DIR or leak into other repos' sessions. skills mounts with exec
+# because skill packages may ship executable scripts.
 CLAUDE_RUN_MOUNTS = \
 	-v "$(CLAUDE_HOME_DIR)":/home/opencode \
+	--tmpfs /home/opencode/.claude/skills:exec \
+	--tmpfs /home/opencode/.claude/commands \
+	--tmpfs /home/opencode/.claude/agents \
 	$(SWARMFORGE_LAYER_MOUNTS) \
 	-v "$(SHARED_SKILLS_DIR)":/home/opencode/.swarmforge/skills:ro \
 	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro
@@ -223,6 +241,9 @@ run_claude: opencode_network
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/skills"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/command"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/skills"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/commands"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/agents"
 	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS),repo-slug)
 
 stop_claude:

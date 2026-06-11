@@ -55,41 +55,81 @@ copy_dir_entries() {
 # Populate ~/.claude/skills and ~/.claude/commands for the Claude agent.
 #
 # Sources are applied lowest- to highest-precedence:
-#   1. Harness shared assets (mounted via SWARMFORGE_SKILLS_DIR /
+#   1. Config layers: user, then org (skills and commands are portable
+#      across harnesses, so copying is the whole translation).
+#   2. Harness shared assets (mounted via SWARMFORGE_SKILLS_DIR /
 #      SWARMFORGE_COMMAND_DIR).
-#   2. Workspace overlay: <workspace>/.agents/{skills,commands} preferred;
-#      falls back to <workspace>/.opencode/{skills,command}.
+#   3. Workspace overlay: <workspace>/.agents/{skills,commands}.
 #
-# Entries are copied (not symlinked) so subsequent runs against a persistent
-# CLAUDE_HOME_DIR can replace them idempotently without colliding with the
-# layered tar merge.
+# Harness-native repo-local dirs (such as <workspace>/.opencode) belong to
+# their own harness and are never consumed here.
+#
+# The destinations are container-private tmpfs mounts masking the shared
+# persistent home, so each container starts empty and sees only the layers
+# for this run; nothing persists across runs or leaks between repos.
 copy_claude_shared_assets() {
   workspace_dir="${1:-/workspace}"
 
   skills_dst="${OPENCODE_HOME}/.claude/skills"
   commands_dst="${OPENCODE_HOME}/.claude/commands"
 
+  for layer_src in "${SWARMFORGE_CONFIG_USER_DIR:-}" "${SWARMFORGE_CONFIG_ORG_DIR:-}"; do
+    [ -n "${layer_src}" ] || continue
+    copy_dir_entries "${layer_src}/skills" "${skills_dst}"
+    copy_dir_entries "${layer_src}/commands" "${commands_dst}"
+  done
+
   copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
   copy_dir_entries "${SWARMFORGE_COMMAND_DIR:-}" "${commands_dst}"
 
-  for candidate in \
-    "${workspace_dir}/.agents/skills" \
-    "${workspace_dir}/.opencode/skills"; do
-    if [ -d "${candidate}" ]; then
-      copy_dir_entries "${candidate}" "${skills_dst}"
-      break
-    fi
-  done
+  copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
+  copy_dir_entries "${workspace_dir}/.agents/commands" "${commands_dst}"
+}
 
-  for candidate in \
-    "${workspace_dir}/.agents/commands" \
-    "${workspace_dir}/.opencode/command" \
-    "${workspace_dir}/.opencode/commands"; do
-    if [ -d "${candidate}" ]; then
-      copy_dir_entries "${candidate}" "${commands_dst}"
-      break
-    fi
-  done
+# Translate unified Swarmforge agent definitions into the running harness's
+# native subagent format.
+#
+# Unified definitions are markdown files whose YAML frontmatter is a superset
+# of the OpenCode agent schema (description, mode, model, temperature, tools)
+# plus optional per-harness override blocks (claude:, opencode:). One shared
+# translator (translate_agents.py) emits each harness's dialect, so adding a
+# new harness means adding an emitter there plus a case arm here.
+#
+# Unified Swarmforge agent definitions live under <dir>/agents in the
+# harness-neutral .swarmforge asset layers, mounted read-only via
+# SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR, plus <workspace>/.swarmforge/agents.
+# One definition serves every harness; native agents/ directories inside
+# harness config dirs are never transported by Swarmforge -- those belong to
+# the harness's own discovery (for example <workspace>/.claude/agents or
+# <workspace>/.opencode/agents).
+#
+# Sources are identical for every harness and applied lowest- to
+# highest-precedence (later files win by name): user, org, repo asset
+# layers, then the workspace overlay. Only the destination differs.
+prepare_unified_agents() {
+  workspace_dir="${1:-/workspace}"
+  translator="/usr/local/lib/swarmforge/translate_agents.py"
+
+  [ -f "${translator}" ] || return 0
+
+  case "${AGENT_BIN}" in
+    claude)
+      agents_dst="${OPENCODE_HOME}/.claude/agents"
+      ;;
+    opencode)
+      agents_dst="${SWARMFORGE_CONFIG_DEST:-${OPENCODE_HOME}/.config/opencode}/agents"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  python3 "${translator}" "${AGENT_BIN}" "${agents_dst}" \
+    "${SWARMFORGE_ASSETS_USER_DIR:-}/agents" \
+    "${SWARMFORGE_ASSETS_ORG_DIR:-}/agents" \
+    "${SWARMFORGE_ASSETS_REPO_DIR:-}/agents" \
+    "${workspace_dir}/.swarmforge/agents" \
+    || printf '%s\n' "Warning: unified agent translation failed for ${AGENT_BIN}; continuing" >&2
 }
 
 merge_config_layer() {
@@ -109,14 +149,19 @@ merge_config_layer() {
     return 0
   fi
 
-  # For Claude, skills/ and commands/ are managed by copy_claude_shared_assets
-  # and may already exist (as directories or as stale symlinks left over from
-  # older entrypoint logic) at the destination. Excluding them here avoids
-  # `tar: ./skills: Cannot open: File exists` when the layered merge runs on
-  # a persistent CLAUDE_HOME_DIR that already contains those entries.
-  exclude_args="--exclude=./opencode.json"
+  # .swarmforge/ asset dirs are read via their own mounts, never through the
+  # config merge, so transporting them here would only litter the dest (or,
+  # for Claude, accumulate junk in the persistent home).
+  #
+  # For Claude, skills/, commands/, and agents/ are container-private tmpfs
+  # masks over the shared persistent home, populated exclusively by
+  # copy_claude_shared_assets and prepare_unified_agents from this repo's
+  # sources. Excluding them from the layered merge keeps host-side strays
+  # (for example user-layer agents accumulated by older entrypoint logic)
+  # from reappearing in the container.
+  exclude_args="--exclude=./opencode.json --exclude=./.swarmforge"
   if [ "${AGENT_BIN:-}" = "claude" ]; then
-    exclude_args="${exclude_args} --exclude=./skills --exclude=./commands"
+    exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./agents"
   fi
 
   # Use a tar stream to avoid bind-mount same-file copy errors.
@@ -229,6 +274,7 @@ if ! getent passwd "${OPENCODE_UID}" >/dev/null 2>&1; then
 fi
 
 prepare_agent_config
+prepare_unified_agents
 
 chown -R "${OPENCODE_UID}:${OPENCODE_GID}" "${OPENCODE_HOME}" 2>/dev/null || true
 chown -R "${OPENCODE_UID}:${OPENCODE_GID}" /workspace 2>/dev/null || true

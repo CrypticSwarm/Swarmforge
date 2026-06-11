@@ -113,14 +113,12 @@ It also mounts shared Swarmforge assets so both runtimes can access common resou
 
 Those paths are exported in-container as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
 When launching Claude Code, the container entrypoint copies these into `~/.claude/skills/` and `~/.claude/commands/` so Claude can discover them as native skills/commands.
-Top-level entries are replaced wholesale on each run (so stale symlinks left by older entrypoint logic and outdated copies get refreshed), and the layered config merge skips `skills/` and `commands/` for the Claude agent to avoid colliding with this step.
+In-container `~/.claude/skills/`, `~/.claude/commands/`, and `~/.claude/agents/` are container-private tmpfs mounts that mask the shared persistent `CLAUDE_HOME_DIR`: each container starts them empty and the entrypoint repopulates them, lowest to highest precedence, from the user and org config layers, the harness shared assets, and the current workspace's overlays.
+All Swarmforge layers carry these assets in Swarmforge formats — skills and commands are portable and copied as-is, while agents use the unified format and are translated from the harness-neutral `.swarmforge/agents/` layers described under `## Agents`. Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude itself, outside the Swarmforge pipeline.
+This keeps per-repo skills, commands, and agents from accumulating in the persistent home and leaking into other repos' sessions; the layered config merge skips those three directories for the Claude agent for the same reason.
 
-You can ship project-local skills/commands in your workspace and have them overlay the harness defaults. The entrypoint looks for them in this preference order:
-
-- skills: `<workspace>/.agents/skills/` (preferred), falling back to `<workspace>/.opencode/skills/`
-- commands: `<workspace>/.agents/commands/` (preferred), falling back to `<workspace>/.opencode/command/` or `<workspace>/.opencode/commands/`
-
-Workspace entries override harness entries with the same name.
+You can ship project-local skills/commands in your workspace and have them overlay the harness defaults: the entrypoint reads `<workspace>/.agents/skills/` and `<workspace>/.agents/commands/`, and workspace entries override harness entries with the same name.
+Harness-native repo-local dirs (such as `<workspace>/.opencode/`) belong to their own harness and are not consumed for Claude.
 
 Claude config layering uses three sources (lowest to highest precedence):
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude` for `run_claude`)
@@ -128,6 +126,51 @@ Claude config layering uses three sources (lowest to highest precedence):
 - `SWARMFORGE_REPO_CONFIG_DIR` (default `opencode/config/claude` for `run_claude`, if present)
 
 At startup these are merged into `~/.claude` inside the container, so personal defaults can be overlaid with org settings and repo-local overrides.
+
+## Agents
+
+Subagent definitions are stored under `opencode/config/.swarmforge/agents/` in a single unified format and rewritten to each harness's native dialect by the container entrypoint (`opencode/translate_agents.py`), the same way `.claude` assets are populated for Claude Code.
+
+A unified agent is a markdown file whose body is the agent's system prompt and whose YAML frontmatter is a superset of the OpenCode agent schema. The filename is the agent's identity (`reviewer.md` -> agent `reviewer`):
+
+```markdown
+---
+description: Reviews code and suggests improvements.
+mode: subagent
+temperature: 0.1
+model: anthropic/claude-sonnet-4-6
+tools:
+  write: false
+  edit: false
+  bash: false
+claude:
+  maxTurns: 12
+---
+
+You are the reviewer agent...
+```
+
+Field handling per harness:
+
+- `description` and the prompt body pass through everywhere.
+- `tools` uses OpenCode's lowercase tool ids mapped to booleans. For Claude Code, disabled tools become `disallowedTools` (`write: false` -> `disallowedTools: Write`); ids without a Claude equivalent are dropped.
+- `model` accepts a provider-qualified id (`anthropic/claude-sonnet-4-6`) which passes through to OpenCode and is stripped to the bare id for Claude Code (non-Anthropic providers are dropped), or a Claude alias (`sonnet`, `haiku`) which is Claude-only and dropped for OpenCode.
+- `mode`, `temperature`, and other OpenCode-only fields are dropped for Claude Code.
+- `claude:` / `opencode:` blocks merge verbatim into that harness's output frontmatter, for anything the unified fields don't cover.
+- `disable: true` passes through to OpenCode and skips emitting the agent for Claude Code.
+
+Unified agents live in harness-neutral `.swarmforge/agents/` directories — one definition serves every harness, so the layers are deliberately not harness-specific. Lowest to highest precedence:
+
+- user: `~/.swarmforge/agents/` (override with `SWARMFORGE_USER_ASSETS_DIR`)
+- org: `$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge/agents/` (override with `SWARMFORGE_ORG_ASSETS_DIR`)
+- repo: `opencode/config/.swarmforge/agents/` (override with `SWARMFORGE_REPO_ASSETS_DIR`)
+- workspace: `<workspace>/.swarmforge/agents/`
+
+The asset layers are mounted read-only at `/tmp/swarmforge-assets/{user,org,repo}` (exported as `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR`), and the entrypoint translates the stacked sources — identical for every harness — into the harness's native location: `~/.config/opencode/agents/` for OpenCode, `~/.claude/agents/` (a container-private tmpfs scoped to the current repo) for Claude Code. Later layers override earlier ones by filename.
+
+Native `agents/` directories are never transported by Swarmforge — harness-native definitions belong in the harness's own discovery (`<workspace>/.claude/agents/`, `<workspace>/.opencode/agents/`, or the harness's user-level config), which each harness reads directly. (Skills and commands keep their `.agents/{skills,commands}` workspace convention — those formats are portable across harnesses, while agents are Swarmforge-specific and translated.)
+
+Run the translator's tests with `python3 scripts/test_translate_agents.py`.
 
 ## Commands
 
