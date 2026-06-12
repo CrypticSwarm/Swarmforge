@@ -65,21 +65,21 @@ Keep references one hop away from `SKILL.md` (no deep nesting). For reference fi
 
 ## Locating skills and commands
 
-First determine the global config directory:
+First determine the global locations:
 
-- If the workspace contains `opencode/config/`, treat that as the canonical, versioned global config directory.
+- If the workspace has top-level `skills/` and `commands/` directories (the Swarmforge checkout), treat those as the canonical, versioned global locations.
 - Otherwise, use `~/.config/opencode/` (for example, when running OpenCode against a different repo where the global config is mounted into the environment).
 
 Then locate artifacts by scope:
 
-- Global skills: `<global-config>/skills/<skill-name>/SKILL.md`
-- Global commands: `<global-config>/command/<command-name>.md`
+- Global skills: `skills/<skill-name>/SKILL.md` in the Swarmforge checkout, otherwise `~/.config/opencode/skills/<skill-name>/SKILL.md`
+- Global commands: `commands/<command-name>.md` in the Swarmforge checkout, otherwise `~/.config/opencode/command/<command-name>.md`
 - Local skills: `.opencode/skills/<skill-name>/SKILL.md`
 - Local commands: `.opencode/command/<command-name>.md`
 
 Confirm the target file exists before editing. If multiple copies are found, clarify with the user which one should be updated.
 
-When a change touches shared paths or cross-cutting guidance, run a repo-wide search across the relevant skill and command directories (for example, `rg -n "<pattern>" opencode/config ~/.config/opencode .opencode`), then update all matching prompts/skills consistently.
+When a change touches shared paths or cross-cutting guidance, run a repo-wide search across the relevant skill and command directories (for example, `rg -n "<pattern>" skills commands ~/.config/opencode .opencode`), then update all matching prompts/skills consistently.
 
 ## What Not to Include
 
@@ -92,7 +92,7 @@ Follow these steps in order unless you have explicit reason to skip one:
 1. **Collect concrete examples.** Ask users for realistic requests the skill must solve. Identify triggers and boundaries.
 2. **Plan reusable resources.** For each example, note which scripts, references, or assets would save time when repeated.
 3. **Decide whether to add a slash command.** If the skill will be used repeatedly, benefits from injecting context (git status/diff, logs, file lists), or needs a standard argument shape, add a slash command alongside the skill.
-   - Global commands live under the global config directory (use `opencode/config/command/` when it exists in the workspace; otherwise use `~/.config/opencode/command/`).
+   - Global commands live in `commands/` when it exists in the workspace (the Swarmforge checkout); otherwise use `~/.config/opencode/command/`.
    - Project-local commands live in `.opencode/command/`.
    - Command prompts should: (1) activate the relevant skill first, (2) validate `$ARGUMENTS` (ask and stop if missing), and (3) include only small, high-signal `!` context blocks.
 4. **Initialize the skeleton.** Run tooling (e.g., `scripts/init_skill.py <skill-name> --path <dir>`) to scaffold `SKILL.md`, `scripts/`, `references/`, and `assets/`.

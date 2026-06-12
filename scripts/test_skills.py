@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,7 +67,28 @@ def _repo_root() -> Path:
 
 
 def _iter_test_files(repo_root: Path) -> list[Path]:
-    return sorted((repo_root / "opencode/config/skills").glob("*/tests/*.json"))
+    return sorted((repo_root / "skills").glob("*/tests/*.json"))
+
+
+def _prepare_config_dir(repo_root: Path) -> str:
+    """Assemble the repo-layer slice of the runtime OpenCode config layout.
+
+    The repo keeps the OpenCode-native config (opencode/) separate from the
+    harness-neutral shared assets (skills/, commands/), so tests symlink them
+    together into a throwaway dir. Unlike the container entrypoint, this only
+    covers the repo layer (no user/org/workspace layering).
+    """
+    config_dir = Path(tempfile.mkdtemp(prefix="swarmforge-test-config-"))
+    atexit.register(shutil.rmtree, config_dir, ignore_errors=True)
+    for entry in (repo_root / "opencode").iterdir():
+        # Skip stray skills/command dirs (e.g. leftover container mountpoints)
+        # so they can't shadow the canonical top-level assets linked below.
+        if entry.name in ("skills", "command"):
+            continue
+        (config_dir / entry.name).symlink_to(entry)
+    (config_dir / "skills").symlink_to(repo_root / "skills")
+    (config_dir / "command").symlink_to(repo_root / "commands")
+    return str(config_dir)
 
 
 def _load_test(path: Path) -> TestCase:
@@ -406,7 +430,7 @@ def main() -> int:
     c = Colors(enabled=color_enabled)
 
     repo_root = _repo_root()
-    config_dir = str(repo_root / "opencode/config")
+    config_dir = _prepare_config_dir(repo_root)
 
     test_files = _iter_test_files(repo_root)
     if not test_files:
@@ -507,7 +531,7 @@ def main() -> int:
 
         # Optional LLM-as-judge check
         if args.enable_judge and test.use_judge:
-            skill_path = repo_root / "opencode/config/skills" / test.skill / "SKILL.md"
+            skill_path = repo_root / "skills" / test.skill / "SKILL.md"
             try:
                 skill_text = skill_path.read_text(encoding="utf-8")
             except FileNotFoundError:

@@ -13,4 +13,4 @@ jobs:
       - name: Run agent translator tests
         run: python3 scripts/test_translate_agents.py
       - name: Check entrypoint syntax
-        run: sh -n opencode/entrypoint.sh
+        run: sh -n anvil/entrypoint.sh
