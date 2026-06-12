@@ -52,31 +52,50 @@ copy_dir_entries() {
   done
 }
 
-# Populate ~/.claude/skills and ~/.claude/commands for the Claude agent.
+# Populate the harness's native skills and commands locations from the
+# shared Swarmforge assets (skills and commands are portable across
+# harnesses, so copying is the whole translation).
 #
-# Sources are applied lowest- to highest-precedence:
-#   1. Config layers: user, then org (skills and commands are portable
-#      across harnesses, so copying is the whole translation).
+# Sources are applied lowest- to highest-precedence, identically for every
+# harness; the config merge excludes skills/commands so this is their only
+# transport:
+#   1. Config layers: user, org, then repo (read using the layer's
+#      harness-native commands dir name: commands/ for Claude, command/ for
+#      OpenCode).
 #   2. Harness shared assets (mounted via SWARMFORGE_SKILLS_DIR /
-#      SWARMFORGE_COMMAND_DIR).
+#      SWARMFORGE_COMMAND_DIR): the Swarmforge repo's skills/ and commands/.
 #   3. Workspace overlay: <workspace>/.agents/{skills,commands}.
 #
 # Harness-native repo-local dirs (such as <workspace>/.opencode) belong to
 # their own harness and are never consumed here.
 #
-# The destinations are container-private tmpfs mounts masking the shared
-# persistent home, so each container starts empty and sees only the layers
-# for this run; nothing persists across runs or leaks between repos.
-copy_claude_shared_assets() {
+# For Claude the destinations are container-private tmpfs mounts masking the
+# shared persistent home, so each container starts empty and sees only the
+# layers for this run; nothing persists across runs or leaks between repos.
+copy_shared_assets() {
   workspace_dir="${1:-/workspace}"
 
-  skills_dst="${OPENCODE_HOME}/.claude/skills"
-  commands_dst="${OPENCODE_HOME}/.claude/commands"
+  case "${AGENT_BIN}" in
+    claude)
+      skills_dst="${OPENCODE_HOME}/.claude/skills"
+      commands_dst="${OPENCODE_HOME}/.claude/commands"
+      layer_commands_name="commands"
+      ;;
+    opencode)
+      config_dest="${SWARMFORGE_CONFIG_DEST:-${OPENCODE_HOME}/.config/opencode}"
+      skills_dst="${config_dest}/skills"
+      commands_dst="${config_dest}/command"
+      layer_commands_name="command"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
 
-  for layer_src in "${SWARMFORGE_CONFIG_USER_DIR:-}" "${SWARMFORGE_CONFIG_ORG_DIR:-}"; do
+  for layer_src in "${SWARMFORGE_CONFIG_USER_DIR:-}" "${SWARMFORGE_CONFIG_ORG_DIR:-}" "${SWARMFORGE_CONFIG_REPO_DIR:-}"; do
     [ -n "${layer_src}" ] || continue
     copy_dir_entries "${layer_src}/skills" "${skills_dst}"
-    copy_dir_entries "${layer_src}/commands" "${commands_dst}"
+    copy_dir_entries "${layer_src}/${layer_commands_name}" "${commands_dst}"
   done
 
   copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
@@ -99,9 +118,12 @@ copy_claude_shared_assets() {
 # harness-neutral .swarmforge asset layers, mounted read-only via
 # SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR, plus <workspace>/.swarmforge/agents.
 # One definition serves every harness; native agents/ directories inside
-# harness config dirs are never transported by Swarmforge -- those belong to
-# the harness's own discovery (for example <workspace>/.claude/agents or
-# <workspace>/.opencode/agents).
+# harness config dirs are never transported by this asset pipeline. For
+# OpenCode they still reach the harness through the layered config merge
+# (the merged config dir is OpenCode's own discovery; see
+# merge_config_layer), while for Claude they are excluded from the merge
+# as well -- Claude-native definitions belong to Claude's own discovery
+# (for example <workspace>/.claude/agents).
 #
 # Sources are identical for every harness and applied lowest- to
 # highest-precedence (later files win by name): user, org, repo asset
@@ -153,16 +175,28 @@ merge_config_layer() {
   # config merge, so transporting them here would only litter the dest (or,
   # for Claude, accumulate junk in the persistent home).
   #
-  # For Claude, skills/, commands/, and agents/ are container-private tmpfs
-  # masks over the shared persistent home, populated exclusively by
-  # copy_claude_shared_assets and prepare_unified_agents from this repo's
-  # sources. Excluding them from the layered merge keeps host-side strays
-  # (for example user-layer agents accumulated by older entrypoint logic)
-  # from reappearing in the container.
+  # Skills and commands are excluded for every harness: they are populated
+  # exclusively by copy_shared_assets so all layers get the same per-entry
+  # replacement semantics (a higher layer's skill package replaces the whole
+  # package, never file-merges into it). The tar merge would instead union
+  # layers file-by-file.
+  #
+  # agents/ is additionally excluded for Claude only: there the destination
+  # is a container-private tmpfs mask over the shared persistent home,
+  # populated solely by prepare_unified_agents, and excluding it keeps
+  # host-side strays (for example user-layer agents accumulated by older
+  # entrypoint logic) from reappearing. For OpenCode the merged config dir
+  # is the harness's own native discovery, so native agents/ in user/org
+  # layers still merge through.
   exclude_args="--exclude=./opencode.json --exclude=./.swarmforge"
-  if [ "${AGENT_BIN:-}" = "claude" ]; then
-    exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./agents"
-  fi
+  case "${AGENT_BIN:-}" in
+    claude)
+      exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./agents"
+      ;;
+    opencode)
+      exclude_args="${exclude_args} --exclude=./skills --exclude=./command"
+      ;;
+  esac
 
   # Use a tar stream to avoid bind-mount same-file copy errors.
   # shellcheck disable=SC2086 # exclude_args intentionally word-split
@@ -275,13 +309,12 @@ fi
 
 prepare_agent_config
 prepare_unified_agents
+copy_shared_assets
 
 chown -R "${OPENCODE_UID}:${OPENCODE_GID}" "${OPENCODE_HOME}" 2>/dev/null || true
 chown -R "${OPENCODE_UID}:${OPENCODE_GID}" /workspace 2>/dev/null || true
 
 if [ "${AGENT_BIN}" = "claude" ]; then
-  copy_claude_shared_assets
-
   # Fix git worktree path resolution for bare-repo + worktree setups.
   #
   # Claude Code's /resume discovers sessions by running

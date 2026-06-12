@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for opencode/translate_agents.py. Run: python3 scripts/test_translate_agents.py"""
+"""Unit tests for anvil/translate_agents.py. Run: python3 scripts/test_translate_agents.py"""
 
 import importlib.util
 import os
@@ -9,7 +9,7 @@ import unittest
 
 MODULE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "opencode",
+    "anvil",
     "translate_agents.py",
 )
 spec = importlib.util.spec_from_file_location("translate_agents", MODULE_PATH)

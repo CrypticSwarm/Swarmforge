@@ -19,13 +19,13 @@ Current working tree:
 !`git status --short`
 
 Existing global commands (if present):
-!`ls opencode/config/command 2>/dev/null || ls ~/.config/opencode/command 2>/dev/null || true`
+!`ls commands 2>/dev/null || ls ~/.config/opencode/command 2>/dev/null || true`
 
 Existing local commands (if present):
 !`test -d .opencode/command && ls .opencode/command || true`
 
 Locate the target command prompt file based on scope:
-- Global: `<global-config>/command/<command-name>.md` where `<global-config>` is `opencode/config` if present in the workspace, otherwise `~/.config/opencode`
+- Global: `commands/<command-name>.md` when the workspace has a top-level `commands/` directory (the Swarmforge checkout), otherwise `~/.config/opencode/command/<command-name>.md`
 - Local: `.opencode/command/<command-name>.md` (create the `.opencode/command/` directory if needed)
 
 Behavior:

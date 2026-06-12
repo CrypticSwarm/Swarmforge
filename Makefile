@@ -48,14 +48,16 @@ GID          := $(shell id -g)
 SWARMFORGE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 PROJECT_DIR  := $(CURDIR)
 PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
-OPENCODE_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode/config
-SHARED_SKILLS_DIR ?= $(OPENCODE_CONFIG_DIR)/skills
-SHARED_COMMAND_DIR ?= $(OPENCODE_CONFIG_DIR)/command
+OPENCODE_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode
+SHARED_SKILLS_DIR ?= $(SWARMFORGE_DIR)/skills
+SHARED_COMMAND_DIR ?= $(SWARMFORGE_DIR)/commands
 SWARMFORGE_ORG_CONFIG_ROOT ?=
-# Harness-neutral Swarmforge asset layers (unified agents live in <dir>/agents).
+# Harness-neutral Swarmforge asset layers. User and org layers are .swarmforge
+# roots (unified agents live in <dir>/agents); the repo layer points directly
+# at this repo's top-level agents/ so the rest of the repo is never mounted.
 SWARMFORGE_USER_ASSETS_DIR ?= $(HOME)/.swarmforge
 SWARMFORGE_ORG_ASSETS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge,)
-SWARMFORGE_REPO_ASSETS_DIR ?= $(OPENCODE_CONFIG_DIR)/.swarmforge
+SWARMFORGE_REPO_AGENTS_DIR ?= $(SWARMFORGE_DIR)/agents
 
 PROFILE_FLAG :=
 ifneq ($(strip $(PROFILE)),)
@@ -68,7 +70,9 @@ SWARMFORGE_LAYER_MOUNTS = \
 	$(if $(and $(strip $(SWARMFORGE_REPO_CONFIG_DIR)),$(wildcard $(SWARMFORGE_REPO_CONFIG_DIR))),-v "$(SWARMFORGE_REPO_CONFIG_DIR)":/tmp/swarmforge-config/repo:ro,) \
 	$(if $(and $(strip $(SWARMFORGE_USER_ASSETS_DIR)),$(wildcard $(SWARMFORGE_USER_ASSETS_DIR))),-v "$(SWARMFORGE_USER_ASSETS_DIR)":/tmp/swarmforge-assets/user:ro,) \
 	$(if $(and $(strip $(SWARMFORGE_ORG_ASSETS_DIR)),$(wildcard $(SWARMFORGE_ORG_ASSETS_DIR))),-v "$(SWARMFORGE_ORG_ASSETS_DIR)":/tmp/swarmforge-assets/org:ro,) \
-	$(if $(and $(strip $(SWARMFORGE_REPO_ASSETS_DIR)),$(wildcard $(SWARMFORGE_REPO_ASSETS_DIR))),-v "$(SWARMFORGE_REPO_ASSETS_DIR)":/tmp/swarmforge-assets/repo:ro,) \
+	$(if $(and $(strip $(SWARMFORGE_REPO_AGENTS_DIR)),$(wildcard $(SWARMFORGE_REPO_AGENTS_DIR))),-v "$(SWARMFORGE_REPO_AGENTS_DIR)":/tmp/swarmforge-assets/repo/agents:ro,) \
+	-v "$(SHARED_SKILLS_DIR)":/home/opencode/.swarmforge/skills:ro \
+	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro
 
 SWARMFORGE_LAYER_ENV = \
 	-e SWARMFORGE_CONFIG_USER_DIR=/tmp/swarmforge-config/user \
@@ -78,7 +82,9 @@ SWARMFORGE_LAYER_ENV = \
 	-e SWARMFORGE_ASSETS_ORG_DIR=/tmp/swarmforge-assets/org \
 	-e SWARMFORGE_ASSETS_REPO_DIR=/tmp/swarmforge-assets/repo \
 	-e SWARMFORGE_CONFIG_DEST=$(SWARMFORGE_CONFIG_DEST) \
-	-e SWARMFORGE_CONFIG_RESET=$(SWARMFORGE_CONFIG_RESET)
+	-e SWARMFORGE_CONFIG_RESET=$(SWARMFORGE_CONFIG_RESET) \
+	-e SWARMFORGE_SKILLS_DIR=/home/opencode/.swarmforge/skills \
+	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command
 
 OPENCODE_RUN_MOUNTS = \
 	$(SWARMFORGE_LAYER_MOUNTS) \
@@ -89,9 +95,7 @@ OPENCODE_RUN_ENV = \
 
 CLAUDE_RUN_ENV = \
 	-e SWARMFORGE_AGENT_BIN=claude \
-	$(SWARMFORGE_LAYER_ENV) \
-	-e SWARMFORGE_SKILLS_DIR=/home/opencode/.swarmforge/skills \
-	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command
+	$(SWARMFORGE_LAYER_ENV)
 
 # skills/, commands/, and agents/ under ~/.claude are container-private tmpfs
 # masks over the shared persistent home. The entrypoint repopulates them from
@@ -103,9 +107,7 @@ CLAUDE_RUN_MOUNTS = \
 	--tmpfs /home/opencode/.claude/skills:exec \
 	--tmpfs /home/opencode/.claude/commands \
 	--tmpfs /home/opencode/.claude/agents \
-	$(SWARMFORGE_LAYER_MOUNTS) \
-	-v "$(SHARED_SKILLS_DIR)":/home/opencode/.swarmforge/skills:ro \
-	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro
+	$(SWARMFORGE_LAYER_MOUNTS)
 
 .PHONY: opencode_network build_opencode update_opencode build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test
@@ -198,7 +200,7 @@ build_opencode:
 	  --build-arg OPENCODE_VERSION=$(OPENCODE_VERSION) \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
 	  --build-arg OPENCODE_INSTALL_BUST=$(OPENCODE_INSTALL_BUST) \
-	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)/opencode"
+	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)/anvil"
 
 # Rebuild only from the OpenCode install step onward.
 update_opencode:
@@ -210,7 +212,7 @@ build_claude:
 	  --build-arg AGENT=claude \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
 	  --build-arg CLAUDE_INSTALL_BUST=$(CLAUDE_INSTALL_BUST) \
-	  -t $(CLAUDE_IMG) "$(SWARMFORGE_DIR)/opencode"
+	  -t $(CLAUDE_IMG) "$(SWARMFORGE_DIR)/anvil"
 
 # Rebuild only from the Claude install step onward.
 update_claude:
@@ -232,7 +234,7 @@ stop_opencode:
 
 run_claude: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.claude
 run_claude: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude,)
-run_claude: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode/config/claude
+run_claude: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/claude
 run_claude: SWARMFORGE_CONFIG_DEST ?= /home/opencode/.claude
 run_claude: SWARMFORGE_CONFIG_RESET ?= 0
 run_claude: opencode_network
@@ -304,7 +306,6 @@ test: opencode_network
 	  --network $(NETWORK) \
 	  -e HOME=/home/opencode \
 	  -v "$(PROJECT_DIR)":/workspace \
-	  -v "$(OPENCODE_CONFIG_DIR)":/home/opencode/.config/opencode \
 	  -v "$(TEST_DATA_DIR)":/home/opencode/.local/share/opencode \
 	  --entrypoint python \
 	  $(OPENCODE_IMG) /workspace/scripts/test_skills.py \

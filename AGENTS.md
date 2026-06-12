@@ -7,18 +7,19 @@
 ## Repo Overview
 - `Makefile` orchestrates the local containers (`build_opencode`, `run_opencode`, `run_ollama`, etc.) and is the preferred entry point for automation.
 - `install.sh` appends an `oc` helper alias that shells out to `make -C <repo> run_opencode`; keep it POSIX-compliant because it is sourced in user shells.
-- `opencode/` is the Docker build context for the OpenCode harness, which provides a constrained execution environment for building and refining systems and tools.
+- `anvil/` is the Docker build context shared by every harness image (OpenCode, Claude Code): Dockerfile, container entrypoint, and the unified-agent translator.
+- `opencode/` holds the OpenCode-native repo config layer (`opencode.json`, plus untracked plugin state); harness-neutral assets live at the top level in `skills/`, `commands/`, and `agents/`.
 - `ollama/` stores persistent Ollama state. Do not add large model blobs to git—only configuration or lightweight defaults belong here.
 
 ## Coding Conventions
 - Default to Bash or POSIX shell for scripts and include `set -euo pipefail` (or equivalent) when modifying shell entrypoints.
 - Prefer `make` variables and targets over ad-hoc scripts so contributors can compose workflows via the existing Makefile.
 - Keep Dockerfiles Debian-based (see `DEBIAN_TAG`) and avoid pinning GPU driver versions inside the image; rely on host NVIDIA tooling instead.
-- When editing skills under `opencode/config/skills/`, ensure YAML frontmatter only contains `name` and `description`, and keep the detailed guidance in the corresponding `SKILL.md` body.
-- Subagent definitions under `opencode/config/.swarmforge/agents/` use the unified agent format documented in `README.md` (`## Agents`); the entrypoint rewrites them per harness via `opencode/translate_agents.py`, so never hand-write harness-specific dialects there.
+- When editing skills under `skills/`, ensure YAML frontmatter only contains `name` and `description`, and keep the detailed guidance in the corresponding `SKILL.md` body.
+- Subagent definitions under `agents/` use the unified agent format documented in `README.md` (`## Agents`); the entrypoint rewrites them per harness via `anvil/translate_agents.py`, so never hand-write harness-specific dialects there.
 
 ## Build, Test, and Run
-- Build the OpenCode image with `make build_opencode` after changing anything under `opencode/`.
+- Build the OpenCode image with `make build_opencode` after changing anything under `anvil/`.
 - Launch a development session via `make run_opencode PROFILE=<name> DATA_DIR=<path?>` (defaults are fine for local work). The target automatically mounts project files and skills.
 - Run the skill test harness via `make test MODEL=<provider/model>`.
 - Filter skill tests with `TEST_SKILL=<skill-name>` and adjust timeouts with `TEST_TIMEOUT_S=<seconds>`.
