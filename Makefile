@@ -58,6 +58,13 @@ SWARMFORGE_ORG_CONFIG_ROOT ?=
 SWARMFORGE_USER_ASSETS_DIR ?= $(HOME)/.swarmforge
 SWARMFORGE_ORG_ASSETS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge,)
 SWARMFORGE_REPO_AGENTS_DIR ?= $(SWARMFORGE_DIR)/agents
+# Repo-layer tong definitions, pointed at directly (like SWARMFORGE_REPO_AGENTS_DIR)
+# so the rest of the checkout is never read. This repo ships no tongs/ dir, so the
+# wildcard guard below leaves the layer absent until one is added.
+SWARMFORGE_REPO_TONGS_DIR ?= $(SWARMFORGE_DIR)/tongs
+
+# Host python used to run the anvil launcher (run_anvil.py).
+PYTHON ?= python3
 
 PROFILE_FLAG :=
 ifneq ($(strip $(PROFILE)),)
@@ -85,6 +92,15 @@ SWARMFORGE_LAYER_ENV = \
 	-e SWARMFORGE_CONFIG_RESET=$(SWARMFORGE_CONFIG_RESET) \
 	-e SWARMFORGE_SKILLS_DIR=/home/opencode/.swarmforge/skills \
 	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command
+
+# Host directories for the tong definition layers, passed to the launcher only
+# when present (same wildcard guard as the asset mounts above). The launcher
+# reads these on the host; they are not mounted into the anvil. The workspace
+# layer depends on the resolved workspace dir and is appended at run time.
+TONGS_LAYER_ARGS = \
+	$(if $(and $(strip $(SWARMFORGE_USER_ASSETS_DIR)),$(wildcard $(SWARMFORGE_USER_ASSETS_DIR)/tongs)),--user-tongs "$(SWARMFORGE_USER_ASSETS_DIR)/tongs",) \
+	$(if $(and $(strip $(SWARMFORGE_ORG_ASSETS_DIR)),$(wildcard $(SWARMFORGE_ORG_ASSETS_DIR)/tongs)),--org-tongs "$(SWARMFORGE_ORG_ASSETS_DIR)/tongs",) \
+	$(if $(and $(strip $(SWARMFORGE_REPO_TONGS_DIR)),$(wildcard $(SWARMFORGE_REPO_TONGS_DIR))),--repo-tongs "$(SWARMFORGE_REPO_TONGS_DIR)",)
 
 OPENCODE_RUN_MOUNTS = \
 	$(SWARMFORGE_LAYER_MOUNTS) \
@@ -172,7 +188,11 @@ define run_agent_container
 		exit 2; \
 	fi; \
 	set -x; \
-	docker run -it --rm --name "$(1)" \
+	$(PYTHON) "$(SWARMFORGE_DIR)/scripts/run_anvil.py" \
+	  $(TONGS_LAYER_ARGS) \
+	  --workspace-tongs "$$workspace_dir/.swarmforge/tongs" \
+	  -- \
+	  docker run -it --rm --name "$(1)" \
 	  --network "$(NETWORK)" \
 	  -e OPENCODE_UID="$(UID)" \
 	  -e OPENCODE_GID="$(GID)" \
