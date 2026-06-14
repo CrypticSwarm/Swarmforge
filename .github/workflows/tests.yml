@@ -14,5 +14,7 @@ jobs:
         run: python3 scripts/test_translate_agents.py
       - name: Run tongs launcher core tests
         run: python3 scripts/test_tongs.py
+      - name: Run anvil launcher tests
+        run: python3 scripts/test_run_anvil.py
       - name: Check entrypoint syntax
         run: sh -n anvil/entrypoint.sh
