@@ -26,7 +26,9 @@ ANVIL_ARGV = [
     "-e", "OPENCODE_UID=1000",
     "-e", "TZ=Etc/UTC",
     "-v", "/home/me/proj:/workspace",
-    "-v", "/home/me/proj:/repos/me/proj",
+    # A path with a space exercises that a single argv word is forwarded whole,
+    # never re-split, through the real execvp.
+    "-v", "/home/me/my proj:/repos/me/my proj",
     "claude-code:local",
     "--some-harness-arg",
 ]
@@ -100,6 +102,12 @@ class MainErrorTests(unittest.TestCase):
         self.assertEqual(run_anvil.main(["--repo-tongs", "/r"]), 2)
         self.assertEqual(run_anvil.main([]), 2)
 
+    def test_unexecutable_anvil_returns_127(self):
+        # A missing anvil binary yields the shell's uninvocable-command status
+        # instead of an uncaught OSError. exec_anvil returns here because the
+        # exec fails, so the test process is not replaced.
+        self.assertEqual(run_anvil.exec_anvil(["/no/such/binary-xyz"]), 127)
+
 
 def _run_launcher(extra_args):
     """Invoke run_anvil.py in a child process and capture the execed argv.
@@ -127,6 +135,13 @@ class PassthroughInvariantTests(unittest.TestCase):
     def test_no_layer_flags_forwards_anvil_argv_verbatim(self):
         forwarded, _ = _run_launcher([])
         self.assertEqual(forwarded, ANVIL_ARGV)
+
+    def test_missing_workspace_tongs_dir_forwards_verbatim(self):
+        # The workspace layer is always passed by the macro, even when its dir
+        # does not exist; an absent dir must stay inert, not error.
+        forwarded, stderr = _run_launcher(["--workspace-tongs", "/no/such/.swarmforge/tongs"])
+        self.assertEqual(forwarded, ANVIL_ARGV)
+        self.assertNotIn("tong", stderr)
 
     def test_present_tong_still_forwards_anvil_argv_unchanged(self):
         # Even with a definition discovered, the launcher does not rewrite the

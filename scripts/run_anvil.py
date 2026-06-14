@@ -21,9 +21,9 @@ would otherwise have issued. Existing repos ship no tong layers, so discovery is
 empty and this wrapper is a transparent exec. `scripts/test_run_anvil.py`
 asserts this byte-for-byte.
 
-The argv after `--` is never rewritten: it is forwarded to `os.execvp`
-unchanged, so the anvil process replaces this one and keeps the controlling tty,
-signal delivery, and `--rm` cleanup it had before.
+The anvil argv (everything after `--`) is forwarded to `os.execvp` unchanged, so
+the anvil process replaces this one and keeps the controlling tty, signal
+delivery, and `--rm` cleanup it had before.
 """
 
 import importlib.util
@@ -92,9 +92,18 @@ def discover_tongs(layer_dirs):
     return tongs.merge_tongs(tongs.discover(layer_dirs))
 
 
-def exec_anvil(anvil_cmd):  # pragma: no cover - replaces the current process
-    """Exec the anvil argv, replacing this process. Never returns on success."""
-    os.execvp(anvil_cmd[0], anvil_cmd)
+def exec_anvil(anvil_cmd):
+    """Exec the anvil argv, replacing this process.
+
+    On success this never returns. If the command cannot be execed (e.g. the
+    binary is missing from PATH), report it and return 127 -- the shell's
+    convention for an uninvocable command -- rather than surfacing a traceback.
+    """
+    try:
+        os.execvp(anvil_cmd[0], anvil_cmd)
+    except OSError as exc:
+        tongs.warn("cannot exec %r: %s" % (anvil_cmd[0], exc))
+        return 127
 
 
 def main(argv):
@@ -116,8 +125,9 @@ def main(argv):
             % (len(merged), ", ".join(sorted(merged)))
         )
 
-    exec_anvil(anvil_cmd)
-    return 0  # pragma: no cover - exec_anvil does not return on success
+    # On success exec_anvil replaces this process; it only returns a status if
+    # the anvil command could not be execed.
+    return exec_anvil(anvil_cmd)
 
 
 if __name__ == "__main__":
