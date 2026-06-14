@@ -12,5 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run agent translator tests
         run: python3 scripts/test_translate_agents.py
+      - name: Run tongs launcher core tests
+        run: python3 scripts/test_tongs.py
       - name: Check entrypoint syntax
         run: sh -n anvil/entrypoint.sh
