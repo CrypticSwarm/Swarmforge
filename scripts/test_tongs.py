@@ -404,12 +404,18 @@ class InterfaceWiringTests(unittest.TestCase):
         self.assertEqual(list(selected), ["github"])  # only the mcp tong, keyed by alias
 
     def test_mcp_alias_collision_keeps_first_and_drops_duplicate(self):
+        first = def_of(GITHUB_TONG)
+        first["image"] = "first-wins"
+        second = def_of(GITHUB_TONG)
+        second["image"] = "second-loses"
         merged = {
-            "a-creds": {"source": tongs.REPO, "definition": def_of(GITHUB_TONG)},
-            "b-creds": {"source": tongs.REPO, "definition": def_of(GITHUB_TONG)},
+            "a-creds": {"source": tongs.REPO, "definition": first},
+            "b-creds": {"source": tongs.REPO, "definition": second},
         }
         selected = tongs.mcp_tongs(merged)
-        self.assertEqual(list(selected), ["github"])  # both resolve to "github"; one wins
+        # Both resolve to alias "github"; the first by sorted tong name wins.
+        self.assertEqual(list(selected), ["github"])
+        self.assertEqual(selected["github"]["image"], "first-wins")
 
     def test_opencode_mcp_fragment_shape(self):
         fragment = tongs.mcp_config_opencode(_merged("github-creds", GITHUB_TONG))
@@ -463,6 +469,32 @@ class InterfaceWiringTests(unittest.TestCase):
     def test_plan_injection_unknown_harness_omits_mcp(self):
         plan = tongs.plan_injection(_merged("github-creds", GITHUB_TONG), "nonesuch")
         self.assertEqual(plan["mcp"], {})
+
+    def test_plan_injection_never_emits_secret_references(self):
+        # The GitHub tong carries an unresolved ${secret:...} in its env, but
+        # interface wiring only ever surfaces host/port/path, never the tong's
+        # own env, so no secret reference reaches the anvil injection plan.
+        plan = tongs.plan_injection(_merged("github-creds", GITHUB_TONG), "claude")
+        self.assertNotIn("${secret", json.dumps(plan))
+        self.assertNotIn("GITHUB_TOKEN", json.dumps(plan))
+
+    def test_plan_injection_warns_and_keeps_first_on_env_collision(self):
+        # Two port tongs whose names sanitize to the same env prefix.
+        a, b = def_of(PORT_TONG), def_of(PORT_TONG)
+        b["interface"]["port"] = 6543
+        merged = {
+            "pg-main": {"source": tongs.REPO, "definition": a},
+            "pg.main": {"source": tongs.REPO, "definition": b},
+        }
+        plan = tongs.plan_injection(merged, "claude")
+        # First by sorted tong name ("pg-main") wins its port.
+        self.assertEqual(plan["env"]["SWARMFORGE_TONG_PG_MAIN_PORT"], "5432")
+
+    def test_mcp_url_rejects_non_http_transport(self):
+        defn = def_of(GITHUB_TONG)
+        defn["interface"]["transport"] = "stdio"
+        with self.assertRaises(ValueError):
+            tongs.mcp_url(defn, "github")
 
 
 class CliTests(unittest.TestCase):

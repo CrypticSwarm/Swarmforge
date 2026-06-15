@@ -379,6 +379,13 @@ def mcp_url(defn, alias):
     so `port` is present and integral.
     """
     interface = defn.get("interface") or {}
+    transport = interface.get("transport", "http")
+    if transport != "http":
+        # v1 emits HTTP MCP only, and validation rejects other transports
+        # upstream; reaching here means a new transport was admitted without
+        # teaching this emitter its URL scheme. Fail loudly rather than hand the
+        # anvil a wrong URL.
+        raise ValueError("unsupported MCP transport %r for alias %r" % (transport, alias))
     path = interface.get("path", MCP_DEFAULT_PATH)
     if not path.startswith("/"):
         path = "/" + path
@@ -486,7 +493,15 @@ def plan_injection(merged, harness):
     mounts = []
     for name in sorted(merged):
         defn = merged[name]["definition"]
-        env.update(anvil_env(name, defn))
+        for key, value in anvil_env(name, defn).items():
+            # Env-var names are sanitized from tong names (github-creds and
+            # github_creds collapse to the same prefix), so distinct tongs can
+            # clash. Keep the first by sorted name and warn, mirroring the MCP
+            # alias collision guard, rather than silently clobbering.
+            if key in env and env[key] != value:
+                warn("tong '%s' reuses anvil env var '%s'; ignoring the duplicate" % (name, key))
+                continue
+            env[key] = value
         mounts.extend(anvil_mounts(name, defn))
     emit = MCP_EMITTERS.get(harness)
     mcp = emit(merged) if emit else {}
