@@ -587,17 +587,29 @@ def plan_network(merged, base_network, session_id):
         }
 
     net = session_network_name(session_id)
-    session_aliases = [
-        (name, canonical_alias(name, merged[name]["definition"]))
-        for name in session_names
-        if _is_network_facing(merged[name]["definition"])
-    ]
-    shared_connect = [
-        (name, canonical_alias(name, merged[name]["definition"]))
-        for name in sorted(merged)
-        if merged[name]["definition"].get("lifecycle") == "shared"
-        and _is_network_facing(merged[name]["definition"])
-    ]
+    # All network-facing tongs share the one per-session network, so two tongs
+    # resolving to the same canonical alias would collide there -- DNS would
+    # resolve nondeterministically. Keep the first by sorted tong name and drop
+    # the rest with a warning, mirroring the MCP-config and env-var collision
+    # guards. One pass over both lifecycles keeps the winner deterministic
+    # regardless of whether the loser is a `session` or `shared` tong.
+    session_aliases = []
+    shared_connect = []
+    seen = {}
+    for name in sorted(merged):
+        defn = merged[name]["definition"]
+        lifecycle = defn.get("lifecycle")
+        if lifecycle not in LIFECYCLES or not _is_network_facing(defn):
+            continue
+        alias = canonical_alias(name, defn)
+        if alias in seen:
+            warn(
+                "tong '%s' reuses network alias '%s' (already used by '%s'); "
+                "ignoring the duplicate" % (name, alias, seen[alias])
+            )
+            continue
+        seen[alias] = name
+        (session_aliases if lifecycle == "session" else shared_connect).append((name, alias))
     return {
         "network": net,
         "create": net,

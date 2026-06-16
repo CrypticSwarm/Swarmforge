@@ -588,6 +588,21 @@ class SessionNetworkTests(unittest.TestCase):
         plan = tongs.plan_network(merged, "", "wt")
         self.assertEqual(plan["extra_networks"], [])
 
+    def test_alias_collision_on_session_network_keeps_first(self):
+        # Two tongs that resolve to the same canonical alias cannot share the one
+        # session network; the first by sorted tong name wins, the other drops --
+        # and the winner is deterministic across the session/shared split. Here a
+        # session mcp tong (alias "github") collides with a shared tong literally
+        # named "github" (alias "github").
+        merged = {
+            "a-creds": {"source": tongs.REPO, "definition": def_of(GITHUB_TONG)},
+            "github": {"source": tongs.REPO, "definition": def_of(SHARED_PORT_TONG)},
+        }
+        plan = tongs.plan_network(merged, "opencode-net", "wt")
+        self.assertEqual(plan["session_aliases"], [("a-creds", "github")])
+        # The shared tong loses the alias and is not connected.
+        self.assertEqual(plan["shared_connect"], [])
+
 
 class CliTests(unittest.TestCase):
     def test_validate_command_returns_zero_for_valid(self):
