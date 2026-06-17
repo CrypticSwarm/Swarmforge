@@ -252,6 +252,19 @@ def validate_tong(name, defn):
     env = defn.get("env")
     if env is not None and not isinstance(env, dict):
         err("'env' must be a mapping of name -> value")
+    elif isinstance(env, dict):
+        plain, secret = partition_secret_env(env)
+        for secret_name in sorted(secret):
+            if not ENV_NAME_RE.match(secret_name):
+                err("invalid secret env name %r (must be a valid identifier)" % secret_name)
+                continue
+            pointer_name = secret_name + SECRET_FILE_ENV_SUFFIX
+            pointer_value = "%s/%s" % (SECRET_TMPFS_DIR, secret_name)
+            if pointer_name in plain and plain[pointer_name] != pointer_value:
+                err(
+                    "env %r collides with the secret file pointer for %r"
+                    % (pointer_name, secret_name)
+                )
 
     for listish in ("mounts", "networks"):
         value = defn.get(listish)
@@ -326,6 +339,169 @@ def substitute_secrets(value, resolver):
     if isinstance(value, list):
         return [substitute_secrets(item, resolver) for item in value]
     return value
+
+
+# --- Secret providers ---------------------------------------------------------
+# A secret reference (${secret:<provider>:<ref>}) is resolved on the host by
+# shelling out to a provider CLI -- the docker-credential-helper pattern, so
+# Swarmforge knows nothing about any individual secret manager. Providers are
+# declared once in the user layer (~/.swarmforge/secret-providers.yaml):
+#
+#     providers:
+#       op:   ["op", "read", "{ref}"]
+#       pass: ["pass", "show", "{ref}"]
+#
+# Each value is an argv template; the literal token "{ref}" in any element is
+# replaced with the reference. Loading the table and building the argv are pure
+# and live here; the subprocess that actually runs the CLI is the caller's (see
+# run_anvil.make_secret_resolver), keeping this module side-effect free.
+
+SECRET_REF_TOKEN = "{ref}"
+
+
+def load_secret_providers(path):
+    """Load the user-layer secret-provider table.
+
+    Returns `{provider: [argv template, ...]}`. A missing file (or one without a
+    `providers:` block) yields `{}` -- no providers configured, so resolving any
+    secret reference later fails loudly rather than silently. Raises `ValueError`
+    if the file is present but malformed, so a typo surfaces at load time instead
+    of dropping a provider.
+
+    Command templates must be single-line flow lists; the dependency-free YAML
+    subset parser does not join a list wrapped across lines.
+    """
+    if not path or not os.path.isfile(path):
+        return {}
+    data = load_tong_file(path)
+    providers = data.get("providers") if isinstance(data, dict) else None
+    if providers is None:
+        return {}
+    if not isinstance(providers, dict):
+        raise ValueError("secret-providers: 'providers' must be a mapping")
+    out = {}
+    for name, template in providers.items():
+        if not isinstance(template, list) or not template:
+            raise ValueError(
+                "secret-providers: provider %r must be a non-empty command list" % name
+            )
+        if not all(isinstance(part, str) for part in template):
+            raise ValueError(
+                "secret-providers: provider %r command must be a list of strings" % name
+            )
+        out[name] = list(template)
+    return out
+
+
+def secret_provider_command(providers, provider, ref):
+    """Concrete argv that resolves `ref` through `provider`.
+
+    Substitutes the literal `{ref}` token in every element of the provider's argv
+    template. Raises `KeyError` if the provider is not declared (the caller turns
+    this into a clean launch error naming the missing provider).
+    """
+    return [part.replace(SECRET_REF_TOKEN, ref) for part in providers[provider]]
+
+
+# --- Secret delivery ----------------------------------------------------------
+# A resolved secret must never reach a tong as a docker `-e` env var: anything
+# holding the docker socket (the broker tong) could read it back via
+# `docker inspect`. Instead each secret-bearing env var is delivered as a file on
+# an in-memory tmpfs the launcher populates at startup, and the tong is pointed
+# at the file with a `<NAME>_FILE` env var (the conventional docker-secret
+# indirection). Plain (non-secret) env keeps flowing through `-e` unchanged.
+
+SECRET_TMPFS_DIR = "/run/swarmforge/secrets"
+SECRET_FILE_ENV_SUFFIX = "_FILE"
+
+# A secret's file lands at SECRET_TMPFS_DIR/<env name>, so the env name becomes a
+# path component. Restricting it to the POSIX env-name grammar keeps that path
+# inside the tmpfs dir -- a name like "../../etc/foo" from an untrusted workspace
+# tong cannot escape it -- and is exactly what docker accepts for an env var.
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def partition_secret_env(env):
+    """Split a tong's env into `(plain, secret)` by secret-reference presence.
+
+    `env` is the tong definition's `env` mapping (values may be unresolved
+    `${secret:...}` references). `plain` holds values with no secret reference
+    (safe to pass straight through as `-e`); `secret` holds the keys whose value
+    contains at least one reference (routed to tmpfs delivery so the resolved
+    value never appears in `docker inspect`). Order within each is preserved.
+    """
+    plain, secret = {}, {}
+    for key, value in (env or {}).items():
+        if find_secret_refs(value):
+            secret[key] = value
+        else:
+            plain[key] = value
+    return plain, secret
+
+
+def secret_delivery_plan(resolved_secrets):
+    """Plan tmpfs delivery for already-resolved secret env values.
+
+    `resolved_secrets` is `{env_name: secret_value}`. Returns plain data the
+    launcher applies when it starts the tong:
+
+      * `tmpfs` -- the in-tong tmpfs mountpoint to create (`--tmpfs`), so the
+                   secret files live in memory and never touch disk, or `None`
+                   when there are no secrets.
+      * `files` -- `{absolute_path: secret_value}` the launcher writes into the
+                   running container's tmpfs (never to the host).
+      * `env`   -- `{<NAME>_FILE: absolute_path}` pointing the tong at each file;
+                   these are paths, not secrets, so they are safe as `-e`.
+
+    With no secrets the tmpfs/files/env are all empty, so a tong without secrets
+    gets no tmpfs mount and no indirection. Raises `ValueError` for an env name
+    that is not a valid identifier, so a name that would escape the tmpfs dir
+    when used as a path component stops the launch rather than reaching disk.
+    """
+    files = {}
+    env = {}
+    for name in sorted(resolved_secrets):
+        if not ENV_NAME_RE.match(name):
+            raise ValueError("invalid secret env name %r (must be a valid identifier)" % name)
+        path = "%s/%s" % (SECRET_TMPFS_DIR, name)
+        files[path] = resolved_secrets[name]
+        env[name + SECRET_FILE_ENV_SUFFIX] = path
+    return {"tmpfs": SECRET_TMPFS_DIR if files else None, "files": files, "env": env}
+
+
+def plan_tong_secrets(env, resolver):
+    """Resolve a tong's secret env and plan how the tong receives it.
+
+    Combines the steps the launcher performs for one tong's environment:
+    partition `env` into plain and secret, resolve only the secret-bearing values
+    through the injected `resolver(provider, ref) -> str` (keeping this function
+    pure), then deliver those via tmpfs. Returns:
+
+      * `env`   -- plain env vars plus the `<NAME>_FILE` pointers (never a secret
+                   value).
+      * `tmpfs` -- the tmpfs mountpoint to create, or `None` when no secrets.
+      * `files` -- `{absolute_path: secret_value}` to write into the tmpfs.
+
+    The resolved secret values appear only under `files`, never under `env`, so
+    nothing the launcher passes as `-e` is readable through `docker inspect`.
+    """
+    plain, secret = partition_secret_env(env)
+    resolved = {key: substitute_secrets(value, resolver) for key, value in secret.items()}
+    delivery = secret_delivery_plan(resolved)
+    merged_env = dict(plain)
+    for key, value in delivery["env"].items():
+        # A file pointer (TOKEN_FILE) can collide with a plain env var of the same
+        # name. Unless it already points at the generated path, fail rather than
+        # launching a tong that cannot find its secret.
+        if key in merged_env:
+            if merged_env[key] == value:
+                continue
+            raise ValueError(
+                "tong env %r collides with the secret file pointer for %r"
+                % (key, key[:-len(SECRET_FILE_ENV_SUFFIX)])
+            )
+        merged_env[key] = value
+    return {"env": merged_env, "tmpfs": delivery["tmpfs"], "files": delivery["files"]}
 
 
 # --- Environment-variable naming ----------------------------------------------

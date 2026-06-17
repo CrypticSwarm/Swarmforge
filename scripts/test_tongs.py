@@ -200,6 +200,26 @@ class ValidationTests(unittest.TestCase):
         errors = tongs.validate_tong("t", {"lifecycle": "session", "image": "x", "interface": {"kind": "socket"}})
         self.assertTrue(any("interface.kind" in e for e in errors))
 
+    def test_rejects_secret_file_pointer_collision(self):
+        errors = tongs.validate_tong("t", {
+            "lifecycle": "session",
+            "image": "x",
+            "interface": {"kind": "none"},
+            "readiness": {"mode": "none"},
+            "env": {"TOKEN": "${secret:op:t}", "TOKEN_FILE": "/declared/path"},
+        })
+        self.assertTrue(any("TOKEN_FILE" in e for e in errors))
+
+    def test_rejects_invalid_secret_env_name(self):
+        errors = tongs.validate_tong("t", {
+            "lifecycle": "session",
+            "image": "x",
+            "interface": {"kind": "none"},
+            "readiness": {"mode": "none"},
+            "env": {"a/b": "${secret:op:t}"},
+        })
+        self.assertTrue(any("a/b" in e for e in errors))
+
 
 class SecretRefTests(unittest.TestCase):
     def test_parse_single_ref_with_inner_colons(self):
@@ -237,6 +257,153 @@ class SecretRefTests(unittest.TestCase):
         self.assertEqual(out["env"]["B"], "<pass:b>")
         self.assertEqual(out["image"], "x")  # untouched
         self.assertIn("${secret", defn["env"]["A"])  # original not mutated
+
+
+PROVIDERS_YAML = """\
+providers:
+  op: ["op", "read", "{ref}"]
+  pass: ["pass", "show", "{ref}"]
+"""
+
+
+class SecretProviderTests(unittest.TestCase):
+    def test_loads_provider_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "secret-providers.yaml")
+            with open(path, "w") as f:
+                f.write(PROVIDERS_YAML)
+            providers = tongs.load_secret_providers(path)
+            self.assertEqual(
+                providers,
+                {"op": ["op", "read", "{ref}"], "pass": ["pass", "show", "{ref}"]},
+            )
+
+    def test_missing_file_yields_empty(self):
+        self.assertEqual(tongs.load_secret_providers("/no/such/file.yaml"), {})
+        self.assertEqual(tongs.load_secret_providers(""), {})
+
+    def test_file_without_providers_block_yields_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.yaml")
+            with open(path, "w") as f:
+                f.write("unrelated: true\n")
+            self.assertEqual(tongs.load_secret_providers(path), {})
+
+    def test_non_mapping_providers_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.yaml")
+            with open(path, "w") as f:
+                f.write("providers: nope\n")
+            with self.assertRaises(ValueError):
+                tongs.load_secret_providers(path)
+
+    def test_non_list_command_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.yaml")
+            with open(path, "w") as f:
+                f.write('providers:\n  op: "op read {ref}"\n')
+            with self.assertRaises(ValueError):
+                tongs.load_secret_providers(path)
+
+    def test_command_substitutes_ref_in_every_element(self):
+        providers = {"op": ["op", "read", "{ref}", "--prefix={ref}"]}
+        self.assertEqual(
+            tongs.secret_provider_command(providers, "op", "op://Work/x"),
+            ["op", "read", "op://Work/x", "--prefix=op://Work/x"],
+        )
+
+    def test_command_unknown_provider_raises_keyerror(self):
+        with self.assertRaises(KeyError):
+            tongs.secret_provider_command({"op": ["op"]}, "vault", "x")
+
+
+class SecretDeliveryTests(unittest.TestCase):
+    def test_partition_splits_plain_from_secret_bearing_env(self):
+        env = {
+            "PLAIN": "value",
+            "TOKEN": "${secret:op:op://Work/github/token}",
+            "MIXED": "Bearer ${secret:pass:db/pw}",
+        }
+        plain, secret = tongs.partition_secret_env(env)
+        self.assertEqual(plain, {"PLAIN": "value"})
+        self.assertEqual(
+            secret,
+            {"TOKEN": "${secret:op:op://Work/github/token}", "MIXED": "Bearer ${secret:pass:db/pw}"},
+        )
+
+    def test_partition_empty_env(self):
+        self.assertEqual(tongs.partition_secret_env(None), ({}, {}))
+        self.assertEqual(tongs.partition_secret_env({}), ({}, {}))
+
+    def test_delivery_plan_routes_secrets_to_tmpfs_files(self):
+        plan = tongs.secret_delivery_plan({"TOKEN": "s3cr3t", "API_KEY": "k3y"})
+        self.assertEqual(plan["tmpfs"], "/run/swarmforge/secrets")
+        self.assertEqual(
+            plan["files"],
+            {"/run/swarmforge/secrets/API_KEY": "k3y", "/run/swarmforge/secrets/TOKEN": "s3cr3t"},
+        )
+        self.assertEqual(
+            plan["env"],
+            {
+                "API_KEY_FILE": "/run/swarmforge/secrets/API_KEY",
+                "TOKEN_FILE": "/run/swarmforge/secrets/TOKEN",
+            },
+        )
+
+    def test_delivery_plan_empty_has_no_tmpfs(self):
+        plan = tongs.secret_delivery_plan({})
+        self.assertEqual(plan, {"tmpfs": None, "files": {}, "env": {}})
+
+    def test_plan_tong_secrets_keeps_secret_values_out_of_env(self):
+        env = {"REGION": "us", "TOKEN": "${secret:op:op://Work/github/token}"}
+        plan = tongs.plan_tong_secrets(env, lambda p, r: "RESOLVED-%s" % r)
+        # Plain env passes through; the secret becomes a _FILE pointer, never a value.
+        self.assertEqual(
+            plan["env"],
+            {"REGION": "us", "TOKEN_FILE": "/run/swarmforge/secrets/TOKEN"},
+        )
+        self.assertEqual(plan["tmpfs"], "/run/swarmforge/secrets")
+        self.assertEqual(
+            plan["files"],
+            {"/run/swarmforge/secrets/TOKEN": "RESOLVED-op://Work/github/token"},
+        )
+        # The resolved secret value reaches files only -- never the -e env plan.
+        self.assertNotIn("RESOLVED-op://Work/github/token", json.dumps(plan["env"]))
+
+    def test_delivery_plan_rejects_traversal_env_name(self):
+        # An env name that would escape the tmpfs dir as a path component is
+        # refused rather than baked into a file path.
+        with self.assertRaises(ValueError):
+            tongs.secret_delivery_plan({"../../etc/cron.d/x": "v"})
+        with self.assertRaises(ValueError):
+            tongs.secret_delivery_plan({"a/b": "v"})
+
+    def test_plan_tong_secrets_rejects_pointer_collision(self):
+        # A plain TOKEN_FILE that disagrees with the synthesized pointer would
+        # make the tong unable to find TOKEN, so the plan fails closed.
+        env = {"TOKEN_FILE": "/declared/path", "TOKEN": "${secret:op:t}"}
+        with self.assertRaises(ValueError):
+            tongs.plan_tong_secrets(env, lambda p, r: "SECRET")
+
+    def test_plan_tong_secrets_allows_matching_declared_pointer(self):
+        env = {
+            "TOKEN_FILE": "/run/swarmforge/secrets/TOKEN",
+            "TOKEN": "${secret:op:t}",
+        }
+        plan = tongs.plan_tong_secrets(env, lambda p, r: "SECRET")
+        self.assertEqual(plan["env"]["TOKEN_FILE"], "/run/swarmforge/secrets/TOKEN")
+        self.assertEqual(plan["files"], {"/run/swarmforge/secrets/TOKEN": "SECRET"})
+        self.assertNotIn("SECRET", json.dumps(plan["env"]))
+
+    def test_plan_tong_secrets_inert_without_secrets(self):
+        plan = tongs.plan_tong_secrets({"REGION": "us"}, lambda p, r: "x")
+        self.assertEqual(plan, {"env": {"REGION": "us"}, "tmpfs": None, "files": {}})
+
+    def test_plan_tong_secrets_resolves_each_provider_with_its_ref(self):
+        env = {"A": "${secret:op:a}", "B": "${secret:pass:b}"}
+        seen = []
+        tongs.plan_tong_secrets(env, lambda p, r: seen.append((p, r)) or "v")
+        self.assertEqual(sorted(seen), [("op", "a"), ("pass", "b")])
 
 
 class EnvNamingTests(unittest.TestCase):
