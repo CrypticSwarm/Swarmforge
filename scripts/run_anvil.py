@@ -41,6 +41,7 @@ delivery, and `--rm` cleanup it had before.
 import collections
 import importlib.util
 import os
+import subprocess
 import sys
 
 # Load the pure core (layer discovery + name-based merge) by path, the same way
@@ -246,6 +247,55 @@ def gate_workspace_tongs(merged, workspace, approvals_path, prompt=True, out=Non
 
     if recorded:
         tongs.save_approvals(approvals_path, approvals)
+
+
+# --- Secret resolution --------------------------------------------------------
+
+
+class SecretResolutionError(Exception):
+    """A secret reference could not be resolved; the launch must not proceed."""
+
+
+def make_secret_resolver(providers):
+    """Build the impure resolver closure over a configured provider table.
+
+    Returns `resolve(provider, ref) -> str`, the side-effectful counterpart to
+    the pure `tongs.substitute_secrets`/`tongs.plan_tong_secrets`: it shells out
+    to the provider CLI built by `tongs.secret_provider_command` and returns the
+    secret printed on stdout. Interactive unlocks (`op signin`, biometrics) work
+    because the launcher runs in the user's terminal before the anvil starts. A
+    single trailing newline -- which provider CLIs conventionally append -- is
+    stripped; any other whitespace is preserved verbatim.
+
+    Raises `SecretResolutionError` (naming the provider and reference, never the
+    secret) for an unknown provider, a CLI that cannot be run, or a non-zero
+    exit, so a misconfigured secret stops the launch rather than handing the tong
+    an empty or partial value.
+    """
+
+    def resolve(provider, ref):
+        try:
+            command = tongs.secret_provider_command(providers, provider, ref)
+        except KeyError:
+            raise SecretResolutionError(
+                "no secret provider %r is configured; declare it in "
+                "secret-providers.yaml" % provider
+            )
+        try:
+            completed = subprocess.run(command, stdout=subprocess.PIPE, check=False)
+        except OSError as exc:
+            raise SecretResolutionError(
+                "secret provider %r could not run: %s" % (provider, exc)
+            )
+        if completed.returncode != 0:
+            raise SecretResolutionError(
+                "secret provider %r failed for %r (exit %d)"
+                % (provider, ref, completed.returncode)
+            )
+        value = completed.stdout.decode("utf-8")
+        return value[:-1] if value.endswith("\n") else value
+
+    return resolve
 
 
 def exec_anvil(anvil_cmd):

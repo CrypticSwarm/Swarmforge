@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODULE_PATH = os.path.join(HERE, "run_anvil.py")
@@ -327,6 +328,72 @@ class GateTests(unittest.TestCase):
         merged = _merged("gh", WORKSPACE_TONG)
         with self.assertRaises(run_anvil.ApprovalDenied):
             self._gate(merged, answer="y\n", workspace="")
+
+
+class SecretResolverTests(unittest.TestCase):
+    """make_secret_resolver shells out to the provider CLI and reports failures."""
+
+    # Portable provider commands built on the test interpreter so the suite does
+    # not depend on op/pass/echo being installed. "{ref}" is substituted by
+    # tongs.secret_provider_command before exec.
+    def _writes(self, expr):
+        return [sys.executable, "-c", "import sys; sys.stdout.write(%s)" % expr, "{ref}"]
+
+    def test_resolves_ref_via_provider_cli(self):
+        resolve = run_anvil.make_secret_resolver({"echo": self._writes("sys.argv[1]")})
+        self.assertEqual(resolve("echo", "op://Work/secret"), "op://Work/secret")
+
+    def test_provider_stderr_inherits_terminal(self):
+        with mock.patch.object(run_anvil.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess(["provider"], 0, stdout=b"secret\n")
+            resolve = run_anvil.make_secret_resolver({"p": ["provider", "{ref}"]})
+            self.assertEqual(resolve("p", "ref"), "secret")
+            self.assertIsNone(run.call_args.kwargs.get("stderr"))
+
+    def test_strips_single_trailing_newline(self):
+        resolve = run_anvil.make_secret_resolver({"echo": self._writes("sys.argv[1] + '\\n'")})
+        self.assertEqual(resolve("echo", "token"), "token")
+
+    def test_preserves_inner_and_other_whitespace(self):
+        # Only one trailing newline is stripped; interior/extra newlines survive.
+        resolve = run_anvil.make_secret_resolver({"echo": self._writes("sys.argv[1] + '\\n\\n'")})
+        self.assertEqual(resolve("echo", "a\nb"), "a\nb\n")
+
+    def test_unknown_provider_raises(self):
+        resolve = run_anvil.make_secret_resolver({"op": ["op", "read", "{ref}"]})
+        with self.assertRaises(run_anvil.SecretResolutionError):
+            resolve("vault", "x")
+
+    def test_nonzero_exit_raises(self):
+        resolve = run_anvil.make_secret_resolver(
+            {"boom": [sys.executable, "-c", "import sys; sys.exit(3)"]}
+        )
+        with self.assertRaises(run_anvil.SecretResolutionError):
+            resolve("boom", "x")
+
+    def test_unrunnable_provider_raises(self):
+        resolve = run_anvil.make_secret_resolver({"missing": ["/no/such/binary-xyz", "{ref}"]})
+        with self.assertRaises(run_anvil.SecretResolutionError):
+            resolve("missing", "x")
+
+    def test_error_message_never_contains_the_secret(self):
+        # A failing CLI must not surface the resolved value; here it prints the
+        # ref to stderr and fails, and the error names provider/ref (which are
+        # not secret) -- the resolver never reaches a secret value on failure.
+        resolve = run_anvil.make_secret_resolver(
+            {"boom": [sys.executable, "-c", "import sys; sys.exit(1)"]}
+        )
+        with self.assertRaises(run_anvil.SecretResolutionError) as ctx:
+            resolve("boom", "ref-token")
+        self.assertIn("boom", str(ctx.exception))
+
+    def test_drives_plan_tong_secrets_end_to_end(self):
+        # The resolver is the impure half of tongs.plan_tong_secrets: a secret
+        # env var ends up as a tmpfs file, never as a -e value.
+        resolve = run_anvil.make_secret_resolver({"echo": self._writes("sys.argv[1]")})
+        plan = tongs.plan_tong_secrets({"TOKEN": "${secret:echo:s3cr3t}"}, resolve)
+        self.assertEqual(plan["files"], {"/run/swarmforge/secrets/TOKEN": "s3cr3t"})
+        self.assertEqual(plan["env"], {"TOKEN_FILE": "/run/swarmforge/secrets/TOKEN"})
 
 
 class MainGateTests(unittest.TestCase):
