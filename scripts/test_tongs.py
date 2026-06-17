@@ -204,6 +204,30 @@ class ValidationTests(unittest.TestCase):
         errors = tongs.validate_tong("t", defn)
         self.assertTrue(any("command" in e for e in errors))
 
+    def test_unknown_mount_word_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["/etc/passwd:/etc/passwd"]))
+        self.assertTrue(any("mount" in e for e in errors))
+
+    def test_non_string_mount_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=[123]))
+        self.assertTrue(any("mount" in e for e in errors))
+
+    def test_known_mounts_accepted(self):
+        self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:ro", "docker-socket"])), [])
+
+    def test_non_string_network_rejected(self):
+        errors = tongs.validate_tong("t", self._base(networks=[{"name": "x"}]))
+        self.assertTrue(any("network" in e for e in errors))
+
+    def test_resources_must_be_mapping(self):
+        errors = tongs.validate_tong("t", self._base(resources="512m"))
+        self.assertTrue(any("resources" in e for e in errors))
+
+    def test_resources_memory_type_checked(self):
+        errors = tongs.validate_tong("t", self._base(resources={"memory": ["512m"]}))
+        self.assertTrue(any("memory" in e for e in errors))
+        self.assertEqual(tongs.validate_tong("t", self._base(resources={"memory": "512m"})), [])
+
     def test_volume_requires_volume_mountpoint_and_readiness_mode(self):
         errors = tongs.validate_tong("t", {"lifecycle": "session", "image": "x", "interface": {"kind": "volume"}})
         joined = " ".join(errors)
@@ -800,6 +824,165 @@ class SessionNetworkTests(unittest.TestCase):
         self.assertEqual(plan["session_aliases"], [("a-creds", "github")])
         # The shared tong loses the alias and is not connected.
         self.assertEqual(plan["shared_connect"], [])
+
+
+ANVIL_ARGV = [
+    "docker", "run", "-it", "--rm", "--name", "claude-proj",
+    "--network", "opencode-net",
+    "-e", "TZ=Etc/UTC",
+    "-v", "/home/me/proj:/workspace",
+    "claude-code:local",
+    "--harness-arg",
+]
+
+
+class DockerArgvTests(unittest.TestCase):
+    def test_shared_container_name_sanitizes_and_prefixes(self):
+        self.assertEqual(tongs.shared_container_name("ollama"), "swarmforge-shared-ollama")
+        self.assertEqual(tongs.shared_container_name("my tong/x"), "swarmforge-shared-my-tong-x")
+
+    def test_mount_specs_workspace_and_socket(self):
+        defn = {"mounts": ["workspace:ro", "docker-socket"]}
+        specs = tongs.tong_mount_specs(defn, "/ws")
+        self.assertEqual(specs, ["/ws:/workspace:ro", "/var/run/docker.sock:/var/run/docker.sock"])
+
+    def test_mount_specs_workspace_without_mode(self):
+        self.assertEqual(tongs.tong_mount_specs({"mounts": ["workspace"]}, "/ws"), ["/ws:/workspace"])
+
+    def test_mount_specs_socket_honors_custom_path(self):
+        specs = tongs.tong_mount_specs({"mounts": ["docker-socket:ro"]}, "/ws", socket_path="/run/d.sock")
+        self.assertEqual(specs, ["/run/d.sock:/run/d.sock:ro"])
+
+    def test_mount_specs_no_mounts_is_empty(self):
+        self.assertEqual(tongs.tong_mount_specs({}, "/ws"), [])
+
+    def test_mount_specs_workspace_without_workspace_path_raises(self):
+        with self.assertRaises(ValueError):
+            tongs.tong_mount_specs({"mounts": ["workspace"]}, "")
+
+    def test_mount_specs_unknown_word_raises(self):
+        with self.assertRaises(ValueError):
+            tongs.tong_mount_specs({"mounts": ["/etc/passwd:/etc/passwd"]}, "/ws")
+
+    def test_mount_specs_non_string_raises(self):
+        with self.assertRaises(ValueError):
+            tongs.tong_mount_specs({"mounts": [123]}, "/ws")
+
+    def test_resource_flags_memory(self):
+        self.assertEqual(tongs.tong_resource_flags({"resources": {"memory": "512m"}}), ["--memory", "512m"])
+
+    def test_resource_flags_absent_is_empty(self):
+        self.assertEqual(tongs.tong_resource_flags({}), [])
+
+    def test_resource_flags_ignores_unknown_keys(self):
+        self.assertEqual(tongs.tong_resource_flags({"resources": {"cpus": 2}}), [])
+
+    def test_resource_flags_non_mapping_raises(self):
+        with self.assertRaises(ValueError):
+            tongs.tong_resource_flags({"resources": "512m"})
+
+    def test_run_argv_port_tong_full_shape(self):
+        argv = tongs.tong_run_argv(
+            "pg", def_of(PORT_TONG),
+            container_name="ctr-pg", network="net", alias="pg",
+            env={"PGDATA": "/data"}, label_hash="h0",
+        )
+        self.assertEqual(argv[:5], ["docker", "run", "-d", "--name", "ctr-pg"])
+        self.assertIn("--network", argv)
+        self.assertEqual(argv[argv.index("--network") + 1], "net")
+        # port is network-facing => it gets an alias
+        self.assertIn("--network-alias", argv)
+        self.assertEqual(argv[argv.index("--network-alias") + 1], "pg")
+        self.assertIn("swarmforge.tong.name=pg", argv)
+        self.assertIn("swarmforge.tong.config-hash=h0", argv)
+        self.assertIn("PGDATA=/data", argv)
+        # image is last
+        self.assertEqual(argv[-1], "postgres:16")
+
+    def test_run_argv_non_network_facing_omits_alias(self):
+        argv = tongs.tong_run_argv(
+            "watcher", def_of(NONE_TONG),
+            container_name="ctr", network="net", alias="watcher",
+        )
+        self.assertNotIn("--network-alias", argv)
+
+    def test_run_argv_mounts_and_resources(self):
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["workspace:ro"]
+        defn["resources"] = {"memory": "256m"}
+        argv = tongs.tong_run_argv(
+            "w", defn, container_name="c", network="n", alias="w", workspace="/ws",
+        )
+        self.assertIn("/ws:/workspace:ro", argv)
+        self.assertIn("--memory", argv)
+        self.assertEqual(argv[argv.index("--memory") + 1], "256m")
+
+    def test_run_argv_tmpfs_for_secret_delivery(self):
+        argv = tongs.tong_run_argv(
+            "g", def_of(NONE_TONG), container_name="c", network="n", alias="g",
+            tmpfs_dirs=["/run/swarmforge/secrets"],
+        )
+        self.assertIn("--tmpfs", argv)
+        self.assertEqual(argv[argv.index("--tmpfs") + 1], "/run/swarmforge/secrets")
+
+    def test_run_argv_does_not_emit_empty_hash_label(self):
+        argv = tongs.tong_run_argv("g", def_of(NONE_TONG), container_name="c", network="n", alias="g")
+        self.assertNotIn("swarmforge.tong.config-hash=", " ".join(argv))
+
+    def test_anvil_option_value_reads_name_and_network(self):
+        self.assertEqual(tongs.anvil_option_value(ANVIL_ARGV, "--name"), "claude-proj")
+        self.assertEqual(tongs.anvil_option_value(ANVIL_ARGV, "--network"), "opencode-net")
+
+    def test_anvil_option_value_equals_form(self):
+        self.assertEqual(tongs.anvil_option_value(["docker", "run", "--network=foo", "img"], "--network"), "foo")
+
+    def test_anvil_option_value_absent_is_none(self):
+        self.assertIsNone(tongs.anvil_option_value(ANVIL_ARGV, "--gpus"))
+
+    def test_anvil_option_value_ignores_harness_args_after_image(self):
+        argv = ["docker", "run", "--rm", "img", "--network", "harness-net"]
+        self.assertIsNone(tongs.anvil_option_value(argv, "--network"))
+
+    def test_inject_noop_returns_argv_unchanged(self):
+        # The passthrough basis: no network/args injected => byte-identical argv.
+        self.assertEqual(tongs.inject_anvil_argv(ANVIL_ARGV), ANVIL_ARGV)
+
+    def test_inject_does_not_mutate_input(self):
+        original = list(ANVIL_ARGV)
+        tongs.inject_anvil_argv(ANVIL_ARGV, network="x", pre_image_args=["-e", "A=1"])
+        self.assertEqual(ANVIL_ARGV, original)
+
+    def test_inject_replaces_existing_network(self):
+        out = tongs.inject_anvil_argv(ANVIL_ARGV, network="swarmforge-session-x")
+        self.assertEqual(out[out.index("--network") + 1], "swarmforge-session-x")
+        self.assertEqual(out.count("--network"), 1)  # replaced, not appended
+
+    def test_inject_pre_image_args_go_before_image(self):
+        out = tongs.inject_anvil_argv(ANVIL_ARGV, pre_image_args=["-e", "SWARMFORGE_TONG_PG_HOST=pg"])
+        self.assertLess(out.index("SWARMFORGE_TONG_PG_HOST=pg"), out.index("claude-code:local"))
+        # inserted right after the run subcommand
+        self.assertEqual(out[2], "-e")
+
+    def test_inject_post_image_args_go_to_harness(self):
+        out = tongs.inject_anvil_argv(ANVIL_ARGV, post_image_args=["--mcp-config", "/p.json"])
+        self.assertEqual(out[-2:], ["--mcp-config", "/p.json"])
+        self.assertGreater(out.index("--mcp-config"), out.index("claude-code:local"))
+
+    def test_inject_inserts_network_when_absent(self):
+        argv = ["docker", "run", "--rm", "img"]
+        out = tongs.inject_anvil_argv(argv, network="net")
+        self.assertIn("--network", out)
+        self.assertEqual(out[out.index("--network") + 1], "net")
+
+    def test_inject_does_not_rewrite_harness_network_arg(self):
+        argv = ["docker", "run", "--rm", "img", "--network", "harness-net"]
+        out = tongs.inject_anvil_argv(argv, network="net")
+        self.assertEqual(out[:4], ["docker", "run", "--network", "net"])
+        self.assertEqual(out[-2:], ["--network", "harness-net"])
+
+    def test_inject_non_docker_run_raises_when_splicing(self):
+        with self.assertRaises(ValueError):
+            tongs.inject_anvil_argv(["podman", "ps"], pre_image_args=["-e", "A=1"])
 
 
 class ReadinessTests(unittest.TestCase):

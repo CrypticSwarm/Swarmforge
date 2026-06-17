@@ -288,6 +288,33 @@ def validate_tong(name, defn):
         if value is not None and not isinstance(value, list):
             err("'%s' must be a list" % listish)
 
+    # Entry-level checks for the values orchestration turns into docker flags, so
+    # a malformed entry fails validation rather than raising during the launch.
+    mounts = defn.get("mounts")
+    if isinstance(mounts, list):
+        for mount in mounts:
+            if not isinstance(mount, str):
+                err("mount entries must be strings, got %r" % (mount,))
+            elif mount.split(":", 1)[0] not in (WORKSPACE_MOUNT, SOCKET_MOUNT):
+                err("unknown mount %r (expected '%s' or '%s')"
+                    % (mount, WORKSPACE_MOUNT, SOCKET_MOUNT))
+
+    networks = defn.get("networks")
+    if isinstance(networks, list):
+        for network in networks:
+            if not isinstance(network, str):
+                err("network entries must be strings, got %r" % (network,))
+
+    resources = defn.get("resources")
+    if resources is not None and not isinstance(resources, dict):
+        err("'resources' must be a mapping")
+    elif isinstance(resources, dict):
+        memory = resources.get("memory")
+        if memory is not None and not (
+            isinstance(memory, str) or _is_int(memory) or isinstance(memory, float)
+        ):
+            err("resources.memory must be a string or number")
+
     return errors
 
 
@@ -953,6 +980,246 @@ def readiness_settings(defn):
         mode = "tcp" if interface.get("kind") in ("mcp", "port") else "none"
     timeout_s = parse_duration(readiness.get("timeout"), DEFAULT_READINESS_TIMEOUT_S)
     return mode, readiness.get("command"), timeout_s
+
+
+# --- Docker argv assembly -----------------------------------------------------
+# The launcher turns a validated definition (plus the env/tmpfs/network plan the
+# functions above produce) into the concrete `docker run` argv for a tong, and
+# rewrites the anvil's own argv to reach the tongs. These builders are pure --
+# they return argv lists, run no docker -- so the exact flags can be unit-tested;
+# `run_anvil.py` owns the side-effectful execution.
+
+# Mount magic words (decision: opt-in words, never raw host paths from a
+# definition). `workspace` mounts the session's workspace; `docker-socket` grants
+# docker control (the broker's privilege, surfaced by the approval gate). An
+# optional `:mode` suffix (e.g. `workspace:ro`) is forwarded to docker verbatim.
+WORKSPACE_MOUNT = "workspace"
+WORKSPACE_MOUNT_TARGET = "/workspace"
+DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
+
+# Shared tongs get a stable, session-independent container name so the same
+# long-lived container is found (and staleness-checked) across sessions.
+SHARED_CONTAINER_PREFIX = "swarmforge-shared"
+
+
+def _sanitize_container_token(name):
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-_.")
+
+
+def shared_container_name(name):
+    """Stable container name for a `shared` tong (session-independent).
+
+    Sanitized to the characters docker permits in a container name and prefixed
+    so the container is recognizable as a Swarmforge-managed shared tong.
+    """
+    token = _sanitize_container_token(name)
+    return "%s-%s" % (SHARED_CONTAINER_PREFIX, token) if token else SHARED_CONTAINER_PREFIX
+
+
+def session_container_name(session_id, name):
+    """Per-session container name for a `session` tong.
+
+    Carries the session handle (the anvil container name, already
+    project/worktree-suffixed) so concurrent sessions never collide on a
+    container name, while the tong's canonical alias -- not this name -- is what
+    the anvil dials.
+    """
+    return "%s-tong-%s" % (session_id, _sanitize_container_token(name))
+
+
+def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET):
+    """Concrete docker `-v` specs for a tong's `mounts:` magic words.
+
+    Returns the list of `-v` *values* (the orchestrator pairs each with a `-v`
+    flag). `workspace[:mode]` mounts the session workspace at /workspace;
+    `docker-socket[:mode]` bind-mounts the host docker socket. Raises
+    `ValueError` for an unknown magic word, a non-string entry, or a `workspace`
+    mount when no workspace path is known -- a definition never names a raw host
+    path, so anything else is a mistake that should stop the launch.
+    """
+    specs = []
+    for mount in defn.get("mounts") or []:
+        if not isinstance(mount, str):
+            raise ValueError("mount entries must be strings, got %r" % (mount,))
+        word, sep, mode = mount.partition(":")
+        if word == WORKSPACE_MOUNT:
+            if not workspace:
+                raise ValueError("mount 'workspace' requested but no workspace path is known")
+            spec = "%s:%s" % (workspace, WORKSPACE_MOUNT_TARGET)
+        elif word == SOCKET_MOUNT:
+            spec = "%s:%s" % (socket_path, socket_path)
+        else:
+            raise ValueError(
+                "unknown mount %r (expected '%s' or '%s')"
+                % (mount, WORKSPACE_MOUNT, SOCKET_MOUNT)
+            )
+        if sep and mode:
+            spec += ":" + mode
+        specs.append(spec)
+    return specs
+
+
+def tong_resource_flags(defn):
+    """docker resource flags from a tong's `resources:` block.
+
+    v1 understands `memory` (mapped to `--memory`). Unknown keys are ignored for
+    forward compatibility. Raises `ValueError` if `resources` is present but not a
+    mapping.
+    """
+    resources = defn.get("resources")
+    if resources is None:
+        return []
+    if not isinstance(resources, dict):
+        raise ValueError("'resources' must be a mapping")
+    flags = []
+    memory = resources.get("memory")
+    if memory is not None:
+        flags += ["--memory", str(memory)]
+    return flags
+
+
+def tong_run_argv(
+    name,
+    defn,
+    container_name,
+    network,
+    alias,
+    env=None,
+    tmpfs_dirs=(),
+    label_hash=None,
+    workspace=None,
+    socket_path=DEFAULT_DOCKER_SOCKET,
+):
+    """Full `docker run -d` argv that starts one tong container.
+
+    Assumes a validated definition. The container is detached (the launcher
+    manages its lifecycle explicitly rather than tying it to the launcher's tty),
+    named `container_name`, joined to `network` under `alias` as a
+    `--network-alias` (only for network-facing tongs -- `volume`/`none` tongs need
+    no DNS name), and stamped with the tong-name and config-hash labels so a later
+    launch can detect a stale `shared` container. `env` (plain values plus the
+    `<NAME>_FILE` secret pointers from `plan_tong_secrets`) is passed as `-e` in
+    sorted order; resolved secret *values* never appear here -- they are written
+    to the `tmpfs_dirs` mounts after start. `mounts:` magic words and `resources:`
+    are appended, then the image.
+    """
+    argv = ["docker", "run", "-d", "--name", container_name]
+    if network:
+        argv += ["--network", network]
+    if alias and _is_network_facing(defn):
+        argv += ["--network-alias", alias]
+    argv += ["--label", "%s=%s" % (LABEL_TONG_NAME, name)]
+    if label_hash:
+        argv += ["--label", "%s=%s" % (LABEL_CONFIG_HASH, label_hash)]
+    for tmpfs_dir in tmpfs_dirs:
+        argv += ["--tmpfs", tmpfs_dir]
+    for key in sorted(env or {}):
+        argv += ["-e", "%s=%s" % (key, env[key])]
+    for spec in tong_mount_specs(defn, workspace, socket_path=socket_path):
+        argv += ["-v", spec]
+    argv += tong_resource_flags(defn)
+    argv.append(defn["image"])
+    return argv
+
+
+_ANVIL_DOCKER_VALUE_FLAGS = frozenset({
+    "--name", "--network", "--tmpfs", "--env-file", "-e", "-v", "-w",
+})
+
+
+def _docker_option_end_index(argv):
+    """Index of the image token, so scans ignore harness args after it.
+
+    This only needs to understand the docker-run flags emitted by the Makefile
+    wrapper; unknown options are treated as valueless rather than attempting to
+    be a complete Docker CLI parser.
+    """
+    index = _docker_run_index(argv)
+    while index < len(argv):
+        token = argv[index]
+        if token == "--":
+            return min(index + 1, len(argv))
+        if not token.startswith("-") or token == "-":
+            return index
+        option, sep, _ = token.partition("=")
+        index += 1
+        if not sep and option in _ANVIL_DOCKER_VALUE_FLAGS:
+            index += 1
+    return len(argv)
+
+
+def anvil_option_value(argv, flag):
+    """Value of a `--flag value` or `--flag=value` option in an argv, or None.
+
+    Used to read the anvil's `--name` (the per-session handle) and `--network`
+    out of the docker-run argv the Makefile hands the launcher. Only the docker
+    options before the image are scanned, so a same-named harness argument after
+    the image is not mistaken for a docker option.
+    """
+    start = _docker_run_index(argv)
+    end = _docker_option_end_index(argv)
+    prefix = flag + "="
+    for index in range(start, end):
+        token = argv[index]
+        if token == flag and index + 1 < len(argv):
+            return argv[index + 1]
+        if token.startswith(prefix):
+            return token[len(prefix):]
+    return None
+
+
+def _docker_run_index(argv):
+    """Index just after the `run` (or `create`) subcommand token.
+
+    Injected options precede the image, so this is where the launcher splices
+    them in. Raises `ValueError` if the argv is not a docker run/create command.
+    """
+    for index, token in enumerate(argv):
+        if token in ("run", "create"):
+            return index + 1
+    raise ValueError("anvil argv is not a 'docker run' command: %r" % (argv,))
+
+
+def _replace_network(argv, network):
+    out = list(argv)
+    end = _docker_option_end_index(out)
+    for index in range(_docker_run_index(out), end):
+        token = out[index]
+        if token == "--network" and index + 1 < len(out):
+            out[index + 1] = network
+            return out
+        if token.startswith("--network="):
+            out[index] = "--network=" + network
+            return out
+    insert_at = _docker_run_index(out)
+    return out[:insert_at] + ["--network", network] + out[insert_at:]
+
+
+def inject_anvil_argv(anvil_argv, network=None, pre_image_args=(), post_image_args=()):
+    """Rewrite the anvil's docker-run argv to reach the discovered tongs.
+
+    Returns a new argv (the input is never mutated):
+
+      * `network`         -- replaces the existing `--network` value (or inserts
+                             one) so the anvil joins the network the tongs are on.
+      * `pre_image_args`  -- options spliced in right after the `run` subcommand,
+                             before the image: injected `-e`/`-v` for `port`/
+                             `volume` tongs and the OpenCode MCP fragment mount.
+      * `post_image_args` -- appended after everything, i.e. passed to the harness
+                             binary: Claude's `--mcp-config <path>`.
+
+    With all arguments empty/None the argv is returned unchanged, which keeps a
+    zero-tong launch byte-identical to the direct docker run.
+    """
+    argv = list(anvil_argv)
+    if network:
+        argv = _replace_network(argv, network)
+    if pre_image_args:
+        insert_at = _docker_run_index(argv)
+        argv = argv[:insert_at] + list(pre_image_args) + argv[insert_at:]
+    if post_image_args:
+        argv = argv + list(post_image_args)
+    return argv
 
 
 # --- Diagnostic CLI -----------------------------------------------------------
