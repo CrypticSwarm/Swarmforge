@@ -173,6 +173,37 @@ class ValidationTests(unittest.TestCase):
         errors = tongs.validate_tong("t", {"lifecycle": "session", "image": "x", "interface": {"kind": "port"}})
         self.assertTrue(any("port" in e for e in errors))
 
+    def test_tcp_readiness_rejected_for_portless_kind(self):
+        # A volume/none tong has no port, so a tcp probe could never succeed;
+        # validation must reject the combination rather than time out at runtime.
+        errors = tongs.validate_tong("t", {
+            "lifecycle": "session", "image": "x",
+            "interface": {"kind": "none"}, "readiness": {"mode": "tcp"},
+        })
+        self.assertTrue(any("tcp" in e for e in errors))
+
+    def test_tcp_readiness_allowed_for_port_kind(self):
+        self.assertEqual(
+            tongs.validate_tong("t", def_of(PORT_TONG)), []
+        )
+
+    def _base(self, **extra):
+        defn = {"lifecycle": "session", "image": "x",
+                "interface": {"kind": "none"}, "readiness": {"mode": "none"}}
+        defn.update(extra)
+        return defn
+
+    def test_bad_readiness_timeout_rejected(self):
+        defn = self._base(interface={"kind": "port", "port": 5432},
+                          readiness={"mode": "tcp", "timeout": "soon"})
+        errors = tongs.validate_tong("t", defn)
+        self.assertTrue(any("timeout" in e for e in errors))
+
+    def test_bad_readiness_command_rejected(self):
+        defn = self._base(readiness={"mode": "healthcheck", "command": "test -d /x"})
+        errors = tongs.validate_tong("t", defn)
+        self.assertTrue(any("command" in e for e in errors))
+
     def test_volume_requires_volume_mountpoint_and_readiness_mode(self):
         errors = tongs.validate_tong("t", {"lifecycle": "session", "image": "x", "interface": {"kind": "volume"}})
         joined = " ".join(errors)
@@ -769,6 +800,44 @@ class SessionNetworkTests(unittest.TestCase):
         self.assertEqual(plan["session_aliases"], [("a-creds", "github")])
         # The shared tong loses the alias and is not connected.
         self.assertEqual(plan["shared_connect"], [])
+
+
+class ReadinessTests(unittest.TestCase):
+    def test_parse_duration_units(self):
+        self.assertEqual(tongs.parse_duration("30s"), 30.0)
+        self.assertEqual(tongs.parse_duration("500ms"), 0.5)
+        self.assertEqual(tongs.parse_duration("2m"), 120.0)
+        self.assertEqual(tongs.parse_duration("1h"), 3600.0)
+
+    def test_parse_duration_bare_number_is_seconds(self):
+        self.assertEqual(tongs.parse_duration("5"), 5.0)
+        self.assertEqual(tongs.parse_duration(5), 5.0)
+
+    def test_parse_duration_none_uses_default(self):
+        self.assertEqual(tongs.parse_duration(None, 9.0), 9.0)
+
+    def test_parse_duration_invalid_raises(self):
+        with self.assertRaises(ValueError):
+            tongs.parse_duration("soon")
+
+    def test_readiness_defaults_tcp_for_network_facing(self):
+        mode, command, timeout = tongs.readiness_settings(
+            {"interface": {"kind": "port", "port": 1}}
+        )
+        self.assertEqual(mode, "tcp")
+        self.assertIsNone(command)
+        self.assertEqual(timeout, tongs.DEFAULT_READINESS_TIMEOUT_S)
+
+    def test_readiness_explicit_mode_and_timeout(self):
+        mode, command, timeout = tongs.readiness_settings(def_of(VOLUME_TONG))
+        self.assertEqual(mode, "healthcheck")
+        self.assertEqual(command, ["test", "-d", "/cache"])
+
+    def test_readiness_portless_without_mode_is_none(self):
+        # validate_tong requires a mode for volume/none, but the resolver still
+        # falls back to "none" defensively for a kind with no port to probe.
+        mode, _, _ = tongs.readiness_settings({"interface": {"kind": "none"}})
+        self.assertEqual(mode, "none")
 
 
 class CliTests(unittest.TestCase):

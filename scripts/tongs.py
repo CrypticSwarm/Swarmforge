@@ -248,6 +248,23 @@ def validate_tong(name, defn):
         err("readiness.mode %r must be one of %s" % (mode, sorted(READINESS_MODES)))
     if kind in ("volume", "none") and mode is None:
         err("interface.kind=%s requires an explicit readiness.mode" % kind)
+    if mode == "tcp" and kind not in ("mcp", "port"):
+        # A TCP probe needs a port to dial; a volume/none tong has none, so this
+        # would silently never become ready. Force a compatible mode instead.
+        err("readiness.mode=tcp needs a port; interface.kind=%s has none "
+            "(use 'healthcheck' or 'none')" % kind)
+    if isinstance(readiness, dict):
+        # Validate the fields orchestration consumes so a bad value is a clean
+        # error here, not an uncaught ValueError/TypeError mid-launch.
+        try:
+            parse_duration(readiness.get("timeout"), DEFAULT_READINESS_TIMEOUT_S)
+        except ValueError as exc:
+            err("readiness.timeout: %s" % exc)
+        command = readiness.get("command")
+        if command is not None and not (
+            isinstance(command, list) and command and all(isinstance(c, str) for c in command)
+        ):
+            err("readiness.command must be a non-empty list of strings")
 
     env = defn.get("env")
     if env is not None and not isinstance(env, dict):
@@ -887,6 +904,55 @@ def record_approval(approvals, workspace_path, name, defn):
     """
     approvals.setdefault(workspace_path, {})[name] = config_hash(defn)
     return approvals
+
+
+# --- Readiness ----------------------------------------------------------------
+# A tong's `readiness:` declaration says how the launcher decides the tong is up
+# before it gates the anvil on it. `tcp` is the implicit default for the
+# network-facing kinds (mcp/port); `volume`/`none` must declare a mode (validation
+# enforces this). These helpers resolve the declaration to plain values; the
+# probing itself (docker exec / a throwaway probe container / inspecting the
+# image healthcheck) is the launcher's side-effectful job.
+
+DEFAULT_READINESS_TIMEOUT_S = 30.0
+_DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h)?$")
+_DURATION_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, None: 1.0}
+
+
+def parse_duration(value, default=None):
+    """Parse a `30s`/`500ms`/`2m` (or bare-number seconds) duration to float seconds.
+
+    A plain int/float is taken as seconds. `None` yields `default`. Raises
+    `ValueError` for anything else, so a typo in `readiness.timeout` stops the
+    launch rather than silently falling back.
+    """
+    if value is None:
+        return default
+    if _is_int(value) or isinstance(value, float):
+        return float(value)
+    if not isinstance(value, str):
+        raise ValueError("duration must be a string or number, got %r" % (value,))
+    match = _DURATION_RE.match(value.strip())
+    if not match:
+        raise ValueError("invalid duration %r" % (value,))
+    return float(match.group(1)) * _DURATION_UNITS[match.group(2)]
+
+
+def readiness_settings(defn):
+    """Resolve a tong's readiness declaration to `(mode, command, timeout_s)`.
+
+    `mode` defaults to `tcp` for the network-facing kinds (mcp/port) when not
+    declared; `command` is the optional exec used by `healthcheck`; `timeout_s`
+    is the parsed `readiness.timeout` (default 30s). Assumes a validated
+    definition, so a portless kind already carries an explicit mode.
+    """
+    interface = defn.get("interface") or {}
+    readiness = defn.get("readiness") or {}
+    mode = readiness.get("mode")
+    if mode is None:
+        mode = "tcp" if interface.get("kind") in ("mcp", "port") else "none"
+    timeout_s = parse_duration(readiness.get("timeout"), DEFAULT_READINESS_TIMEOUT_S)
+    return mode, readiness.get("command"), timeout_s
 
 
 # --- Diagnostic CLI -----------------------------------------------------------
