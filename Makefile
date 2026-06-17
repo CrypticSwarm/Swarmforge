@@ -191,6 +191,8 @@ define run_agent_container
 	$(PYTHON) "$(SWARMFORGE_DIR)/scripts/run_anvil.py" \
 	  $(TONGS_LAYER_ARGS) \
 	  --workspace-tongs "$$workspace_dir/.swarmforge/tongs" \
+	  --workspace "$$workspace_dir" \
+	  --approvals "$(SWARMFORGE_USER_ASSETS_DIR)/approvals.json" \
 	  -- \
 	  docker run -it --rm --name "$(1)" \
 	  --network "$(NETWORK)" \
