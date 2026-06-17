@@ -647,6 +647,27 @@ def anvil_mounts(name, defn):
     return []
 
 
+def alias_collisions(merged):
+    """Tong names grouped by canonical alias, for aliases claimed by >1 tong.
+
+    Returns `{alias: [tong names]}` for the aliases more than one tong resolves
+    to (empty when every alias is unique). Two tongs on one network cannot share
+    a DNS alias without nondeterministic resolution, so the live launcher refuses
+    such a set; the planning functions that build per-anvil config instead keep
+    the first and warn. Only network-facing tongs (mcp/port) claim a
+    `--network-alias`, so volume/none tongs are skipped -- they never register a
+    DNS name and so cannot collide.
+    """
+    by_alias = {}
+    for name in sorted(merged):
+        defn = merged[name]["definition"]
+        if not _is_network_facing(defn):
+            continue
+        alias = canonical_alias(name, defn)
+        by_alias.setdefault(alias, []).append(name)
+    return {alias: names for alias, names in by_alias.items() if len(names) > 1}
+
+
 def mcp_tongs(merged):
     """`{alias: definition}` for every `mcp`-interface tong in the merged set.
 

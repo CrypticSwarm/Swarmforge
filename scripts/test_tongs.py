@@ -985,6 +985,42 @@ class DockerArgvTests(unittest.TestCase):
             tongs.inject_anvil_argv(["podman", "ps"], pre_image_args=["-e", "A=1"])
 
 
+class AliasCollisionTests(unittest.TestCase):
+    def _m(self, **defs):
+        return {n: {"source": tongs.REPO, "definition": d} for n, d in defs.items()}
+
+    def test_detects_shared_alias(self):
+        merged = self._m(
+            a={"interface": {"kind": "mcp", "name": "dup", "port": 1}},
+            b={"interface": {"kind": "mcp", "name": "dup", "port": 2}},
+            c={"interface": {"kind": "none"}},
+        )
+        self.assertEqual(tongs.alias_collisions(merged), {"dup": ["a", "b"]})
+
+    def test_mcp_name_can_collide_with_network_facing_tong_name(self):
+        # canonical_alias is interface.name for mcp, else the tong name.
+        merged = self._m(
+            github={"interface": {"kind": "port", "port": 2}},
+            creds={"interface": {"kind": "mcp", "name": "github", "port": 1}},
+        )
+        self.assertEqual(tongs.alias_collisions(merged), {"github": ["creds", "github"]})
+
+    def test_non_network_facing_tongs_do_not_claim_aliases(self):
+        merged = self._m(
+            github={"interface": {"kind": "none"}},
+            cache={"interface": {"kind": "volume", "volume": "cache", "mountpoint": "/cache"}},
+            creds={"interface": {"kind": "mcp", "name": "github", "port": 1}},
+        )
+        self.assertEqual(tongs.alias_collisions(merged), {})
+
+    def test_empty_when_unique(self):
+        merged = self._m(
+            a={"interface": {"kind": "none"}},
+            b={"interface": {"kind": "port", "port": 1}},
+        )
+        self.assertEqual(tongs.alias_collisions(merged), {})
+
+
 class ReadinessTests(unittest.TestCase):
     def test_parse_duration_units(self):
         self.assertEqual(tongs.parse_duration("30s"), 30.0)
