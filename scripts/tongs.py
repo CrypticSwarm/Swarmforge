@@ -977,13 +977,20 @@ def parse_duration(value, default=None):
     if value is None:
         return default
     if _is_int(value) or isinstance(value, float):
-        return float(value)
-    if not isinstance(value, str):
+        seconds = float(value)
+    elif not isinstance(value, str):
         raise ValueError("duration must be a string or number, got %r" % (value,))
-    match = _DURATION_RE.match(value.strip())
-    if not match:
-        raise ValueError("invalid duration %r" % (value,))
-    return float(match.group(1)) * _DURATION_UNITS[match.group(2)]
+    else:
+        match = _DURATION_RE.match(value.strip())
+        if not match:
+            raise ValueError("invalid duration %r" % (value,))
+        seconds = float(match.group(1)) * _DURATION_UNITS[match.group(2)]
+    if seconds <= 0:
+        # A non-positive readiness deadline is never useful -- it gives the
+        # probe no time to succeed -- so reject it here rather than letting the
+        # launch fail mysteriously when nothing ever reports ready.
+        raise ValueError("duration must be positive, got %r" % (value,))
+    return seconds
 
 
 def readiness_settings(defn):
@@ -1045,7 +1052,8 @@ def session_container_name(session_id, name):
     container name, while the tong's canonical alias -- not this name -- is what
     the anvil dials.
     """
-    return "%s-tong-%s" % (session_id, _sanitize_container_token(name))
+    token = _sanitize_container_token(name)
+    return "%s-tong-%s" % (session_id, token) if token else "%s-tong" % session_id
 
 
 def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET):

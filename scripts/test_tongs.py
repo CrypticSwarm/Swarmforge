@@ -841,6 +841,15 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(tongs.shared_container_name("ollama"), "swarmforge-shared-ollama")
         self.assertEqual(tongs.shared_container_name("my tong/x"), "swarmforge-shared-my-tong-x")
 
+    def test_session_container_name_carries_session_and_sanitizes(self):
+        self.assertEqual(tongs.session_container_name("claude-proj", "github"), "claude-proj-tong-github")
+        self.assertEqual(tongs.session_container_name("claude-proj", "my tong/x"), "claude-proj-tong-my-tong-x")
+
+    def test_session_container_name_empty_token_has_no_trailing_dash(self):
+        # A name that sanitizes to empty must not yield a "<sess>-tong-" name that
+        # would collide with another such tong; fall back like shared names do.
+        self.assertEqual(tongs.session_container_name("sess", "@@@"), "sess-tong")
+
     def test_mount_specs_workspace_and_socket(self):
         defn = {"mounts": ["workspace:ro", "docker-socket"]}
         specs = tongs.tong_mount_specs(defn, "/ws")
@@ -1038,6 +1047,14 @@ class ReadinessTests(unittest.TestCase):
     def test_parse_duration_invalid_raises(self):
         with self.assertRaises(ValueError):
             tongs.parse_duration("soon")
+
+    def test_parse_duration_non_positive_raises(self):
+        # A bare negative/zero number bypasses the (sign-less) duration regex, so
+        # guard positivity explicitly: a non-positive deadline gives the probe no
+        # time to succeed.
+        for bad in (-5, 0, "0s", "-1"):
+            with self.assertRaises(ValueError):
+                tongs.parse_duration(bad)
 
     def test_readiness_defaults_tcp_for_network_facing(self):
         mode, command, timeout = tongs.readiness_settings(
