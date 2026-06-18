@@ -518,6 +518,21 @@ class MainGateTests(unittest.TestCase):
             self.assertEqual(completed.stdout, "")
             self.assertIn("secret", completed.stderr)
 
+    def test_keyboard_interrupt_during_run_returns_130(self):
+        # Ctrl-C while the anvil runs leaves the (long-lived) shared tongs up and
+        # reports the conventional 128+SIGINT status rather than a traceback.
+        with tempfile.TemporaryDirectory() as tmp:
+            tongs_dir = os.path.join(tmp, "tongs")
+            os.makedirs(tongs_dir)
+            with open(os.path.join(tongs_dir, "shipper.yaml"), "w") as handle:
+                handle.write(
+                    "lifecycle: shared\nimage: x\ninterface:\n  kind: none\n"
+                    "readiness:\n  mode: none\n"
+                )
+            with mock.patch.object(run_anvil, "run_with_tongs", side_effect=KeyboardInterrupt):
+                rc = run_anvil.main(["--repo-tongs", tongs_dir, "--", "/no/such/binary-xyz"])
+            self.assertEqual(rc, 130)
+
     def test_mcp_tong_refused_without_exec(self):
         # An `mcp`-interface tong needs generated MCP config the launcher does not
         # emit here, so it is refused before docker.
@@ -652,6 +667,41 @@ class RunWithTongsTests(unittest.TestCase):
         self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
         self.assertIn(("rm_force", "swarmforge-shared-ollama"), docker.calls)
         self.assertEqual(len(docker.run_argvs), 1)
+
+    def test_stopped_shared_tong_is_recreated(self):
+        # A container exists by name but is not running (a stale leftover) =>
+        # recreate even though its label happens to match.
+        states = {"swarmforge-shared-ollama":
+                  {"running": False, "label": tongs.config_hash(SHARED_OLLAMA)}}
+        docker = FakeDocker(states=states)
+        self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
+        self.assertIn(("rm_force", "swarmforge-shared-ollama"), docker.calls)
+        self.assertEqual(len(docker.run_argvs), 1)
+
+    def test_multiple_shared_tongs_started_and_injected(self):
+        # Two shared tongs in one launch: both are started and both contribute
+        # their reachability to the anvil.
+        port_tong = {
+            "lifecycle": "shared", "image": "pg",
+            "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"},
+        }
+        volume_tong = {
+            "lifecycle": "shared", "image": "cache",
+            "interface": {"kind": "volume", "volume": "build-cache", "mountpoint": "/cache"},
+            "readiness": {"mode": "none"},
+        }
+        docker = FakeDocker()
+        merged = {
+            "pg": {"source": tongs.REPO, "definition": port_tong},
+            "cache": {"source": tongs.REPO, "definition": volume_tong},
+        }
+        self._run(docker, merged)
+        self.assertEqual(len(docker.run_argvs), 2)
+        argv = docker.anvil_argv
+        self.assertIn("SWARMFORGE_TONG_PG_HOST=pg", argv)
+        self.assertIn("SWARMFORGE_TONG_PG_PORT=5432", argv)
+        self.assertIn("SWARMFORGE_TONG_CACHE_PATH=/cache", argv)
+        self.assertIn("build-cache:/cache", argv)
 
     def test_tcp_readiness_probes_alias_with_anvil_image(self):
         docker = FakeDocker()
