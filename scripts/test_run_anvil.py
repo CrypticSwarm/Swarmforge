@@ -446,15 +446,16 @@ class MainGateTests(unittest.TestCase):
 
     def test_approved_workspace_tong_passes_gate_then_refused_as_unsupported(self):
         # Approval is no longer the only gate: an approved (and otherwise valid)
-        # workspace tong clears the approval prompt but, being a `session` tong, is
-        # then refused as unsupported -- proving the gate passed without the anvil
-        # ever running.
+        # workspace tong clears the approval prompt but, having an `mcp` interface
+        # this launcher cannot wire up yet, is then refused as unsupported --
+        # proving the gate passed without the anvil ever running.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
             with open(os.path.join(tongs_dir, "gh.yaml"), "w") as handle:
                 handle.write(
-                    "lifecycle: session\nimage: x\ninterface:\n  kind: none\n"
+                    "lifecycle: shared\nimage: x\ninterface:\n"
+                    "  kind: mcp\n  name: github\n  port: 8080\n"
                     "readiness:\n  mode: none\n"
                 )
             defn = tongs.load_tong_file(os.path.join(tongs_dir, "gh.yaml"))
@@ -471,7 +472,7 @@ class MainGateTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 1)
             self.assertEqual(completed.stdout, "")  # anvil never ran
-            self.assertIn("session", completed.stderr)
+            self.assertIn("mcp", completed.stderr)
             self.assertNotIn("fails closed", completed.stderr)
 
     def test_invalid_tong_returns_one_without_exec(self):
@@ -484,22 +485,6 @@ class MainGateTests(unittest.TestCase):
             completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
             self.assertEqual(completed.returncode, 1)
             self.assertEqual(completed.stdout, "")  # anvil never ran
-
-    def test_session_tong_refused_without_exec(self):
-        # A `session` tong is beyond the shared-only launch path, so it is refused
-        # before any docker call -- the anvil never runs.
-        with tempfile.TemporaryDirectory() as tmp:
-            tongs_dir = os.path.join(tmp, "tongs")
-            os.makedirs(tongs_dir)
-            with open(os.path.join(tongs_dir, "ship.yaml"), "w") as handle:
-                handle.write(
-                    "lifecycle: session\nimage: x\ninterface:\n  kind: none\n"
-                    "readiness:\n  mode: none\n"
-                )
-            completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
-            self.assertEqual(completed.returncode, 1)
-            self.assertEqual(completed.stdout, "")
-            self.assertIn("session", completed.stderr)
 
     def test_secret_tong_refused_without_exec(self):
         # A shared tong that references a secret cannot be delivered here, so it
@@ -602,10 +587,18 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
     def test_startable_none_tong_has_no_reasons(self):
         self.assertEqual(self._reasons(SHARED_NONE), [])
 
-    def test_session_secret_mcp_volume_each_refused(self):
-        self.assertTrue(self._reasons(
-            {"lifecycle": "session", "image": "x", "interface": {"kind": "none"},
-             "readiness": {"mode": "none"}}))
+    def test_startable_session_tong_has_no_reasons(self):
+        # A `session` tong reached over the network (or with no surface) is now
+        # startable -- it runs on a per-session network.
+        self.assertEqual(
+            self._reasons({
+                "lifecycle": "session", "image": "x",
+                "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"},
+            }),
+            [],
+        )
+
+    def test_secret_mcp_volume_each_refused(self):
         self.assertTrue(self._reasons(
             {"lifecycle": "shared", "image": "x", "env": {"T": "${secret:op:r}"},
              "interface": {"kind": "none"}, "readiness": {"mode": "none"}}))
@@ -616,6 +609,17 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
         self.assertTrue(self._reasons(
             {"lifecycle": "shared", "image": "x",
              "interface": {"kind": "volume", "volume": "v", "mountpoint": "/m"},
+             "readiness": {"mode": "none"}}))
+
+    def test_session_tong_with_secret_or_mcp_still_refused(self):
+        # Lifting the session guard does not lift the secret/mcp guards; a session
+        # tong that needs either is still refused (delivered in a later phase).
+        self.assertTrue(self._reasons(
+            {"lifecycle": "session", "image": "x", "env": {"T": "${secret:op:r}"},
+             "interface": {"kind": "none"}, "readiness": {"mode": "none"}}))
+        self.assertTrue(self._reasons(
+            {"lifecycle": "session", "image": "x",
+             "interface": {"kind": "mcp", "name": "g", "port": 8080},
              "readiness": {"mode": "none"}}))
 
     def test_shared_workspace_mount_refused_but_docker_socket_allowed(self):
@@ -636,17 +640,16 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
         )
 
     def test_workspace_refusal_is_shared_scoped(self):
-        # The workspace-mount leak is a `shared`-reuse hazard, so a non-shared tong
-        # that mounts the workspace must NOT be refused for the workspace -- only a
-        # `shared` one. (A session+workspace watcher is legitimate; it lands when
-        # session tongs turn on.) A session tong here is refused for being session,
-        # not for the workspace mount.
-        session_reasons = self._reasons({
-            "lifecycle": "session", "image": "x", "mounts": ["workspace:ro"],
-            "interface": {"kind": "none"}, "readiness": {"mode": "none"},
-        })
-        self.assertTrue(any("session" in r for r in session_reasons))
-        self.assertFalse(any("workspace" in r for r in session_reasons))
+        # The workspace-mount leak is a `shared`-reuse hazard, so a `session` tong
+        # that mounts the workspace is legitimate (it is torn down with the anvil)
+        # and must NOT be refused -- only a `shared` one is.
+        self.assertEqual(
+            self._reasons({
+                "lifecycle": "session", "image": "x", "mounts": ["workspace:ro"],
+                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+            }),
+            [],
+        )
 
 
 class FakeDocker:
@@ -659,13 +662,32 @@ class FakeDocker:
         self._ready = ready
         self._anvil_rc = anvil_rc
         self.run_argvs = []              # detached `docker run` argvs
-        self.anvil_argv = None           # set when the anvil runs via run_foreground
+        self.anvil_argv = None           # set when the anvil runs
+        self.anvil_extra_networks = None  # extra networks the anvil joined
 
     def rm_force(self, container):
         self.calls.append(("rm_force", container))
 
     def run_detached(self, argv):
         self.run_argvs.append(argv)
+
+    def ensure_network(self, name):
+        self.calls.append(("ensure_network", name))
+
+    def network_connect(self, network, container, alias=None):
+        self.calls.append(("network_connect", network, container, alias))
+
+    def network_disconnect(self, network, container):
+        self.calls.append(("network_disconnect", network, container))
+
+    def network_rm(self, network):
+        self.calls.append(("network_rm", network))
+
+    def run_foreground_multi(self, argv, extra_networks, container):
+        self.anvil_argv = argv
+        self.anvil_extra_networks = list(extra_networks)
+        self.calls.append(("run_foreground_multi", argv, tuple(extra_networks), container))
+        return self._anvil_rc
 
     def inspect_state(self, container):
         return self._states.get(container)
@@ -717,6 +739,14 @@ SHARED_NONE = {
     "lifecycle": "shared",
     "image": "log-shipper",
     "interface": {"kind": "none"},
+    "readiness": {"mode": "none"},
+}
+
+# A per-session network service (a throwaway fixture DB) reached by host+port.
+SESSION_PORT = {
+    "lifecycle": "session",
+    "image": "fixture-pg",
+    "interface": {"kind": "port", "port": 5432},
     "readiness": {"mode": "none"},
 }
 
@@ -934,6 +964,120 @@ class RunWithTongsTests(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         self.assertNotIn("tcp_probe", [c[0] for c in docker.calls])
+
+    # --- Session lifecycle + per-session networks ---------------------------
+
+    def test_shared_only_keeps_base_network_and_plain_run(self):
+        # No `session` tong => no per-session network is created and the anvil runs
+        # on the base network through the plain (single-network) foreground path.
+        docker = FakeDocker()
+        self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
+        kinds = [c[0] for c in docker.calls]
+        self.assertNotIn("ensure_network", kinds)
+        self.assertNotIn("network_rm", kinds)
+        self.assertNotIn("run_foreground_multi", kinds)
+        self.assertIn("run_foreground", kinds)
+        self.assertEqual(
+            docker.anvil_argv[docker.anvil_argv.index("--network") + 1], "opencode-net"
+        )
+        self.assertIsNone(docker.anvil_extra_networks)
+
+    def test_session_tong_creates_network_starts_on_it_and_tears_down(self):
+        docker = FakeDocker()
+        rc = self._run(docker, _merged("pg", SESSION_PORT, source=tongs.REPO))
+        self.assertEqual(rc, 0)
+        net = tongs.session_network_name("claude-myproject")
+        self.assertIn(("ensure_network", net), docker.calls)
+        # The session tong is started on the per-session network under its alias.
+        self.assertEqual(len(docker.run_argvs), 1)
+        started = docker.run_argvs[0]
+        self.assertIn("claude-myproject-tong-pg", started)
+        self.assertEqual(started[started.index("--network") + 1], net)
+        self.assertEqual(started[started.index("--network-alias") + 1], "pg")
+        # The anvil joined the session network (primary) and the base network
+        # (extra) via the create -> connect -> start path, and got the port env.
+        self.assertEqual(docker.anvil_argv[docker.anvil_argv.index("--network") + 1], net)
+        self.assertEqual(docker.anvil_extra_networks, ["opencode-net"])
+        self.assertIn("SWARMFORGE_TONG_PG_HOST=pg", docker.anvil_argv)
+        # Teardown removes the session tong and the anvil, then the network -- the
+        # network rm must come after its endpoints are gone or docker refuses it.
+        self.assertIn(("rm_force", "claude-myproject-tong-pg"), docker.calls)
+        self.assertIn(("rm_force", "claude-myproject"), docker.calls)
+        self.assertIn(("network_rm", net), docker.calls)
+        self.assertLess(
+            docker.calls.index(("rm_force", "claude-myproject")),
+            docker.calls.index(("network_rm", net)),
+        )
+        self.assertLess(
+            docker.calls.index(("rm_force", "claude-myproject-tong-pg")),
+            docker.calls.index(("network_rm", net)),
+        )
+
+    def test_shared_tong_connected_to_session_network_and_left_running(self):
+        # A `shared` tong alongside a `session` tong is ensured on the base network,
+        # then connected to the per-session network for the anvil to reach; on
+        # teardown it is disconnected but never removed.
+        docker = FakeDocker()
+        merged = {
+            "pg": {"source": tongs.REPO, "definition": SESSION_PORT},
+            "ollama": {"source": tongs.REPO, "definition": SHARED_OLLAMA},
+        }
+        self._run(docker, merged)
+        net = tongs.session_network_name("claude-myproject")
+        self.assertIn(
+            ("network_connect", net, "swarmforge-shared-ollama", "ollama"), docker.calls
+        )
+        self.assertIn(
+            ("network_disconnect", net, "swarmforge-shared-ollama"), docker.calls
+        )
+        # The connect is idempotent against a reused network: a best-effort
+        # disconnect precedes it (a no-op when the tong is not already attached).
+        self.assertLess(
+            docker.calls.index(("network_disconnect", net, "swarmforge-shared-ollama")),
+            docker.calls.index(("network_connect", net, "swarmforge-shared-ollama", "ollama")),
+        )
+        # The shared tong is rm_force'd only once -- when (re)started to clear a
+        # leftover -- never as part of teardown, so it is left running.
+        self.assertEqual(
+            docker.calls.count(("rm_force", "swarmforge-shared-ollama")), 1
+        )
+
+    def test_session_tong_readiness_probes_on_session_network(self):
+        docker = FakeDocker()
+        defn = {
+            "lifecycle": "session", "image": "pg",
+            "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "tcp"},
+        }
+        self._run(docker, _merged("pg", defn, source=tongs.REPO))
+        net = tongs.session_network_name("claude-myproject")
+        self.assertIn(("tcp_probe", net, "pg", 5432, "anvil:img"), docker.calls)
+
+    def test_session_teardown_runs_on_keyboard_interrupt(self):
+        # Ctrl-C mid-session must still tear down the session tong and network so an
+        # interrupted run leaks neither.
+        docker = FakeDocker()
+
+        def interrupt(argv, extra_networks, container):
+            docker.calls.append(("run_foreground_multi", argv, tuple(extra_networks), container))
+            raise KeyboardInterrupt
+
+        docker.run_foreground_multi = interrupt
+        net = tongs.session_network_name("claude-myproject")
+        with self.assertRaises(KeyboardInterrupt):
+            self._run(docker, _merged("pg", SESSION_PORT, source=tongs.REPO))
+        self.assertIn(("rm_force", "claude-myproject-tong-pg"), docker.calls)
+        self.assertIn(("rm_force", "claude-myproject"), docker.calls)
+        self.assertIn(("network_rm", net), docker.calls)
+
+    def test_session_tong_without_anvil_name_raises_before_any_docker_call(self):
+        docker = FakeDocker()
+        anvil = ["docker", "run", "-it", "--rm", "--network", "opencode-net", "img"]
+        with self.assertRaises(run_anvil.OrchestrationError):
+            run_anvil.run_with_tongs(
+                _merged("pg", SESSION_PORT, source=tongs.REPO), anvil, _opts(),
+                docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
+            )
+        self.assertEqual(docker.calls, [])  # nothing created => nothing to tear down
 
 
 if __name__ == "__main__":

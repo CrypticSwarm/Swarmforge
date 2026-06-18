@@ -14,21 +14,25 @@ started alongside the anvil, not from inside it), which is why this wrapper sits
 between Make and `docker run`. It discovers tong definitions across the four
 layers using the pure core in `tongs.py`, then runs the anvil.
 
-Shared tongs
-------------
+Tong lifecycles
+---------------
 When a tong is discovered, the launcher starts it before the anvil, waits for it
-to report ready, makes it reachable from the anvil, runs the anvil in the
-foreground, and leaves the tong running afterwards. A `shared` tong is one
-long-lived container keyed by a stable name: a running one whose config-hash
-label still matches is reused untouched, and a missing/stopped/stale one is
-(re)started. A `port` tong's reachability is injected into the anvil as
-environment; a `none` tong is started but has no anvil-facing surface.
+to report ready, makes it reachable from the anvil, then runs the anvil in the
+foreground. A `shared` tong is one long-lived container keyed by a stable name: a
+running one whose config-hash label still matches is reused untouched, a
+missing/stopped/stale one is (re)started, and it is left running afterwards. A
+`session` tong is per-session: when any exists the launcher creates a per-session
+network, starts the `session` tongs on it under their canonical aliases, connects
+each network-facing `shared` tong to it, and joins the anvil to it (plus the base
+`NETWORK=` network). On exit -- including SIGINT -- the `session` tongs and the
+per-session network are torn down (and the connected `shared` tongs disconnected)
+while the long-lived `shared` tongs keep running. A `port` tong's reachability is
+injected into the anvil as environment; a `none` tong has no anvil-facing surface.
 
-The launcher starts only `shared` tongs reached over the network (`port`) or with
-no anvil-facing surface (`none`), carrying no secret references. A `session`
-lifecycle, a secret reference, an `mcp` or `volume` interface, or a `shared` tong
-that mounts the workspace is refused with a clear message rather than started
-half-wired.
+The launcher starts `shared` and `session` tongs reached over the network
+(`port`) or with no anvil-facing surface (`none`), carrying no secret references.
+A secret reference, an `mcp` or `volume` interface, or a `shared` tong that mounts
+the workspace is refused with a clear message rather than started half-wired.
 
 First-run approval
 ------------------
@@ -574,10 +578,10 @@ def _mounts_workspace(defn):
 def unsupported_tong_reasons(merged):
     """Reasons each discovered tong is outside what the launcher can start.
 
-    The launcher starts only `shared`, network-or-nothing tongs that hold no
-    secret. Refused here:
+    The launcher starts `shared` and `session` tongs reached over the network
+    (`port`) or with no anvil-facing surface (`none`), holding no secret. Refused
+    here:
 
-      * a `session` lifecycle -- it needs a per-session network;
       * a secret reference -- it needs tmpfs delivery;
       * an `mcp` interface -- it needs generated MCP config;
       * a `volume` interface -- a shared named volume has no consumer yet, so it
@@ -595,11 +599,6 @@ def unsupported_tong_reasons(merged):
     for name in sorted(merged):
         defn = merged[name]["definition"]
         kind = (defn.get("interface") or {}).get("kind")
-        if defn.get("lifecycle") == "session":
-            reasons.append(
-                "tong '%s' is a 'session' tong, which this launcher does not "
-                "start (only 'shared' tongs are supported)" % name
-            )
         if tongs.find_secret_refs(defn):
             reasons.append(
                 "tong '%s' references a secret, which this launcher does not "
@@ -662,6 +661,26 @@ def _ensure_shared_tong(docker, name, defn, *, container, network, alias,
     )
 
 
+def _start_session_tong(docker, name, defn, *, container, network, alias, workspace):
+    """Start one `session` tong container detached on the per-session network.
+
+    A `session` tong is per-session and torn down with the anvil, so it gets a
+    session-suffixed container name and lives only on the per-session network
+    under its canonical alias. The launcher only reaches here for a secret-less
+    tong, so the definition's `env` is passed straight through as `-e`; any
+    leftover container of the same name (from a crashed prior session) is removed
+    first so it is replaced cleanly.
+    """
+    argv = tongs.tong_run_argv(
+        name, defn,
+        container_name=container, network=network, alias=alias,
+        env=defn.get("env") or {}, label_hash=tongs.config_hash(defn),
+        workspace=workspace,
+    )
+    docker.rm_force(container)
+    docker.run_detached(argv)
+
+
 def _injection_pre_image_args(injection):
     """`-e`/`-v` options the discovered tongs add to the anvil before the image.
 
@@ -679,49 +698,126 @@ def _injection_pre_image_args(injection):
 
 def run_with_tongs(merged, anvil_cmd, opts, *, docker,
                    sleep=time.sleep, monotonic=time.monotonic):
-    """Start the discovered `shared` tongs, run the anvil, and leave them running.
+    """Start the discovered tongs, run the anvil, and tear down session state.
 
     Only reached when at least one tong was discovered and every tong is startable
     (the empty case stays a direct exec; unsupported tongs are refused earlier).
-    Sequence: ensure each `shared` tong is up on the anvil's base network
-    (reusing a running one whose config hash still matches), probe each tong's
-    readiness, inject `port` reachability into the anvil argv, then run the anvil
-    in the foreground. `shared` tongs are long-lived, so nothing is torn down when
-    the anvil exits.
+
+    `shared` tongs are ensured on the anvil's base network, reusing a running one
+    whose config hash still matches. When any `session` tong exists a per-session
+    network is created: the `session` tongs start on it under their canonical
+    aliases, each network-facing `shared` tong is connected to it for this session,
+    and the anvil joins it plus the base network (the `NETWORK=` escape hatch).
+    With no `session` tong the anvil keeps using the base network exactly as
+    before. Each tong's readiness is probed on the network the anvil will use,
+    `port` reachability is injected into the anvil argv, then the anvil runs in the
+    foreground.
+
+    On exit -- including SIGINT -- the `session` tongs and the per-session network
+    are torn down (and the connected `shared` tongs disconnected) while the
+    long-lived `shared` tongs are left running.
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
-    becomes ready -- the anvil does not run against a half-up environment.
+    becomes ready (the anvil does not run against a half-up environment) or a
+    `session` tong is discovered with no anvil `--name` to key the session by.
     """
     base_network = tongs.anvil_option_value(anvil_cmd, "--network")
+    session_id = tongs.anvil_option_value(anvil_cmd, "--name")
+
+    has_session = any(
+        merged[name]["definition"].get("lifecycle") == "session" for name in merged
+    )
+    if has_session and not session_id:
+        # The per-session network and container names key off the anvil --name.
+        # The Makefile always passes it, so its absence is a launch-shape bug --
+        # stop rather than build an unnamed session network. (Checked before
+        # plan_network, which needs the handle to derive the network name.)
+        raise OrchestrationError(
+            "session tongs require the anvil '--name' as a session handle"
+        )
+
+    plan = tongs.plan_network(merged, base_network, session_id)
     # Only `port`/`none` tongs reach this path (`mcp`/`volume` are refused
     # upstream), so the MCP emitter is unused and the injection is `port` env only.
     injection = tongs.plan_injection(merged, None)
 
-    ready_checks = []
-    for name in sorted(merged):
-        defn = merged[name]["definition"]
-        alias = tongs.canonical_alias(name, defn)
-        label_hash = tongs.config_hash(defn)
-        container = tongs.shared_container_name(name)
-        _ensure_shared_tong(
-            docker, name, defn,
-            container=container, network=base_network, alias=alias,
-            workspace=opts.workspace, label_hash=label_hash,
+    created_network = None
+    started_sessions = []
+    connected_shared = []
+    try:
+        if plan["create"]:
+            docker.ensure_network(plan["create"])
+            created_network = plan["create"]
+
+        ready_checks = []
+        for name in sorted(merged):
+            defn = merged[name]["definition"]
+            alias = tongs.canonical_alias(name, defn)
+            if defn.get("lifecycle") == "session":
+                container = tongs.session_container_name(session_id, name)
+                _start_session_tong(
+                    docker, name, defn,
+                    container=container, network=plan["network"], alias=alias,
+                    workspace=opts.workspace,
+                )
+                started_sessions.append(container)
+            else:
+                container = tongs.shared_container_name(name)
+                _ensure_shared_tong(
+                    docker, name, defn,
+                    container=container, network=base_network, alias=alias,
+                    workspace=opts.workspace, label_hash=tongs.config_hash(defn),
+                )
+            ready_checks.append((name, defn, alias, container))
+
+        # Attach each network-facing `shared` tong to the per-session network under
+        # its canonical alias, so the anvil reaches it there without the long-lived
+        # tong having to live on the session network permanently. (The session-tong
+        # start loop above iterates the whole merged set, not plan["session_aliases"],
+        # because a `none` session tong with no alias must still be started; only the
+        # network-facing `shared` tongs in plan["shared_connect"] are connected here.)
+        for name, alias in plan["shared_connect"]:
+            container = tongs.shared_container_name(name)
+            # ensure_network may have reused a network left by a hard-killed prior
+            # session whose teardown never ran, with this shared tong still attached;
+            # a stale endpoint would make connect fail. Clear it first -- best-effort,
+            # a no-op when the tong is not attached -- so the connect is idempotent.
+            docker.network_disconnect(plan["network"], container)
+            docker.network_connect(plan["network"], container, alias=alias)
+            connected_shared.append((plan["network"], container))
+
+        # Probe readiness on the network the anvil will use, so a `shared` tong is
+        # checked at the alias the anvil dials (connected to that network above).
+        for name, defn, alias, container in ready_checks:
+            if not wait_ready(
+                docker, container, defn, alias, plan["network"],
+                anvil_image=opts.anvil_image, sleep=sleep, monotonic=monotonic,
+            ):
+                raise OrchestrationError("tong '%s' did not become ready in time" % name)
+
+        injected = tongs.inject_anvil_argv(
+            anvil_cmd, network=plan["network"],
+            pre_image_args=_injection_pre_image_args(injection),
         )
-        ready_checks.append((name, defn, alias, base_network, container))
-
-    for name, defn, alias, probe_net, container in ready_checks:
-        if not wait_ready(
-            docker, container, defn, alias, probe_net,
-            anvil_image=opts.anvil_image, sleep=sleep, monotonic=monotonic,
-        ):
-            raise OrchestrationError("tong '%s' did not become ready in time" % name)
-
-    injected = tongs.inject_anvil_argv(
-        anvil_cmd, network=base_network,
-        pre_image_args=_injection_pre_image_args(injection),
-    )
-    return docker.run_foreground(injected)
+        if plan["extra_networks"]:
+            # The anvil joins more than one network, which docker run cannot do at
+            # creation, so create -> connect the extras -> start it attached.
+            return docker.run_foreground_multi(
+                injected, plan["extra_networks"], session_id
+            )
+        return docker.run_foreground(injected)
+    finally:
+        # Tear down per-session state, leaving the long-lived `shared` tongs
+        # running. Order matters: remove the `session` tongs and the anvil, then
+        # disconnect the `shared` tongs, before removing the network -- docker
+        # refuses to delete a network while endpoints remain.
+        for container in started_sessions:
+            docker.rm_force(container)
+        if created_network:
+            docker.rm_force(session_id)
+            for network, container in connected_shared:
+                docker.network_disconnect(network, container)
+            docker.network_rm(created_network)
 
 
 def exec_anvil(anvil_cmd):
@@ -780,10 +876,10 @@ def main(argv):
         return 1
 
     # Refuse anything this launcher cannot start (see unsupported_tong_reasons:
-    # a session lifecycle, a secret reference, an MCP or volume interface, or a
-    # shared tong mounting the workspace) rather than starting it half-wired.
-    # Every remaining tong is a `port`/`none` tong, whose canonical alias is its
-    # unique filename, so no two can claim the same network alias.
+    # a secret reference, an MCP or volume interface, or a shared tong mounting
+    # the workspace) rather than starting it half-wired. Every remaining tong has
+    # a `port`/`none` interface, whose canonical alias is its unique filename, so
+    # no two can claim the same network alias.
     unsupported = unsupported_tong_reasons(merged)
     if unsupported:
         for reason in unsupported:
