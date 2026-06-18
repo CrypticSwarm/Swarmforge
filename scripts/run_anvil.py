@@ -21,12 +21,14 @@ to report ready, makes it reachable from the anvil, runs the anvil in the
 foreground, and leaves the tong running afterwards. A `shared` tong is one
 long-lived container keyed by a stable name: a running one whose config-hash
 label still matches is reused untouched, and a missing/stopped/stale one is
-(re)started. A `port` or `volume` tong's reachability is injected into the anvil
-as environment (and, for `volume`, a shared mount).
+(re)started. A `port` tong's reachability is injected into the anvil as
+environment; a `none` tong is started but has no anvil-facing surface.
 
-The launcher starts only `shared` tongs that carry no secret references and no
-`mcp` interface; a `session` lifecycle, a secret reference, or an `mcp` interface
-is refused with a clear message rather than started half-wired.
+The launcher starts only `shared` tongs reached over the network (`port`) or with
+no anvil-facing surface (`none`), carrying no secret references. A `session`
+lifecycle, a secret reference, an `mcp` or `volume` interface, or a `shared` tong
+that mounts the workspace is refused with a clear message rather than started
+half-wired.
 
 First-run approval
 ------------------
@@ -498,19 +500,42 @@ class OrchestrationError(Exception):
     """A tong could not be started/made ready; the launch stops."""
 
 
+def _mounts_workspace(defn):
+    """True if a tong's `mounts:` request the session workspace.
+
+    The magic word may carry a `:mode` suffix (e.g. `workspace:ro`), so compare
+    only the word before the colon.
+    """
+    for mount in defn.get("mounts") or []:
+        if isinstance(mount, str) and mount.split(":", 1)[0] == tongs.WORKSPACE_MOUNT:
+            return True
+    return False
+
+
 def unsupported_tong_reasons(merged):
     """Reasons each discovered tong is outside what the launcher can start.
 
-    The launcher starts only `shared` tongs that hold no secret and expose no MCP
-    interface. A `session` lifecycle (it needs a per-session network), a secret
-    reference (it needs tmpfs delivery), or an `mcp` interface (it needs generated
-    MCP config) is unsupported here, so such a tong is refused rather than started
-    half-wired. Returns a list of human-readable reason strings (empty == every
-    discovered tong is startable).
+    The launcher starts only `shared`, network-or-nothing tongs that hold no
+    secret. Refused here:
+
+      * a `session` lifecycle -- it needs a per-session network;
+      * a secret reference -- it needs tmpfs delivery;
+      * an `mcp` interface -- it needs generated MCP config;
+      * a `volume` interface -- a shared named volume has no consumer yet, so it
+        is not wired into either container;
+      * a `shared` tong that mounts the `workspace` -- a `shared` tong is one
+        long-lived container reused across sessions, so binding one session's
+        workspace into it would expose that workspace to every later session that
+        reuses the container (a `session` tong is the right home for a
+        per-workspace mount).
+
+    A refused tong is reported rather than started half-wired. Returns a list of
+    human-readable reason strings (empty == every discovered tong is startable).
     """
     reasons = []
     for name in sorted(merged):
         defn = merged[name]["definition"]
+        kind = (defn.get("interface") or {}).get("kind")
         if defn.get("lifecycle") == "session":
             reasons.append(
                 "tong '%s' is a 'session' tong, which this launcher does not "
@@ -521,10 +546,21 @@ def unsupported_tong_reasons(merged):
                 "tong '%s' references a secret, which this launcher does not "
                 "deliver" % name
             )
-        if (defn.get("interface") or {}).get("kind") == "mcp":
+        if kind == "mcp":
             reasons.append(
                 "tong '%s' has an 'mcp' interface, which this launcher does not "
                 "wire up" % name
+            )
+        if kind == "volume":
+            reasons.append(
+                "tong '%s' has a 'volume' interface, which this launcher does not "
+                "wire up" % name
+            )
+        if defn.get("lifecycle") == "shared" and _mounts_workspace(defn):
+            reasons.append(
+                "tong '%s' is a 'shared' tong that mounts the workspace; a shared "
+                "container is reused across sessions, so it would leak one "
+                "session's workspace into the next" % name
             )
     return reasons
 
@@ -570,8 +606,9 @@ def _ensure_shared_tong(docker, name, defn, *, container, network, alias,
 def _injection_pre_image_args(injection):
     """`-e`/`-v` options the discovered tongs add to the anvil before the image.
 
-    Port/volume tongs contribute env vars the anvil reads to reach them, and
-    volume tongs contribute the shared named-volume mount.
+    A `port` tong contributes the env vars the anvil reads to reach it. The
+    named-volume mount path is a faithful consumer of `plan_injection`'s shape but
+    stays empty here, since `volume` tongs are refused before this runs.
     """
     args = []
     for key in sorted(injection["env"]):
@@ -589,16 +626,16 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker,
     (the empty case stays a direct exec; unsupported tongs are refused earlier).
     Sequence: ensure each `shared` tong is up on the anvil's base network
     (reusing a running one whose config hash still matches), probe each tong's
-    readiness, inject `port`/`volume` reachability into the anvil argv, then run
-    the anvil in the foreground. `shared` tongs are long-lived, so nothing is torn
-    down when the anvil exits.
+    readiness, inject `port` reachability into the anvil argv, then run the anvil
+    in the foreground. `shared` tongs are long-lived, so nothing is torn down when
+    the anvil exits.
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
     becomes ready -- the anvil does not run against a half-up environment.
     """
     base_network = tongs.anvil_option_value(anvil_cmd, "--network")
-    # No `mcp` tong reaches this path (they are refused upstream), so the harness
-    # emitter is unused and the injection is only `port`/`volume` env and mounts.
+    # Only `port`/`none` tongs reach this path (`mcp`/`volume` are refused
+    # upstream), so the MCP emitter is unused and the injection is `port` env only.
     injection = tongs.plan_injection(merged, None)
 
     ready_checks = []
@@ -683,10 +720,11 @@ def main(argv):
             tongs.warn(error)
         return 1
 
-    # Refuse anything this launcher cannot start (a session lifecycle, a secret
-    # reference, or an MCP interface) rather than starting it half-wired. Every
-    # remaining tong is a non-MCP tong, whose canonical alias is its unique
-    # filename, so no two can claim the same network alias.
+    # Refuse anything this launcher cannot start (see unsupported_tong_reasons:
+    # a session lifecycle, a secret reference, an MCP or volume interface, or a
+    # shared tong mounting the workspace) rather than starting it half-wired.
+    # Every remaining tong is a `port`/`none` tong, whose canonical alias is its
+    # unique filename, so no two can claim the same network alias.
     unsupported = unsupported_tong_reasons(merged)
     if unsupported:
         for reason in unsupported:

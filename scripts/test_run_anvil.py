@@ -550,6 +550,104 @@ class MainGateTests(unittest.TestCase):
             self.assertEqual(completed.stdout, "")
             self.assertIn("mcp", completed.stderr)
 
+    def test_volume_tong_refused_without_exec(self):
+        # A `volume` interface (a shared named volume) has no consumer yet, so it
+        # is refused before docker.
+        with tempfile.TemporaryDirectory() as tmp:
+            tongs_dir = os.path.join(tmp, "tongs")
+            os.makedirs(tongs_dir)
+            with open(os.path.join(tongs_dir, "cache.yaml"), "w") as handle:
+                handle.write(
+                    "lifecycle: shared\nimage: x\ninterface:\n"
+                    "  kind: volume\n  volume: build-cache\n  mountpoint: /cache\n"
+                    "readiness:\n  mode: none\n"
+                )
+            completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")
+            self.assertIn("volume", completed.stderr)
+
+    def test_shared_workspace_mount_refused_without_exec(self):
+        # A `shared` tong is reused across sessions, so mounting the workspace
+        # into it would leak one session's workspace into the next -- refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            tongs_dir = os.path.join(tmp, "tongs")
+            os.makedirs(tongs_dir)
+            with open(os.path.join(tongs_dir, "watch.yaml"), "w") as handle:
+                handle.write(
+                    "lifecycle: shared\nimage: x\nmounts:\n  - workspace:ro\n"
+                    "interface:\n  kind: none\nreadiness:\n  mode: none\n"
+                )
+            completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")
+            self.assertIn("workspace", completed.stderr)
+
+
+class UnsupportedTongReasonsTests(unittest.TestCase):
+    """The single chokepoint that refuses tongs the launcher cannot start yet."""
+
+    def _reasons(self, defn):
+        return run_anvil.unsupported_tong_reasons(_merged("t", defn, source=tongs.REPO))
+
+    def test_startable_port_tong_has_no_reasons(self):
+        self.assertEqual(
+            self._reasons({
+                "lifecycle": "shared", "image": "x",
+                "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"},
+            }),
+            [],
+        )
+
+    def test_startable_none_tong_has_no_reasons(self):
+        self.assertEqual(self._reasons(SHARED_NONE), [])
+
+    def test_session_secret_mcp_volume_each_refused(self):
+        self.assertTrue(self._reasons(
+            {"lifecycle": "session", "image": "x", "interface": {"kind": "none"},
+             "readiness": {"mode": "none"}}))
+        self.assertTrue(self._reasons(
+            {"lifecycle": "shared", "image": "x", "env": {"T": "${secret:op:r}"},
+             "interface": {"kind": "none"}, "readiness": {"mode": "none"}}))
+        self.assertTrue(self._reasons(
+            {"lifecycle": "shared", "image": "x",
+             "interface": {"kind": "mcp", "name": "g", "port": 8080},
+             "readiness": {"mode": "none"}}))
+        self.assertTrue(self._reasons(
+            {"lifecycle": "shared", "image": "x",
+             "interface": {"kind": "volume", "volume": "v", "mountpoint": "/m"},
+             "readiness": {"mode": "none"}}))
+
+    def test_shared_workspace_mount_refused_but_docker_socket_allowed(self):
+        # A shared tong that mounts the workspace leaks it across sessions, so it
+        # is refused; the docker-socket mount (the broker pattern) is not.
+        self.assertTrue(any(
+            "workspace" in r for r in self._reasons({
+                "lifecycle": "shared", "image": "x", "mounts": ["workspace:ro"],
+                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+            })
+        ))
+        self.assertEqual(
+            self._reasons({
+                "lifecycle": "shared", "image": "x", "mounts": ["docker-socket"],
+                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+            }),
+            [],
+        )
+
+    def test_workspace_refusal_is_shared_scoped(self):
+        # The workspace-mount leak is a `shared`-reuse hazard, so a non-shared tong
+        # that mounts the workspace must NOT be refused for the workspace -- only a
+        # `shared` one. (A session+workspace watcher is legitimate; it lands when
+        # session tongs turn on.) A session tong here is refused for being session,
+        # not for the workspace mount.
+        session_reasons = self._reasons({
+            "lifecycle": "session", "image": "x", "mounts": ["workspace:ro"],
+            "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+        })
+        self.assertTrue(any("session" in r for r in session_reasons))
+        self.assertFalse(any("workspace" in r for r in session_reasons))
+
 
 class FakeDocker:
     """In-process stand-in for DockerCLI that records calls and returns canned
@@ -681,27 +779,26 @@ class RunWithTongsTests(unittest.TestCase):
     def test_multiple_shared_tongs_started_and_injected(self):
         # Two shared tongs in one launch: both are started and both contribute
         # their reachability to the anvil.
-        port_tong = {
+        pg = {
             "lifecycle": "shared", "image": "pg",
             "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"},
         }
-        volume_tong = {
-            "lifecycle": "shared", "image": "cache",
-            "interface": {"kind": "volume", "volume": "build-cache", "mountpoint": "/cache"},
-            "readiness": {"mode": "none"},
+        redis = {
+            "lifecycle": "shared", "image": "redis",
+            "interface": {"kind": "port", "port": 6379}, "readiness": {"mode": "none"},
         }
         docker = FakeDocker()
         merged = {
-            "pg": {"source": tongs.REPO, "definition": port_tong},
-            "cache": {"source": tongs.REPO, "definition": volume_tong},
+            "pg": {"source": tongs.REPO, "definition": pg},
+            "redis": {"source": tongs.REPO, "definition": redis},
         }
         self._run(docker, merged)
         self.assertEqual(len(docker.run_argvs), 2)
         argv = docker.anvil_argv
         self.assertIn("SWARMFORGE_TONG_PG_HOST=pg", argv)
         self.assertIn("SWARMFORGE_TONG_PG_PORT=5432", argv)
-        self.assertIn("SWARMFORGE_TONG_CACHE_PATH=/cache", argv)
-        self.assertIn("build-cache:/cache", argv)
+        self.assertIn("SWARMFORGE_TONG_REDIS_HOST=redis", argv)
+        self.assertIn("SWARMFORGE_TONG_REDIS_PORT=6379", argv)
 
     def test_tcp_readiness_probes_alias_with_anvil_image(self):
         docker = FakeDocker()
@@ -718,18 +815,6 @@ class RunWithTongsTests(unittest.TestCase):
         argv = docker.anvil_argv
         self.assertIn("SWARMFORGE_TONG_PG_HOST=pg", argv)
         self.assertIn("SWARMFORGE_TONG_PG_PORT=5432", argv)
-
-    def test_volume_tong_injects_path_env_and_shared_mount(self):
-        defn = {
-            "lifecycle": "shared", "image": "cache",
-            "interface": {"kind": "volume", "volume": "build-cache", "mountpoint": "/cache"},
-            "readiness": {"mode": "none"},
-        }
-        docker = FakeDocker()
-        self._run(docker, _merged("cache", defn, source=tongs.REPO))
-        argv = docker.anvil_argv
-        self.assertIn("SWARMFORGE_TONG_CACHE_PATH=/cache", argv)
-        self.assertIn("build-cache:/cache", argv)
 
     def test_none_tong_leaves_anvil_argv_unchanged(self):
         # A `none` shared tong has no anvil-facing surface, so nothing is injected
