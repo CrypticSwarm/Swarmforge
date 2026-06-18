@@ -7,12 +7,28 @@ delegates the actual launch to this script:
 
     run_anvil.py [--user-tongs DIR] [--org-tongs DIR] [--repo-tongs DIR]
                  [--workspace-tongs DIR] [--workspace PATH] [--approvals PATH]
-                 [--no-prompt] -- docker run -it --rm ... <image> ...
+                 [--anvil-image IMAGE] [--no-prompt] -- docker run -it --rm ... <image> ...
 
 Tongs are sibling containers that must be orchestrated from the host (they are
 started alongside the anvil, not from inside it), which is why this wrapper sits
 between Make and `docker run`. It discovers tong definitions across the four
 layers using the pure core in `tongs.py`, then runs the anvil.
+
+Shared tongs
+------------
+When a tong is discovered, the launcher starts it before the anvil, waits for it
+to report ready, makes it reachable from the anvil, runs the anvil in the
+foreground, and leaves the tong running afterwards. A `shared` tong is one
+long-lived container keyed by a stable name: a running one whose config-hash
+label still matches is reused untouched, and a missing/stopped/stale one is
+(re)started. A `port` tong's reachability is injected into the anvil as
+environment; a `none` tong is started but has no anvil-facing surface.
+
+The launcher starts only `shared` tongs reached over the network (`port`) or with
+no anvil-facing surface (`none`), carrying no secret references. A `session`
+lifecycle, a secret reference, an `mcp` or `volume` interface, or a `shared` tong
+that mounts the workspace is refused with a clear message rather than started
+half-wired.
 
 First-run approval
 ------------------
@@ -43,6 +59,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import time
 
 # Load the pure core (layer discovery + name-based merge) by path, the same way
 # tongs.py loads translate_agents.py, so the launcher needs no package install
@@ -56,7 +73,7 @@ _spec.loader.exec_module(tongs)
 USAGE = (
     "usage: run_anvil.py [--user-tongs DIR] [--org-tongs DIR] "
     "[--repo-tongs DIR] [--workspace-tongs DIR] [--workspace PATH] "
-    "[--approvals PATH] [--no-prompt] -- <anvil command>"
+    "[--approvals PATH] [--anvil-image IMAGE] [--no-prompt] -- <anvil command>"
 )
 
 # Each flag names the host directory for one definition layer. The merge always
@@ -70,10 +87,13 @@ LAYER_FLAGS = {
 }
 
 # Parsed launcher options. `workspace` is the workspace root used to key approval
-# of workspace-sourced tongs; `approvals` is the store path (default resolved in
-# main); `no_prompt` makes the approval gate fail closed for scripted runs.
+# of workspace-sourced tongs and to resolve the `workspace` mount word; `approvals`
+# is the store path (default resolved in main); `anvil_image` is the image the
+# readiness prober runs to dial a tong's network-internal port; `no_prompt` makes
+# the approval gate fail closed for scripted runs.
 LauncherOptions = collections.namedtuple(
-    "LauncherOptions", ["layer_dirs", "workspace", "approvals", "no_prompt"]
+    "LauncherOptions",
+    ["layer_dirs", "workspace", "approvals", "anvil_image", "no_prompt"],
 )
 
 
@@ -92,6 +112,7 @@ def parse_args(argv):
     paths = {}
     workspace = None
     approvals = None
+    anvil_image = None
     no_prompt = False
     index = 0
     while index < len(argv):
@@ -101,7 +122,10 @@ def parse_args(argv):
             if not anvil_cmd:
                 raise UsageError("missing anvil command after '--'")
             layer_dirs = [(layer, paths[layer]) for layer in tongs.LAYERS if layer in paths]
-            return LauncherOptions(layer_dirs, workspace, approvals, no_prompt), anvil_cmd
+            return (
+                LauncherOptions(layer_dirs, workspace, approvals, anvil_image, no_prompt),
+                anvil_cmd,
+            )
         if token in LAYER_FLAGS:
             if index + 1 >= len(argv):
                 raise UsageError("%s requires a directory argument" % token)
@@ -118,6 +142,12 @@ def parse_args(argv):
             if index + 1 >= len(argv):
                 raise UsageError("--approvals requires a path argument")
             approvals = argv[index + 1]
+            index += 2
+            continue
+        if token == "--anvil-image":
+            if index + 1 >= len(argv):
+                raise UsageError("--anvil-image requires an image argument")
+            anvil_image = argv[index + 1]
             index += 2
             continue
         if token == "--no-prompt":
@@ -298,6 +328,343 @@ def make_secret_resolver(providers):
     return resolve
 
 
+# --- Docker seam --------------------------------------------------------------
+# Every docker invocation goes through DockerCLI so the orchestration logic can
+# be unit-tested against a fake. The methods are thin wrappers; the launch
+# sequencing and policy live in `run_with_tongs`. `_run` defaults to
+# subprocess.run and is the single injection point for tests.
+
+
+class DockerError(Exception):
+    """A docker command the launch depends on failed; the launch must stop."""
+
+
+# Labels read back to decide whether a running `shared` container is stale.
+_INSPECT_STATE_FORMAT = (
+    '{{.State.Running}}|{{index .Config.Labels "%s"}}' % tongs.LABEL_CONFIG_HASH
+)
+_INSPECT_HEALTH_FORMAT = "{{if .State.Health}}{{.State.Health.Status}}{{end}}"
+
+
+class DockerCLI:
+    def __init__(self, run=None):
+        self._run = run or subprocess.run
+
+    def _quiet(self, argv):
+        """Run a command whose output we don't need; return its exit code."""
+        return self._run(
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ).returncode
+
+    def _checked(self, argv):
+        """Run a command the launch depends on; raise DockerError on failure."""
+        try:
+            completed = self._run(argv, stdout=subprocess.DEVNULL)
+        except OSError as exc:
+            raise DockerError("could not run %r: %s" % (argv[:3], exc))
+        if completed.returncode != 0:
+            raise DockerError(
+                "docker command failed (exit %d): %s"
+                % (completed.returncode, " ".join(argv[:4]))
+            )
+
+    def rm_force(self, container):
+        self._quiet(["docker", "rm", "-f", container])
+
+    def run_detached(self, argv):
+        self._checked(argv)
+
+    def inspect_state(self, container):
+        """`{"running": bool, "label": str|None}` for a container, or None if absent."""
+        completed = self._run(
+            ["docker", "inspect", "--format", _INSPECT_STATE_FORMAT, container],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            return None
+        running, _, label = _decode(completed.stdout).strip().partition("|")
+        return {"running": running == "true", "label": label or None}
+
+    def health_status(self, container):
+        completed = self._run(
+            ["docker", "inspect", "--format", _INSPECT_HEALTH_FORMAT, container],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            return None
+        return _decode(completed.stdout).strip() or None
+
+    def exec_ok(self, container, command):
+        return self._quiet(["docker", "exec", container] + list(command)) == 0
+
+    def tcp_probe(self, network, host, port, image):
+        """True if `host:port` accepts a TCP connection from within `network`.
+
+        Runs a throwaway container on the network -- the anvil image, which has
+        python3 -- since a tong's own port is only reachable over the docker
+        network, not from the host.
+        """
+        script = (
+            "import socket,sys\n"
+            "s=socket.socket()\n"
+            "s.settimeout(2)\n"
+            "try:\n"
+            "    s.connect((sys.argv[1], int(sys.argv[2])))\n"
+            "except OSError:\n"
+            "    sys.exit(1)\n"
+        )
+        argv = ["docker", "run", "--rm", "--network", network,
+                "--entrypoint", "python3", image, "-c", script, host, str(port)]
+        return self._quiet(argv) == 0
+
+    def run_foreground(self, argv):
+        """Run the anvil in the foreground and return its exit code.
+
+        Popen + wait (rather than exec) so the launcher regains control after the
+        anvil exits. On Ctrl-C the SIGINT reaches both this process and the anvil
+        through the controlling terminal's process group; the anvil handles it and
+        exits, we reap it, and the KeyboardInterrupt propagates to the caller.
+        """
+        try:
+            proc = subprocess.Popen(argv)
+        except OSError as exc:
+            raise DockerError("cannot run anvil %r: %s" % (argv[:2], exc))
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            proc.wait()
+            raise
+
+
+def _decode(output):
+    if isinstance(output, bytes):
+        return output.decode("utf-8", "replace")
+    return output or ""
+
+
+# --- Readiness ----------------------------------------------------------------
+
+
+def wait_ready(docker, container, defn, alias, network, *, anvil_image,
+               sleep=time.sleep, monotonic=time.monotonic, interval=0.5):
+    """Block until a tong reports ready, returning True/False on timeout.
+
+    Dispatches on the tong's resolved readiness mode (see
+    `tongs.readiness_settings`): `tcp` dials the canonical alias on the network;
+    `healthcheck` runs the declared exec command or polls the image HEALTHCHECK;
+    `none` is treated as ready immediately. A `tcp` probe dials the tong's
+    network-internal port from a throwaway container, which needs both a network
+    to dial on and the anvil image to run from; without either it degrades to "is
+    the container running" -- decided and warned once, not on every poll.
+    """
+    mode, command, timeout_s = tongs.readiness_settings(defn)
+    if mode == "none":
+        return True
+
+    interface = defn.get("interface") or {}
+    port = interface.get("port")
+
+    tcp_degraded = mode == "tcp" and (not anvil_image or not network)
+    if tcp_degraded:
+        tongs.warn(
+            "cannot run a TCP readiness probe of '%s' (no anvil image or "
+            "network); falling back to a container-running check" % container
+        )
+
+    def probe():
+        if mode == "tcp":
+            if tcp_degraded:
+                state = docker.inspect_state(container)
+                return bool(state and state["running"])
+            return docker.tcp_probe(network, alias, port, anvil_image)
+        # healthcheck
+        if command:
+            return docker.exec_ok(container, command)
+        return docker.health_status(container) == "healthy"
+
+    start = monotonic()
+    while True:
+        if probe():
+            return True
+        if monotonic() - start >= timeout_s:
+            return False
+        sleep(interval)
+
+
+# --- Orchestration ------------------------------------------------------------
+
+
+class OrchestrationError(Exception):
+    """A tong could not be started/made ready; the launch stops."""
+
+
+def _mounts_workspace(defn):
+    """True if a tong's `mounts:` request the session workspace.
+
+    The magic word may carry a `:mode` suffix (e.g. `workspace:ro`), so compare
+    only the word before the colon.
+    """
+    for mount in defn.get("mounts") or []:
+        if isinstance(mount, str) and mount.split(":", 1)[0] == tongs.WORKSPACE_MOUNT:
+            return True
+    return False
+
+
+def unsupported_tong_reasons(merged):
+    """Reasons each discovered tong is outside what the launcher can start.
+
+    The launcher starts only `shared`, network-or-nothing tongs that hold no
+    secret. Refused here:
+
+      * a `session` lifecycle -- it needs a per-session network;
+      * a secret reference -- it needs tmpfs delivery;
+      * an `mcp` interface -- it needs generated MCP config;
+      * a `volume` interface -- a shared named volume has no consumer yet, so it
+        is not wired into either container;
+      * a `shared` tong that mounts the `workspace` -- a `shared` tong is one
+        long-lived container reused across sessions, so binding one session's
+        workspace into it would expose that workspace to every later session that
+        reuses the container (a `session` tong is the right home for a
+        per-workspace mount).
+
+    A refused tong is reported rather than started half-wired. Returns a list of
+    human-readable reason strings (empty == every discovered tong is startable).
+    """
+    reasons = []
+    for name in sorted(merged):
+        defn = merged[name]["definition"]
+        kind = (defn.get("interface") or {}).get("kind")
+        if defn.get("lifecycle") == "session":
+            reasons.append(
+                "tong '%s' is a 'session' tong, which this launcher does not "
+                "start (only 'shared' tongs are supported)" % name
+            )
+        if tongs.find_secret_refs(defn):
+            reasons.append(
+                "tong '%s' references a secret, which this launcher does not "
+                "deliver" % name
+            )
+        if kind == "mcp":
+            reasons.append(
+                "tong '%s' has an 'mcp' interface, which this launcher does not "
+                "wire up" % name
+            )
+        if kind == "volume":
+            reasons.append(
+                "tong '%s' has a 'volume' interface, which this launcher does not "
+                "wire up" % name
+            )
+        if defn.get("lifecycle") == "shared" and _mounts_workspace(defn):
+            reasons.append(
+                "tong '%s' is a 'shared' tong that mounts the workspace; a shared "
+                "container is reused across sessions, so it would leak one "
+                "session's workspace into the next" % name
+            )
+    return reasons
+
+
+def _start_shared_tong(docker, name, defn, *, container, network, alias,
+                       workspace, label_hash):
+    """Start one `shared` tong container detached, replacing any old one.
+
+    The launcher only reaches here for a secret-less tong, so the definition's
+    `env` is passed straight through as `-e`; any existing container of the same
+    name is removed first so a stale or stopped one is replaced cleanly.
+    """
+    argv = tongs.tong_run_argv(
+        name, defn,
+        container_name=container, network=network, alias=alias,
+        env=defn.get("env") or {}, label_hash=label_hash, workspace=workspace,
+    )
+    docker.rm_force(container)
+    docker.run_detached(argv)
+
+
+def _ensure_shared_tong(docker, name, defn, *, container, network, alias,
+                        workspace, label_hash):
+    """Start a `shared` tong, or reuse the running one, recreating it if stale.
+
+    A `shared` tong is one long-lived container keyed by `shared_container_name`.
+    Its config-hash label answers "did the definition change since it started?":
+    a missing container, a stopped one, or a hash mismatch triggers a fresh start
+    (removing any old container first); a running container with a matching hash
+    is reused untouched. The hash is over the merged definition, so the same
+    long-lived container is reused across sessions while the definition is stable.
+    """
+    state = docker.inspect_state(container)
+    if state and state["running"] and state["label"] == label_hash:
+        return
+    _start_shared_tong(
+        docker, name, defn,
+        container=container, network=network, alias=alias,
+        workspace=workspace, label_hash=label_hash,
+    )
+
+
+def _injection_pre_image_args(injection):
+    """`-e`/`-v` options the discovered tongs add to the anvil before the image.
+
+    A `port` tong contributes the env vars the anvil reads to reach it. The
+    named-volume mount path is a faithful consumer of `plan_injection`'s shape but
+    stays empty here, since `volume` tongs are refused before this runs.
+    """
+    args = []
+    for key in sorted(injection["env"]):
+        args += ["-e", "%s=%s" % (key, injection["env"][key])]
+    for mount in injection["mounts"]:
+        args += ["-v", "%s:%s" % (mount["volume"], mount["mountpoint"])]
+    return args
+
+
+def run_with_tongs(merged, anvil_cmd, opts, *, docker,
+                   sleep=time.sleep, monotonic=time.monotonic):
+    """Start the discovered `shared` tongs, run the anvil, and leave them running.
+
+    Only reached when at least one tong was discovered and every tong is startable
+    (the empty case stays a direct exec; unsupported tongs are refused earlier).
+    Sequence: ensure each `shared` tong is up on the anvil's base network
+    (reusing a running one whose config hash still matches), probe each tong's
+    readiness, inject `port` reachability into the anvil argv, then run the anvil
+    in the foreground. `shared` tongs are long-lived, so nothing is torn down when
+    the anvil exits.
+
+    Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
+    becomes ready -- the anvil does not run against a half-up environment.
+    """
+    base_network = tongs.anvil_option_value(anvil_cmd, "--network")
+    # Only `port`/`none` tongs reach this path (`mcp`/`volume` are refused
+    # upstream), so the MCP emitter is unused and the injection is `port` env only.
+    injection = tongs.plan_injection(merged, None)
+
+    ready_checks = []
+    for name in sorted(merged):
+        defn = merged[name]["definition"]
+        alias = tongs.canonical_alias(name, defn)
+        label_hash = tongs.config_hash(defn)
+        container = tongs.shared_container_name(name)
+        _ensure_shared_tong(
+            docker, name, defn,
+            container=container, network=base_network, alias=alias,
+            workspace=opts.workspace, label_hash=label_hash,
+        )
+        ready_checks.append((name, defn, alias, base_network, container))
+
+    for name, defn, alias, probe_net, container in ready_checks:
+        if not wait_ready(
+            docker, container, defn, alias, probe_net,
+            anvil_image=opts.anvil_image, sleep=sleep, monotonic=monotonic,
+        ):
+            raise OrchestrationError("tong '%s' did not become ready in time" % name)
+
+    injected = tongs.inject_anvil_argv(
+        anvil_cmd, network=base_network,
+        pre_image_args=_injection_pre_image_args(injection),
+    )
+    return docker.run_foreground(injected)
+
+
 def exec_anvil(anvil_cmd):
     """Exec the anvil argv, replacing this process.
 
@@ -336,19 +703,47 @@ def main(argv):
         tongs.warn(str(exc))
         return 1
 
-    if merged:
-        # The launcher discovers tongs but does not start them; the anvil runs
-        # without them. The passthrough invariant only governs the empty case,
-        # so surface the discovered tongs rather than ignoring them silently.
-        tongs.warn(
-            "%d tong definition(s) discovered (%s); this launcher does not "
-            "start tongs, so the anvil runs without them"
-            % (len(merged), ", ".join(sorted(merged)))
-        )
+    # Passthrough invariant: with no tong definitions discovered, exec the anvil
+    # argv verbatim -- byte-identical to the direct docker run, and the process
+    # is replaced so the controlling tty, signals, and --rm cleanup are untouched.
+    if not merged:
+        return exec_anvil(anvil_cmd)
 
-    # On success exec_anvil replaces this process; it only returns a status if
-    # the anvil command could not be execed.
-    return exec_anvil(anvil_cmd)
+    # From here a tong actually starts, so validate before touching docker: an
+    # invalid definition should stop the launch with a clear message, not fail
+    # mid-orchestration with a docker error.
+    errors = []
+    for name in sorted(merged):
+        errors.extend(tongs.validate_tong(name, merged[name]["definition"]))
+    if errors:
+        for error in errors:
+            tongs.warn(error)
+        return 1
+
+    # Refuse anything this launcher cannot start (see unsupported_tong_reasons:
+    # a session lifecycle, a secret reference, an MCP or volume interface, or a
+    # shared tong mounting the workspace) rather than starting it half-wired.
+    # Every remaining tong is a `port`/`none` tong, whose canonical alias is its
+    # unique filename, so no two can claim the same network alias.
+    unsupported = unsupported_tong_reasons(merged)
+    if unsupported:
+        for reason in unsupported:
+            tongs.warn(reason)
+        return 1
+
+    # run_with_tongs runs the anvil in the foreground and returns its exit code,
+    # leaving the (long-lived) shared tongs running. A tong that never becomes
+    # ready stops the launch rather than running the anvil against a half-up
+    # environment.
+    try:
+        return run_with_tongs(merged, anvil_cmd, opts, docker=DockerCLI())
+    except (OrchestrationError, DockerError) as exc:
+        tongs.warn(str(exc))
+        return 1
+    except KeyboardInterrupt:
+        # The anvil was interrupted (Ctrl-C); the shared tongs stay running by
+        # design. Report the conventional 128+SIGINT status.
+        return 130
 
 
 if __name__ == "__main__":

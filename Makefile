@@ -193,6 +193,7 @@ define run_agent_container
 	  --workspace-tongs "$$workspace_dir/.swarmforge/tongs" \
 	  --workspace "$$workspace_dir" \
 	  --approvals "$(SWARMFORGE_USER_ASSETS_DIR)/approvals.json" \
+	  --anvil-image "$(4)" \
 	  -- \
 	  docker run -it --rm --name "$(1)" \
 	  --network "$(NETWORK)" \
