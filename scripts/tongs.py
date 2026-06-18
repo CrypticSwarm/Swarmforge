@@ -1224,6 +1224,25 @@ def _replace_network(argv, network):
     return out[:insert_at] + ["--network", network] + out[insert_at:]
 
 
+def to_create_argv(anvil_argv):
+    """Rewrite a `docker run ...` argv into the equivalent `docker create ...`.
+
+    `docker run` attaches only one network when it creates the container, so an
+    anvil that must join more than one network (its per-session network plus the
+    pre-existing `NETWORK=` network) is instead created, connected to the extra
+    networks, then started. Only the `run` subcommand token is swapped for
+    `create`; every other token (flags, image, harness args) is preserved, so the
+    created container is byte-for-byte what `docker run` would have made. Returns a
+    new argv (the input is never mutated). Raises `ValueError` if the argv is not a
+    docker run/create command.
+    """
+    out = list(anvil_argv)
+    # _docker_run_index points just past the run/create subcommand, so the token
+    # before it is the subcommand to rewrite (already 'create' is left as-is).
+    out[_docker_run_index(out) - 1] = "create"
+    return out
+
+
 def inject_anvil_argv(anvil_argv, network=None, pre_image_args=(), post_image_args=()):
     """Rewrite the anvil's docker-run argv to reach the discovered tongs.
 
