@@ -43,6 +43,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import time
 
 # Load the pure core (layer discovery + name-based merge) by path, the same way
 # tongs.py loads translate_agents.py, so the launcher needs no package install
@@ -296,6 +297,167 @@ def make_secret_resolver(providers):
         return value[:-1] if value.endswith("\n") else value
 
     return resolve
+
+
+# --- Docker seam --------------------------------------------------------------
+# Every docker invocation goes through DockerCLI so the orchestration logic can
+# be unit-tested against a fake. The methods are thin wrappers; the launch
+# sequencing and policy live in `run_with_tongs`. `_run` defaults to
+# subprocess.run and is the single injection point for tests.
+
+
+class DockerError(Exception):
+    """A docker command the launch depends on failed; the launch must stop."""
+
+
+# Labels read back to decide whether a running `shared` container is stale.
+_INSPECT_STATE_FORMAT = (
+    '{{.State.Running}}|{{index .Config.Labels "%s"}}' % tongs.LABEL_CONFIG_HASH
+)
+_INSPECT_HEALTH_FORMAT = "{{if .State.Health}}{{.State.Health.Status}}{{end}}"
+
+
+class DockerCLI:
+    def __init__(self, run=None):
+        self._run = run or subprocess.run
+
+    def _quiet(self, argv):
+        """Run a command whose output we don't need; return its exit code."""
+        return self._run(
+            argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ).returncode
+
+    def _checked(self, argv):
+        """Run a command the launch depends on; raise DockerError on failure."""
+        try:
+            completed = self._run(argv, stdout=subprocess.DEVNULL)
+        except OSError as exc:
+            raise DockerError("could not run %r: %s" % (argv[:3], exc))
+        if completed.returncode != 0:
+            raise DockerError(
+                "docker command failed (exit %d): %s"
+                % (completed.returncode, " ".join(argv[:4]))
+            )
+
+    def rm_force(self, container):
+        self._quiet(["docker", "rm", "-f", container])
+
+    def run_detached(self, argv):
+        self._checked(argv)
+
+    def inspect_state(self, container):
+        """`{"running": bool, "label": str|None}` for a container, or None if absent."""
+        completed = self._run(
+            ["docker", "inspect", "--format", _INSPECT_STATE_FORMAT, container],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            return None
+        running, _, label = _decode(completed.stdout).strip().partition("|")
+        return {"running": running == "true", "label": label or None}
+
+    def health_status(self, container):
+        completed = self._run(
+            ["docker", "inspect", "--format", _INSPECT_HEALTH_FORMAT, container],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            return None
+        return _decode(completed.stdout).strip() or None
+
+    def exec_ok(self, container, command):
+        return self._quiet(["docker", "exec", container] + list(command)) == 0
+
+    def tcp_probe(self, network, host, port, image):
+        """True if `host:port` accepts a TCP connection from within `network`.
+
+        Runs a throwaway container on the network -- the anvil image, which has
+        python3 -- since a tong's own port is only reachable over the docker
+        network, not from the host.
+        """
+        script = (
+            "import socket,sys\n"
+            "s=socket.socket()\n"
+            "s.settimeout(2)\n"
+            "try:\n"
+            "    s.connect((sys.argv[1], int(sys.argv[2])))\n"
+            "except OSError:\n"
+            "    sys.exit(1)\n"
+        )
+        argv = ["docker", "run", "--rm", "--network", network,
+                "--entrypoint", "python3", image, "-c", script, host, str(port)]
+        return self._quiet(argv) == 0
+
+    def run_foreground(self, argv):
+        """Run the anvil in the foreground and return its exit code.
+
+        Popen + wait (rather than exec) so the launcher regains control after the
+        anvil exits. On Ctrl-C the SIGINT reaches both this process and the anvil
+        through the controlling terminal's process group; the anvil handles it and
+        exits, we reap it, and the KeyboardInterrupt propagates to the caller.
+        """
+        try:
+            proc = subprocess.Popen(argv)
+        except OSError as exc:
+            raise DockerError("cannot run anvil %r: %s" % (argv[:2], exc))
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            proc.wait()
+            raise
+
+
+def _decode(output):
+    if isinstance(output, bytes):
+        return output.decode("utf-8", "replace")
+    return output or ""
+
+
+# --- Readiness ----------------------------------------------------------------
+
+
+def wait_ready(docker, container, defn, alias, network, *, anvil_image,
+               sleep=time.sleep, monotonic=time.monotonic, interval=0.5):
+    """Block until a tong reports ready, returning True/False on timeout.
+
+    Dispatches on the tong's resolved readiness mode (see
+    `tongs.readiness_settings`): `tcp` dials the canonical alias on the network;
+    `healthcheck` runs the declared exec command or polls the image HEALTHCHECK;
+    `none` is treated as ready immediately. A `tcp` probe needs the anvil image to
+    run from -- without one the launcher cannot dial the tong's network-internal
+    port, so it degrades to "is the container running" and warns.
+    """
+    mode, command, timeout_s = tongs.readiness_settings(defn)
+    if mode == "none":
+        return True
+
+    interface = defn.get("interface") or {}
+    port = interface.get("port")
+
+    def probe():
+        if mode == "tcp":
+            if not anvil_image:
+                tongs.warn(
+                    "no anvil image for a TCP readiness probe of '%s'; "
+                    "falling back to a container-running check" % container
+                )
+                state = docker.inspect_state(container)
+                return bool(state and state["running"])
+            return docker.tcp_probe(network, alias, port, anvil_image)
+        # healthcheck
+        if command:
+            return docker.exec_ok(container, command)
+        return docker.health_status(container) == "healthy"
+
+    start = monotonic()
+    while True:
+        if probe():
+            return True
+        if monotonic() - start >= timeout_s:
+            return False
+        sleep(interval)
 
 
 def exec_anvil(anvil_cmd):
