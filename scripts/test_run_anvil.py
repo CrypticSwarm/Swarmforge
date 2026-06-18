@@ -721,6 +721,89 @@ SHARED_NONE = {
 }
 
 
+class _RecordingRun:
+    """A subprocess.run stand-in that records argvs and returns canned codes.
+
+    `codes` maps the first three argv tokens to a return code (default 0), so a
+    test can make one docker subcommand "fail" while the rest succeed.
+    """
+
+    def __init__(self, codes=None):
+        self.argvs = []
+        self._codes = codes or {}
+
+    def __call__(self, argv, **kwargs):
+        self.argvs.append(list(argv))
+        return subprocess.CompletedProcess(argv, self._codes.get(tuple(argv[:3]), 0))
+
+
+class DockerCLITests(unittest.TestCase):
+    """The network seam used by the session-network launch path."""
+
+    def test_ensure_network_creates_when_absent(self):
+        rec = _RecordingRun({("docker", "network", "inspect"): 1})
+        run_anvil.DockerCLI(run=rec).ensure_network("sess-net")
+        self.assertEqual(rec.argvs[0][:4], ["docker", "network", "inspect", "sess-net"])
+        self.assertIn(["docker", "network", "create", "sess-net"], rec.argvs)
+
+    def test_ensure_network_reuses_existing(self):
+        rec = _RecordingRun()  # inspect returns 0 => already present
+        run_anvil.DockerCLI(run=rec).ensure_network("sess-net")
+        self.assertNotIn(["docker", "network", "create", "sess-net"], rec.argvs)
+
+    def test_ensure_network_raises_when_create_fails(self):
+        rec = _RecordingRun(
+            {("docker", "network", "inspect"): 1, ("docker", "network", "create"): 1}
+        )
+        with self.assertRaises(run_anvil.DockerError):
+            run_anvil.DockerCLI(run=rec).ensure_network("sess-net")
+
+    def test_network_connect_passes_alias(self):
+        rec = _RecordingRun()
+        run_anvil.DockerCLI(run=rec).network_connect("net", "ctr", alias="gh")
+        self.assertEqual(
+            rec.argvs[-1], ["docker", "network", "connect", "--alias", "gh", "net", "ctr"]
+        )
+
+    def test_network_connect_without_alias(self):
+        rec = _RecordingRun()
+        run_anvil.DockerCLI(run=rec).network_connect("net", "ctr")
+        self.assertEqual(rec.argvs[-1], ["docker", "network", "connect", "net", "ctr"])
+
+    def test_network_connect_raises_on_failure(self):
+        rec = _RecordingRun({("docker", "network", "connect"): 1})
+        with self.assertRaises(run_anvil.DockerError):
+            run_anvil.DockerCLI(run=rec).network_connect("net", "ctr")
+
+    def test_network_disconnect_and_rm_are_best_effort(self):
+        # Teardown must not raise even when the network or endpoint is already gone.
+        rec = _RecordingRun(
+            {("docker", "network", "disconnect"): 1, ("docker", "network", "rm"): 1}
+        )
+        cli = run_anvil.DockerCLI(run=rec)
+        cli.network_disconnect("net", "ctr")
+        cli.network_rm("net")
+        self.assertIn(["docker", "network", "disconnect", "net", "ctr"], rec.argvs)
+        self.assertIn(["docker", "network", "rm", "net"], rec.argvs)
+
+    def test_run_foreground_multi_creates_connects_then_starts(self):
+        rec = _RecordingRun()
+        cli = run_anvil.DockerCLI(run=rec)
+        argv = ["docker", "run", "-it", "--name", "anvil", "--network", "sess", "img"]
+        with mock.patch.object(run_anvil.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 7
+            rc = cli.run_foreground_multi(argv, ["base-net"], "anvil")
+        self.assertEqual(rc, 7)
+        # Created on its primary (session) network...
+        self.assertEqual(rec.argvs[0][:2], ["docker", "create"])
+        self.assertEqual(rec.argvs[0][rec.argvs[0].index("--network") + 1], "sess")
+        # ...connected to the extra network, then started attached.
+        self.assertIn(["docker", "network", "connect", "base-net", "anvil"], rec.argvs)
+        popen.assert_called_once_with(
+            ["docker", "start", "--attach", "--interactive", "anvil"]
+        )
+
+
 class RunWithTongsTests(unittest.TestCase):
     def _run(self, docker, merged, anvil=None, workspace=None):
         return run_anvil.run_with_tongs(

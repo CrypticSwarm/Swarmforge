@@ -419,12 +419,71 @@ class DockerCLI:
                 "--entrypoint", "python3", image, "-c", script, host, str(port)]
         return self._quiet(argv) == 0
 
+    def ensure_network(self, name):
+        """Create the per-session docker network unless it already exists.
+
+        Mirrors the Makefile's inspect-or-create so a leftover network from a
+        crashed session (whose teardown never ran) is reused rather than failing
+        the launch.
+        """
+        if self._quiet(["docker", "network", "inspect", name]) == 0:
+            return
+        self._checked(["docker", "network", "create", name])
+
+    def network_connect(self, network, container, alias=None):
+        """Attach a running container to `network`, optionally under `alias`.
+
+        Used to connect a long-lived `shared` tong to a session network under its
+        canonical alias, so the session reaches it without the tong having to live
+        on the session network permanently.
+        """
+        argv = ["docker", "network", "connect"]
+        if alias:
+            argv += ["--alias", alias]
+        self._checked(argv + [network, container])
+
+    def network_disconnect(self, network, container):
+        """Detach a container from a network (best-effort, for teardown)."""
+        self._quiet(["docker", "network", "disconnect", network, container])
+
+    def network_rm(self, network):
+        """Remove a network (best-effort, for teardown)."""
+        self._quiet(["docker", "network", "rm", network])
+
     def run_foreground(self, argv):
         """Run the anvil in the foreground and return its exit code.
 
         Popen + wait (rather than exec) so the launcher regains control after the
         anvil exits. On Ctrl-C the SIGINT reaches both this process and the anvil
         through the controlling terminal's process group; the anvil handles it and
+        exits, we reap it, and the KeyboardInterrupt propagates to the caller.
+        """
+        return self._wait_foreground(argv)
+
+    def run_foreground_multi(self, argv, extra_networks, container):
+        """Create the anvil, join the extra networks, then start it attached.
+
+        `docker run` attaches only one network at creation, so an anvil that joins
+        both its per-session network and a pre-existing `NETWORK=` network is
+        created on its primary (per-session) network, connected to each extra
+        network, then started in the foreground. Returns the anvil's exit code.
+        The container is left for the caller's teardown to remove, so a created
+        container is not orphaned if `connect` or `start` fails before its `--rm`
+        could fire.
+        """
+        self._checked(tongs.to_create_argv(argv))
+        for network in extra_networks:
+            self._checked(["docker", "network", "connect", network, container])
+        return self._wait_foreground(
+            ["docker", "start", "--attach", "--interactive", container]
+        )
+
+    def _wait_foreground(self, argv):
+        """Run a foreground command, reaping it on Ctrl-C before re-raising.
+
+        Popen + wait (rather than exec) so the launcher regains control after the
+        process exits. On Ctrl-C the SIGINT reaches both this process and the child
+        through the controlling terminal's process group; the child handles it and
         exits, we reap it, and the KeyboardInterrupt propagates to the caller.
         """
         try:
