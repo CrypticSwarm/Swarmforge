@@ -78,16 +78,23 @@ class ParseArgsTests(unittest.TestCase):
         opts, _ = run_anvil.parse_args(["--", "x"])
         self.assertIsNone(opts.workspace)
         self.assertIsNone(opts.approvals)
+        self.assertIsNone(opts.anvil_image)
         self.assertFalse(opts.no_prompt)
 
     def test_parses_workspace_approvals_and_no_prompt(self):
         opts, cmd = run_anvil.parse_args(
-            ["--workspace", "/ws", "--approvals", "/a.json", "--no-prompt", "--", "x"]
+            ["--workspace", "/ws", "--approvals", "/a.json",
+             "--anvil-image", "anvil:img", "--no-prompt", "--", "x"]
         )
         self.assertEqual(opts.workspace, "/ws")
         self.assertEqual(opts.approvals, "/a.json")
+        self.assertEqual(opts.anvil_image, "anvil:img")
         self.assertTrue(opts.no_prompt)
         self.assertEqual(cmd, ["x"])
+
+    def test_anvil_image_without_value_raises(self):
+        with self.assertRaises(run_anvil.UsageError):
+            run_anvil.parse_args(["--anvil-image"])
 
     def test_workspace_without_value_raises(self):
         with self.assertRaises(run_anvil.UsageError):
@@ -185,16 +192,15 @@ class PassthroughInvariantTests(unittest.TestCase):
         self.assertEqual(forwarded, ANVIL_ARGV)
         self.assertNotIn("tong", stderr)
 
-    def test_present_trusted_tong_still_forwards_anvil_argv_unchanged(self):
-        # A trusted-layer (repo) tong is discovered but not gated, and the
-        # launcher does not rewrite the anvil command; it warns and runs the
-        # anvil as given. (A workspace tong would gate -- see GateTests.)
-        with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "gh.yaml"), "w") as handle:
-                handle.write("lifecycle: session\nimage: x\ninterface:\n  kind: none\n")
-            forwarded, stderr = _run_launcher(["--repo-tongs", tmp])
-            self.assertEqual(forwarded, ANVIL_ARGV)
-            self.assertIn("gh", stderr)
+    def test_launcher_flags_do_not_leak_into_anvil_argv(self):
+        # The Makefile always passes --anvil-image; with no tongs it is consumed
+        # by the launcher and the anvil argv is forwarded unchanged.
+        forwarded, stderr = _run_launcher([
+            "--anvil-image", "opencode:local",
+            "--repo-tongs", "/nonexistent/tongs",
+        ])
+        self.assertEqual(forwarded, ANVIL_ARGV)
+        self.assertNotIn("tong", stderr)
 
 
 def _run_launcher_raw(extra_args, stdin_text=None):
@@ -438,23 +444,278 @@ class MainGateTests(unittest.TestCase):
             self.assertEqual(completed.stdout, "")
             self.assertIn("fails closed", completed.stderr)
 
-    def test_approved_workspace_tong_forwards_verbatim(self):
+    def test_approved_workspace_tong_passes_gate_then_refused_as_unsupported(self):
+        # Approval is no longer the only gate: an approved (and otherwise valid)
+        # workspace tong clears the approval prompt but, being a `session` tong, is
+        # then refused as unsupported -- proving the gate passed without the anvil
+        # ever running.
         with tempfile.TemporaryDirectory() as tmp:
-            tongs_dir = self._workspace_tongs_dir(tmp)
+            tongs_dir = os.path.join(tmp, "tongs")
+            os.makedirs(tongs_dir)
+            with open(os.path.join(tongs_dir, "gh.yaml"), "w") as handle:
+                handle.write(
+                    "lifecycle: session\nimage: x\ninterface:\n  kind: none\n"
+                    "readiness:\n  mode: none\n"
+                )
             defn = tongs.load_tong_file(os.path.join(tongs_dir, "gh.yaml"))
             approvals_path = os.path.join(tmp, "approvals.json")
             tongs.save_approvals(
                 approvals_path, tongs.record_approval({}, tmp, "gh", defn)
             )
-            forwarded, stderr = _run_launcher(
+            completed = _run_launcher_raw(
                 [
                     "--workspace-tongs", tongs_dir,
                     "--workspace", tmp,
                     "--approvals", approvals_path,
                 ]
             )
-            self.assertEqual(forwarded, ANVIL_ARGV)
-            self.assertIn("gh", stderr)
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")  # anvil never ran
+            self.assertIn("session", completed.stderr)
+            self.assertNotIn("fails closed", completed.stderr)
+
+    def test_invalid_tong_returns_one_without_exec(self):
+        # A discovered but invalid definition stops the launch before docker.
+        with tempfile.TemporaryDirectory() as tmp:
+            tongs_dir = os.path.join(tmp, "tongs")
+            os.makedirs(tongs_dir)
+            with open(os.path.join(tongs_dir, "bad.yaml"), "w") as handle:
+                handle.write("image: x\n")  # missing lifecycle + interface
+            completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")  # anvil never ran
+
+    def test_session_tong_refused_without_exec(self):
+        # A `session` tong is beyond the shared-only launch path, so it is refused
+        # before any docker call -- the anvil never runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            tongs_dir = os.path.join(tmp, "tongs")
+            os.makedirs(tongs_dir)
+            with open(os.path.join(tongs_dir, "ship.yaml"), "w") as handle:
+                handle.write(
+                    "lifecycle: session\nimage: x\ninterface:\n  kind: none\n"
+                    "readiness:\n  mode: none\n"
+                )
+            completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")
+            self.assertIn("session", completed.stderr)
+
+    def test_secret_tong_refused_without_exec(self):
+        # A shared tong that references a secret cannot be delivered here, so it
+        # is refused before docker.
+        with tempfile.TemporaryDirectory() as tmp:
+            tongs_dir = os.path.join(tmp, "tongs")
+            os.makedirs(tongs_dir)
+            with open(os.path.join(tongs_dir, "creds.yaml"), "w") as handle:
+                handle.write(
+                    "lifecycle: shared\nimage: x\n"
+                    "env:\n  TOKEN: ${secret:op:op://Work/t}\n"
+                    "interface:\n  kind: none\nreadiness:\n  mode: none\n"
+                )
+            completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")
+            self.assertIn("secret", completed.stderr)
+
+    def test_mcp_tong_refused_without_exec(self):
+        # An `mcp`-interface tong needs generated MCP config the launcher does not
+        # emit here, so it is refused before docker.
+        with tempfile.TemporaryDirectory() as tmp:
+            tongs_dir = os.path.join(tmp, "tongs")
+            os.makedirs(tongs_dir)
+            with open(os.path.join(tongs_dir, "gh.yaml"), "w") as handle:
+                handle.write(
+                    "lifecycle: shared\nimage: x\ninterface:\n"
+                    "  kind: mcp\n  name: github\n  port: 8080\n"
+                    "readiness:\n  mode: none\n"
+                )
+            completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, "")
+            self.assertIn("mcp", completed.stderr)
+
+
+class FakeDocker:
+    """In-process stand-in for DockerCLI that records calls and returns canned
+    results, so orchestration is tested without a docker daemon."""
+
+    def __init__(self, states=None, ready=True, anvil_rc=0):
+        self.calls = []
+        self._states = states or {}      # container -> inspect_state dict
+        self._ready = ready
+        self._anvil_rc = anvil_rc
+        self.run_argvs = []              # detached `docker run` argvs
+        self.anvil_argv = None           # set when the anvil runs via run_foreground
+
+    def rm_force(self, container):
+        self.calls.append(("rm_force", container))
+
+    def run_detached(self, argv):
+        self.run_argvs.append(argv)
+
+    def inspect_state(self, container):
+        return self._states.get(container)
+
+    def health_status(self, container):
+        return "healthy" if self._ready else "starting"
+
+    def exec_ok(self, container, command):
+        return self._ready
+
+    def tcp_probe(self, network, host, port, image):
+        self.calls.append(("tcp_probe", network, host, port, image))
+        return self._ready
+
+    def run_foreground(self, argv):
+        self.anvil_argv = argv
+        self.calls.append(("run_foreground", argv))
+        return self._anvil_rc
+
+
+# Tiny launcher options for driving run_with_tongs directly.
+def _opts(workspace=None, anvil_image="anvil:img"):
+    return run_anvil.LauncherOptions(
+        layer_dirs=[], workspace=workspace, approvals=None,
+        anvil_image=anvil_image, no_prompt=False,
+    )
+
+
+# A counter clock so readiness loops never sleep on the wall clock in tests.
+class _Clock:
+    def __init__(self, step=1.0):
+        self.t = 0.0
+        self.step = step
+
+    def __call__(self):
+        self.t += self.step
+        return self.t
+
+
+SHARED_OLLAMA = {
+    "lifecycle": "shared",
+    "image": "ollama/ollama",
+    "interface": {"kind": "port", "port": 11434},
+    "readiness": {"mode": "tcp"},
+}
+
+# A background side-effect tong with no anvil-facing surface and no probe.
+SHARED_NONE = {
+    "lifecycle": "shared",
+    "image": "log-shipper",
+    "interface": {"kind": "none"},
+    "readiness": {"mode": "none"},
+}
+
+
+class RunWithTongsTests(unittest.TestCase):
+    def _run(self, docker, merged, anvil=None, workspace=None):
+        return run_anvil.run_with_tongs(
+            merged, anvil or ANVIL_ARGV, _opts(workspace=workspace),
+            docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
+        )
+
+    def test_shared_tong_starts_when_absent_and_runs_anvil(self):
+        # ollama-shape shared tong on the anvil's base network: it is started
+        # there under its canonical alias, then the anvil runs on that network.
+        docker = FakeDocker()
+        rc = self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(docker.run_argvs), 1)
+        started = docker.run_argvs[0]
+        self.assertIn("swarmforge-shared-ollama", started)
+        self.assertEqual(started[started.index("--network") + 1], "opencode-net")
+        self.assertIn("ollama", started)  # network-alias
+        # The anvil ran on the unchanged base network.
+        self.assertEqual(
+            docker.anvil_argv[docker.anvil_argv.index("--network") + 1], "opencode-net"
+        )
+
+    def test_shared_tong_reused_when_running_and_hash_matches(self):
+        defn = SHARED_OLLAMA
+        states = {"swarmforge-shared-ollama": {"running": True, "label": tongs.config_hash(defn)}}
+        docker = FakeDocker(states=states)
+        self._run(docker, _merged("ollama", defn, source=tongs.REPO))
+        self.assertEqual(docker.run_argvs, [])  # reused, not restarted
+
+    def test_shared_tong_recreated_when_hash_differs(self):
+        states = {"swarmforge-shared-ollama": {"running": True, "label": "stale"}}
+        docker = FakeDocker(states=states)
+        self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
+        self.assertIn(("rm_force", "swarmforge-shared-ollama"), docker.calls)
+        self.assertEqual(len(docker.run_argvs), 1)
+
+    def test_shared_tong_recreated_when_absent(self):
+        # No running container of that name => start fresh (rm_force clears any
+        # stopped leftover first).
+        docker = FakeDocker()
+        self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
+        self.assertIn(("rm_force", "swarmforge-shared-ollama"), docker.calls)
+        self.assertEqual(len(docker.run_argvs), 1)
+
+    def test_tcp_readiness_probes_alias_with_anvil_image(self):
+        docker = FakeDocker()
+        self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
+        self.assertIn(("tcp_probe", "opencode-net", "ollama", 11434, "anvil:img"), docker.calls)
+
+    def test_port_tong_injects_host_and_port_env_into_anvil(self):
+        defn = {
+            "lifecycle": "shared", "image": "pg",
+            "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"},
+        }
+        docker = FakeDocker()
+        self._run(docker, _merged("pg", defn, source=tongs.REPO))
+        argv = docker.anvil_argv
+        self.assertIn("SWARMFORGE_TONG_PG_HOST=pg", argv)
+        self.assertIn("SWARMFORGE_TONG_PG_PORT=5432", argv)
+
+    def test_volume_tong_injects_path_env_and_shared_mount(self):
+        defn = {
+            "lifecycle": "shared", "image": "cache",
+            "interface": {"kind": "volume", "volume": "build-cache", "mountpoint": "/cache"},
+            "readiness": {"mode": "none"},
+        }
+        docker = FakeDocker()
+        self._run(docker, _merged("cache", defn, source=tongs.REPO))
+        argv = docker.anvil_argv
+        self.assertIn("SWARMFORGE_TONG_CACHE_PATH=/cache", argv)
+        self.assertIn("build-cache:/cache", argv)
+
+    def test_none_tong_leaves_anvil_argv_unchanged(self):
+        # A `none` shared tong has no anvil-facing surface, so nothing is injected
+        # and the anvil command is exactly what the macro built.
+        docker = FakeDocker()
+        self._run(docker, _merged("shipper", SHARED_NONE, source=tongs.REPO))
+        self.assertEqual(docker.anvil_argv, ANVIL_ARGV)
+
+    def test_unready_tong_raises_and_anvil_never_runs(self):
+        docker = FakeDocker(ready=False)
+        defn = {
+            "lifecycle": "shared", "image": "pg",
+            "interface": {"kind": "port", "port": 5432},
+            "readiness": {"mode": "tcp", "timeout": "1s"},
+        }
+        with self.assertRaises(run_anvil.OrchestrationError):
+            self._run(docker, _merged("pg", defn, source=tongs.REPO))
+        self.assertIsNone(docker.anvil_argv)  # anvil never ran
+
+    def test_anvil_exit_code_is_returned(self):
+        docker = FakeDocker(anvil_rc=42)
+        rc = self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
+        self.assertEqual(rc, 42)
+
+    def test_no_anvil_image_degrades_tcp_to_running_check(self):
+        # Without an anvil image a TCP probe cannot dial the tong's port, so it
+        # falls back to "is the container running" using inspect_state.
+        states = {"swarmforge-shared-ollama": {"running": True, "label": tongs.config_hash(SHARED_OLLAMA)}}
+        docker = FakeDocker(states=states)
+        rc = run_anvil.run_with_tongs(
+            _merged("ollama", SHARED_OLLAMA, source=tongs.REPO), ANVIL_ARGV,
+            _opts(anvil_image=None), docker=docker,
+            sleep=lambda _s: None, monotonic=_Clock(),
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("tcp_probe", [c[0] for c in docker.calls])
 
 
 if __name__ == "__main__":
