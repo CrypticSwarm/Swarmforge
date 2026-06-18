@@ -993,6 +993,31 @@ class DockerArgvTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tongs.inject_anvil_argv(["podman", "ps"], pre_image_args=["-e", "A=1"])
 
+    def test_to_create_argv_swaps_run_for_create(self):
+        out = tongs.to_create_argv(ANVIL_ARGV)
+        self.assertEqual(out[:2], ["docker", "create"])
+        # Everything else is preserved byte-for-byte.
+        self.assertEqual(out[2:], ANVIL_ARGV[2:])
+
+    def test_to_create_argv_does_not_mutate_input(self):
+        original = list(ANVIL_ARGV)
+        tongs.to_create_argv(ANVIL_ARGV)
+        self.assertEqual(ANVIL_ARGV, original)
+
+    def test_to_create_argv_leaves_a_create_argv_unchanged(self):
+        argv = ["docker", "create", "--rm", "img"]
+        self.assertEqual(tongs.to_create_argv(argv), argv)
+
+    def test_to_create_argv_does_not_rewrite_a_harness_run_arg(self):
+        # Only the subcommand is swapped; a later 'run' token (e.g. a harness arg)
+        # is left alone.
+        argv = ["docker", "run", "img", "run"]
+        self.assertEqual(tongs.to_create_argv(argv), ["docker", "create", "img", "run"])
+
+    def test_to_create_argv_non_docker_run_raises(self):
+        with self.assertRaises(ValueError):
+            tongs.to_create_argv(["podman", "ps"])
+
 
 class AliasCollisionTests(unittest.TestCase):
     def _m(self, **defs):
