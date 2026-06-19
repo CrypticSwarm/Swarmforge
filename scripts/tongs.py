@@ -270,18 +270,19 @@ def validate_tong(name, defn):
     if env is not None and not isinstance(env, dict):
         err("'env' must be a mapping of name -> value")
     elif isinstance(env, dict):
-        plain, secret = partition_secret_env(env)
+        _, secret = partition_secret_env(env)
         for secret_name in sorted(secret):
             if not ENV_NAME_RE.match(secret_name):
                 err("invalid secret env name %r (must be a valid identifier)" % secret_name)
-                continue
-            pointer_name = secret_name + SECRET_FILE_ENV_SUFFIX
-            pointer_value = "%s/%s" % (SECRET_TMPFS_DIR, secret_name)
-            if pointer_name in plain and plain[pointer_name] != pointer_value:
-                err(
-                    "env %r collides with the secret file pointer for %r"
-                    % (pointer_name, secret_name)
-                )
+
+    # `entrypoint`/`command` override what the secret-injection wrapper execs, so
+    # they must be argv lists of strings if present.
+    for argvish in ("entrypoint", "command"):
+        value = defn.get(argvish)
+        if value is not None and not (
+            isinstance(value, list) and all(isinstance(part, str) for part in value)
+        ):
+            err("'%s' must be a list of strings" % argvish)
 
     for listish in ("mounts", "networks"):
         value = defn.get(listish)
@@ -448,20 +449,25 @@ def secret_provider_command(providers, provider, ref):
 
 
 # --- Secret delivery ----------------------------------------------------------
-# A resolved secret must never reach a tong as a docker `-e` env var: anything
-# holding the docker socket (the broker tong) could read it back via
-# `docker inspect`. Instead each secret-bearing env var is delivered as a file on
-# an in-memory tmpfs the launcher populates at startup, and the tong is pointed
-# at the file with a `<NAME>_FILE` env var (the conventional docker-secret
-# indirection). Plain (non-secret) env keeps flowing through `-e` unchanged.
+# A resolved secret must never reach a tong as a docker `-e` env var, a command
+# argument, or a file on disk: anything holding the docker socket (the broker
+# tong) could read an `-e` value back via `docker inspect`. Instead the launcher
+# hands the secret-bearing env to the tong over a host FIFO bind-mounted into the
+# container, and wraps the tong's entrypoint with a `/bin/sh` prologue that reads
+# the FIFO, exports each value into its own environment, then execs the image's
+# real entrypoint+command. The bytes travel through the kernel pipe buffer -- never
+# a file, an argv, or the container's `Config.Env` -- and arrive as ordinary
+# environment variables, so an unmodified server that reads them from its
+# environment at startup works unchanged. Plain (non-secret) env keeps flowing
+# through `-e`, which is safe because those values are not secret.
 
-SECRET_TMPFS_DIR = "/run/swarmforge/secrets"
-SECRET_FILE_ENV_SUFFIX = "_FILE"
+# Where the FIFO is bind-mounted inside the tong, and the shell the wrapper runs.
+SECRET_FIFO_TARGET = "/run/swarmforge/secret-env"
+SECRET_INJECT_SHELL = "/bin/sh"
 
-# A secret's file lands at SECRET_TMPFS_DIR/<env name>, so the env name becomes a
-# path component. Restricting it to the POSIX env-name grammar keeps that path
-# inside the tmpfs dir -- a name like "../../etc/foo" from an untrusted workspace
-# tong cannot escape it -- and is exactly what docker accepts for an env var.
+# A secret env name becomes a shell assignment target (`export NAME=...`), so it
+# must be a valid identifier -- which is exactly what docker accepts for an env
+# var, and what keeps a hostile name from being anything but a variable name.
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -471,8 +477,8 @@ def partition_secret_env(env):
     `env` is the tong definition's `env` mapping (values may be unresolved
     `${secret:...}` references). `plain` holds values with no secret reference
     (safe to pass straight through as `-e`); `secret` holds the keys whose value
-    contains at least one reference (routed to tmpfs delivery so the resolved
-    value never appears in `docker inspect`). Order within each is preserved.
+    contains at least one reference (delivered over the FIFO so the resolved value
+    never appears in `docker inspect`). Order within each is preserved.
     """
     plain, secret = {}, {}
     for key, value in (env or {}).items():
@@ -483,69 +489,86 @@ def partition_secret_env(env):
     return plain, secret
 
 
-def secret_delivery_plan(resolved_secrets):
-    """Plan tmpfs delivery for already-resolved secret env values.
-
-    `resolved_secrets` is `{env_name: secret_value}`. Returns plain data the
-    launcher applies when it starts the tong:
-
-      * `tmpfs` -- the in-tong tmpfs mountpoint to create (`--tmpfs`), so the
-                   secret files live in memory and never touch disk, or `None`
-                   when there are no secrets.
-      * `files` -- `{absolute_path: secret_value}` the launcher writes into the
-                   running container's tmpfs (never to the host).
-      * `env`   -- `{<NAME>_FILE: absolute_path}` pointing the tong at each file;
-                   these are paths, not secrets, so they are safe as `-e`.
-
-    With no secrets the tmpfs/files/env are all empty, so a tong without secrets
-    gets no tmpfs mount and no indirection. Raises `ValueError` for an env name
-    that is not a valid identifier, so a name that would escape the tmpfs dir
-    when used as a path component stops the launch rather than reaching disk.
-    """
-    files = {}
-    env = {}
-    for name in sorted(resolved_secrets):
-        if not ENV_NAME_RE.match(name):
-            raise ValueError("invalid secret env name %r (must be a valid identifier)" % name)
-        path = "%s/%s" % (SECRET_TMPFS_DIR, name)
-        files[path] = resolved_secrets[name]
-        env[name + SECRET_FILE_ENV_SUFFIX] = path
-    return {"tmpfs": SECRET_TMPFS_DIR if files else None, "files": files, "env": env}
-
-
 def plan_tong_secrets(env, resolver):
-    """Resolve a tong's secret env and plan how the tong receives it.
+    """Resolve a tong's secret env and split it from the plain env.
 
-    Combines the steps the launcher performs for one tong's environment:
-    partition `env` into plain and secret, resolve only the secret-bearing values
-    through the injected `resolver(provider, ref) -> str` (keeping this function
-    pure), then deliver those via tmpfs. Returns:
+    Partitions `env` into plain and secret-bearing values, resolves only the
+    secret-bearing ones through the injected `resolver(provider, ref) -> str`
+    (keeping this function pure), and returns:
 
-      * `env`   -- plain env vars plus the `<NAME>_FILE` pointers (never a secret
-                   value).
-      * `tmpfs` -- the tmpfs mountpoint to create, or `None` when no secrets.
-      * `files` -- `{absolute_path: secret_value}` to write into the tmpfs.
+      * `env`     -- the plain env vars, safe to pass straight through as `-e`.
+      * `secrets` -- `{name: resolved value}` to hand the tong over the FIFO.
 
-    The resolved secret values appear only under `files`, never under `env`, so
-    nothing the launcher passes as `-e` is readable through `docker inspect`.
+    Resolved values appear only under `secrets`; nothing here is passed as `-e`,
+    so no secret is readable through `docker inspect`.
     """
     plain, secret = partition_secret_env(env)
     resolved = {key: substitute_secrets(value, resolver) for key, value in secret.items()}
-    delivery = secret_delivery_plan(resolved)
-    merged_env = dict(plain)
-    for key, value in delivery["env"].items():
-        # A file pointer (TOKEN_FILE) can collide with a plain env var of the same
-        # name. Unless it already points at the generated path, fail rather than
-        # launching a tong that cannot find its secret.
-        if key in merged_env:
-            if merged_env[key] == value:
-                continue
-            raise ValueError(
-                "tong env %r collides with the secret file pointer for %r"
-                % (key, key[:-len(SECRET_FILE_ENV_SUFFIX)])
-            )
-        merged_env[key] = value
-    return {"env": merged_env, "tmpfs": delivery["tmpfs"], "files": delivery["files"]}
+    return {"env": dict(plain), "secrets": resolved}
+
+
+def render_secret_exports(resolved_secrets):
+    """POSIX-sh that exports already-resolved secret env, for writing to the FIFO.
+
+    `resolved_secrets` is `{env_name: value}`. Returns one `export NAME='value'`
+    line per entry (sorted), with the value single-quoted and embedded single
+    quotes escaped as `'\\''`, so an arbitrary value -- including newlines or shell
+    metacharacters -- cannot break out of its assignment. The tong's entrypoint
+    wrapper `eval`s this text, so the launcher (never the secret content) controls
+    the quoting. Raises `ValueError` for a name that is not a valid identifier.
+    """
+    lines = []
+    for name in sorted(resolved_secrets):
+        if not ENV_NAME_RE.match(name):
+            raise ValueError("invalid secret env name %r (must be a valid identifier)" % name)
+        quoted = "'" + resolved_secrets[name].replace("'", "'\\''") + "'"
+        lines.append("export %s=%s\n" % (name, quoted))
+    return "".join(lines)
+
+
+def secret_inject_argv(target_argv):
+    """`(entrypoint, command)` that loads FIFO secrets then execs the real argv.
+
+    `target_argv` is the tong image's real entrypoint+command (the process the
+    tong would have run without secret injection). Returns the `--entrypoint`
+    (`/bin/sh`) and the command tokens for `tong_run_argv`: a `-c` prologue that
+    reads the bind-mounted FIFO, exports each `NAME=value` into the environment,
+    then `exec`s `target_argv`. The blocking read of the FIFO is also the
+    synchronization point -- the wrapper waits there until the launcher delivers --
+    so the real process never starts before its secret env is set.
+    """
+    script = (
+        'secret_env=$(cat %s) || exit 1; '
+        'eval "$secret_env" || exit 1; '
+        'exec "$@"'
+    ) % SECRET_FIFO_TARGET
+    return SECRET_INJECT_SHELL, ["-c", script, "swarmforge-tong"] + list(target_argv)
+
+
+def resolve_exec_target(defn, image_entrypoint, image_cmd):
+    """The argv the tong should ultimately exec, given the image's defaults.
+
+    Overriding `--entrypoint` to inject the secret wrapper drops the image's own
+    entrypoint/command, so the launcher must restore them. A tong definition may
+    set them explicitly via `entrypoint:`/`command:` (lists); otherwise the
+    image's own values (`image_entrypoint`, `image_cmd`, read from
+    `docker inspect`) are used. The result is `entrypoint + command`. Raises
+    `ValueError` if that is empty -- there would be no process to exec after the
+    wrapper, so the definition must declare a `command`.
+    """
+    entrypoint = defn.get("entrypoint")
+    if entrypoint is None:
+        entrypoint = image_entrypoint or []
+    command = defn.get("command")
+    if command is None:
+        command = image_cmd or []
+    target = list(entrypoint) + list(command)
+    if not target:
+        raise ValueError(
+            "cannot inject secrets: image %r declares no entrypoint or command to "
+            "exec; set 'command' in the tong definition" % defn.get("image")
+        )
+    return target
 
 
 # --- Environment-variable naming ----------------------------------------------
@@ -1011,7 +1034,7 @@ def readiness_settings(defn):
 
 
 # --- Docker argv assembly -----------------------------------------------------
-# The launcher turns a validated definition (plus the env/tmpfs/network plan the
+# The launcher turns a validated definition (plus the env/secret/network plan the
 # functions above produce) into the concrete `docker run` argv for a tong, and
 # rewrites the anvil's own argv to reach the tongs. These builders are pure --
 # they return argv lists, run no docker -- so the exact flags can be unit-tested;
@@ -1114,10 +1137,12 @@ def tong_run_argv(
     network,
     alias,
     env=None,
-    tmpfs_dirs=(),
     label_hash=None,
     workspace=None,
     socket_path=DEFAULT_DOCKER_SOCKET,
+    fifo_host_path=None,
+    entrypoint=None,
+    command=(),
 ):
     """Full `docker run -d` argv that starts one tong container.
 
@@ -1126,28 +1151,36 @@ def tong_run_argv(
     named `container_name`, joined to `network` under `alias` as a
     `--network-alias` (only for network-facing tongs -- `volume`/`none` tongs need
     no DNS name), and stamped with the tong-name and config-hash labels so a later
-    launch can detect a stale `shared` container. `env` (plain values plus the
-    `<NAME>_FILE` secret pointers from `plan_tong_secrets`) is passed as `-e` in
-    sorted order; resolved secret *values* never appear here -- they are written
-    to the `tmpfs_dirs` mounts after start. `mounts:` magic words and `resources:`
-    are appended, then the image.
+    launch can detect a stale `shared` container. `env` (the tong's plain,
+    non-secret values from `plan_tong_secrets`) is passed as `-e` in sorted order;
+    resolved secret values never appear here -- they arrive over the FIFO instead.
+
+    When the tong has secret env, the launcher passes `fifo_host_path` (bind-mounted
+    read-only as the secret channel), `entrypoint` (`/bin/sh`), and `command` (the
+    wrapper that reads the FIFO and execs the image's real argv) -- see
+    `secret_inject_argv`. With no secrets all three are omitted and the image's own
+    entrypoint runs unchanged. `mounts:` magic words and `resources:` are appended,
+    then the image, then any `command` tokens.
     """
     argv = ["docker", "run", "-d", "--name", container_name]
     if network:
         argv += ["--network", network]
     if alias and _is_network_facing(defn):
         argv += ["--network-alias", alias]
+    if entrypoint:
+        argv += ["--entrypoint", entrypoint]
     argv += ["--label", "%s=%s" % (LABEL_TONG_NAME, name)]
     if label_hash:
         argv += ["--label", "%s=%s" % (LABEL_CONFIG_HASH, label_hash)]
-    for tmpfs_dir in tmpfs_dirs:
-        argv += ["--tmpfs", tmpfs_dir]
+    if fifo_host_path:
+        argv += ["-v", "%s:%s:ro" % (fifo_host_path, SECRET_FIFO_TARGET)]
     for key in sorted(env or {}):
         argv += ["-e", "%s=%s" % (key, env[key])]
     for spec in tong_mount_specs(defn, workspace, socket_path=socket_path):
         argv += ["-v", spec]
     argv += tong_resource_flags(defn)
     argv.append(defn["image"])
+    argv += list(command)
     return argv
 
 

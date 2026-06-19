@@ -4,6 +4,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 
@@ -255,16 +256,6 @@ class ValidationTests(unittest.TestCase):
         errors = tongs.validate_tong("t", {"lifecycle": "session", "image": "x", "interface": {"kind": "socket"}})
         self.assertTrue(any("interface.kind" in e for e in errors))
 
-    def test_rejects_secret_file_pointer_collision(self):
-        errors = tongs.validate_tong("t", {
-            "lifecycle": "session",
-            "image": "x",
-            "interface": {"kind": "none"},
-            "readiness": {"mode": "none"},
-            "env": {"TOKEN": "${secret:op:t}", "TOKEN_FILE": "/declared/path"},
-        })
-        self.assertTrue(any("TOKEN_FILE" in e for e in errors))
-
     def test_rejects_invalid_secret_env_name(self):
         errors = tongs.validate_tong("t", {
             "lifecycle": "session",
@@ -274,6 +265,23 @@ class ValidationTests(unittest.TestCase):
             "env": {"a/b": "${secret:op:t}"},
         })
         self.assertTrue(any("a/b" in e for e in errors))
+
+    def test_rejects_non_list_entrypoint_or_command(self):
+        for field in ("entrypoint", "command"):
+            errors = tongs.validate_tong("t", {
+                "lifecycle": "session", "image": "x",
+                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+                field: "node server.js",  # must be a list of strings
+            })
+            self.assertTrue(any(field in e for e in errors), field)
+
+    def test_accepts_list_entrypoint_and_command(self):
+        errors = tongs.validate_tong("t", {
+            "lifecycle": "session", "image": "x",
+            "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+            "entrypoint": ["node"], "command": ["server.js"],
+        })
+        self.assertEqual(errors, [])
 
 
 class SecretRefTests(unittest.TestCase):
@@ -390,75 +398,95 @@ class SecretDeliveryTests(unittest.TestCase):
         self.assertEqual(tongs.partition_secret_env(None), ({}, {}))
         self.assertEqual(tongs.partition_secret_env({}), ({}, {}))
 
-    def test_delivery_plan_routes_secrets_to_tmpfs_files(self):
-        plan = tongs.secret_delivery_plan({"TOKEN": "s3cr3t", "API_KEY": "k3y"})
-        self.assertEqual(plan["tmpfs"], "/run/swarmforge/secrets")
-        self.assertEqual(
-            plan["files"],
-            {"/run/swarmforge/secrets/API_KEY": "k3y", "/run/swarmforge/secrets/TOKEN": "s3cr3t"},
-        )
-        self.assertEqual(
-            plan["env"],
-            {
-                "API_KEY_FILE": "/run/swarmforge/secrets/API_KEY",
-                "TOKEN_FILE": "/run/swarmforge/secrets/TOKEN",
-            },
-        )
-
-    def test_delivery_plan_empty_has_no_tmpfs(self):
-        plan = tongs.secret_delivery_plan({})
-        self.assertEqual(plan, {"tmpfs": None, "files": {}, "env": {}})
-
-    def test_plan_tong_secrets_keeps_secret_values_out_of_env(self):
+    def test_plan_tong_secrets_keeps_secret_values_out_of_plain_env(self):
         env = {"REGION": "us", "TOKEN": "${secret:op:op://Work/github/token}"}
         plan = tongs.plan_tong_secrets(env, lambda p, r: "RESOLVED-%s" % r)
-        # Plain env passes through; the secret becomes a _FILE pointer, never a value.
-        self.assertEqual(
-            plan["env"],
-            {"REGION": "us", "TOKEN_FILE": "/run/swarmforge/secrets/TOKEN"},
-        )
-        self.assertEqual(plan["tmpfs"], "/run/swarmforge/secrets")
-        self.assertEqual(
-            plan["files"],
-            {"/run/swarmforge/secrets/TOKEN": "RESOLVED-op://Work/github/token"},
-        )
-        # The resolved secret value reaches files only -- never the -e env plan.
+        # Plain env passes through; the resolved secret lands only under `secrets`.
+        self.assertEqual(plan["env"], {"REGION": "us"})
+        self.assertEqual(plan["secrets"], {"TOKEN": "RESOLVED-op://Work/github/token"})
         self.assertNotIn("RESOLVED-op://Work/github/token", json.dumps(plan["env"]))
-
-    def test_delivery_plan_rejects_traversal_env_name(self):
-        # An env name that would escape the tmpfs dir as a path component is
-        # refused rather than baked into a file path.
-        with self.assertRaises(ValueError):
-            tongs.secret_delivery_plan({"../../etc/cron.d/x": "v"})
-        with self.assertRaises(ValueError):
-            tongs.secret_delivery_plan({"a/b": "v"})
-
-    def test_plan_tong_secrets_rejects_pointer_collision(self):
-        # A plain TOKEN_FILE that disagrees with the synthesized pointer would
-        # make the tong unable to find TOKEN, so the plan fails closed.
-        env = {"TOKEN_FILE": "/declared/path", "TOKEN": "${secret:op:t}"}
-        with self.assertRaises(ValueError):
-            tongs.plan_tong_secrets(env, lambda p, r: "SECRET")
-
-    def test_plan_tong_secrets_allows_matching_declared_pointer(self):
-        env = {
-            "TOKEN_FILE": "/run/swarmforge/secrets/TOKEN",
-            "TOKEN": "${secret:op:t}",
-        }
-        plan = tongs.plan_tong_secrets(env, lambda p, r: "SECRET")
-        self.assertEqual(plan["env"]["TOKEN_FILE"], "/run/swarmforge/secrets/TOKEN")
-        self.assertEqual(plan["files"], {"/run/swarmforge/secrets/TOKEN": "SECRET"})
-        self.assertNotIn("SECRET", json.dumps(plan["env"]))
 
     def test_plan_tong_secrets_inert_without_secrets(self):
         plan = tongs.plan_tong_secrets({"REGION": "us"}, lambda p, r: "x")
-        self.assertEqual(plan, {"env": {"REGION": "us"}, "tmpfs": None, "files": {}})
+        self.assertEqual(plan, {"env": {"REGION": "us"}, "secrets": {}})
 
     def test_plan_tong_secrets_resolves_each_provider_with_its_ref(self):
         env = {"A": "${secret:op:a}", "B": "${secret:pass:b}"}
         seen = []
         tongs.plan_tong_secrets(env, lambda p, r: seen.append((p, r)) or "v")
         self.assertEqual(sorted(seen), [("op", "a"), ("pass", "b")])
+
+    def test_render_secret_exports_quotes_values_safely(self):
+        # Each value is single-quoted with embedded quotes escaped, so an arbitrary
+        # value -- here one with a quote, a space, and a newline -- cannot break out
+        # of its assignment when the wrapper evals the script.
+        script = tongs.render_secret_exports({"B": "two\nlines", "A": "it's a $X"})
+        # Sorted by name; A first.
+        self.assertEqual(
+            script,
+            "export A='it'\\''s a $X'\n" "export B='two\nlines'\n",
+        )
+
+    def test_render_secret_exports_eval_round_trips_the_value(self):
+        # Sanity-check that evaling the rendered script in a real shell reproduces
+        # the exact bytes, proving the quoting survives metacharacters.
+        value = "a'b\"c $d `e` \\f\n g"
+        script = tongs.render_secret_exports({"V": value})
+        out = subprocess.run(
+            ["/bin/sh", "-c", 'eval "$1"; printf %s "$V"', "sh", script],
+            stdout=subprocess.PIPE,
+        ).stdout.decode("utf-8")
+        self.assertEqual(out, value)
+
+    def test_render_secret_exports_rejects_invalid_name(self):
+        with self.assertRaises(ValueError):
+            tongs.render_secret_exports({"a/b": "v"})
+
+    def test_secret_inject_argv_reads_fifo_then_execs_target(self):
+        entrypoint, command = tongs.secret_inject_argv(["node", "server.js"])
+        self.assertEqual(entrypoint, "/bin/sh")
+        self.assertEqual(command[0], "-c")
+        self.assertIn("/run/swarmforge/secret-env", command[1])
+        self.assertIn("|| exit 1", command[1])
+        self.assertIn('exec "$@"', command[1])
+        # The target argv is passed after the `$0` placeholder so `"$@"` is it.
+        self.assertEqual(command[2:], ["swarmforge-tong", "node", "server.js"])
+
+    def test_secret_inject_argv_does_not_exec_target_when_fifo_read_fails(self):
+        old_target = tongs.SECRET_FIFO_TARGET
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tongs.SECRET_FIFO_TARGET = os.path.join(tmp, "missing")
+                entrypoint, command = tongs.secret_inject_argv(
+                    ["/bin/sh", "-c", "printf target-ran"]
+                )
+                completed = subprocess.run(
+                    [entrypoint] + command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+        finally:
+            tongs.SECRET_FIFO_TARGET = old_target
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, b"")
+
+    def test_resolve_exec_target_uses_image_defaults(self):
+        self.assertEqual(
+            tongs.resolve_exec_target({"image": "x"}, ["node"], ["server.js"]),
+            ["node", "server.js"],
+        )
+
+    def test_resolve_exec_target_definition_overrides_image(self):
+        defn = {"image": "x", "entrypoint": ["tini", "--"], "command": ["app"]}
+        self.assertEqual(
+            tongs.resolve_exec_target(defn, ["node"], ["server.js"]),
+            ["tini", "--", "app"],
+        )
+
+    def test_resolve_exec_target_empty_raises(self):
+        with self.assertRaises(ValueError):
+            tongs.resolve_exec_target({"image": "x"}, [], [])
 
 
 class EnvNamingTests(unittest.TestCase):
@@ -926,13 +954,29 @@ class DockerArgvTests(unittest.TestCase):
         self.assertIn("--memory", argv)
         self.assertEqual(argv[argv.index("--memory") + 1], "256m")
 
-    def test_run_argv_tmpfs_for_secret_delivery(self):
+    def test_run_argv_secret_injection_mounts_fifo_wraps_entrypoint(self):
+        # A secret-bearing tong gets the FIFO bind (read-only), the /bin/sh
+        # entrypoint override, and the wrapper command appended after the image.
+        entrypoint, command = tongs.secret_inject_argv(["node", "server.js"])
         argv = tongs.tong_run_argv(
             "g", def_of(NONE_TONG), container_name="c", network="n", alias="g",
-            tmpfs_dirs=["/run/swarmforge/secrets"],
+            fifo_host_path="/tmp/sf/secret-env", entrypoint=entrypoint, command=command,
         )
-        self.assertIn("--tmpfs", argv)
-        self.assertEqual(argv[argv.index("--tmpfs") + 1], "/run/swarmforge/secrets")
+        self.assertEqual(
+            argv[argv.index("--entrypoint") + 1], "/bin/sh"
+        )
+        self.assertIn("/tmp/sf/secret-env:/run/swarmforge/secret-env:ro", argv)
+        # The wrapper command trails the image (which is NONE_TONG's image).
+        image = def_of(NONE_TONG)["image"]
+        self.assertEqual(argv[argv.index(image) + 1 :], command)
+
+    def test_run_argv_without_secrets_omits_entrypoint_and_fifo(self):
+        argv = tongs.tong_run_argv(
+            "g", def_of(NONE_TONG), container_name="c", network="n", alias="g",
+        )
+        self.assertNotIn("--entrypoint", argv)
+        self.assertNotIn("secret-env", " ".join(argv))
+        self.assertEqual(argv[-1], def_of(NONE_TONG)["image"])  # nothing after image
 
     def test_run_argv_does_not_emit_empty_hash_label(self):
         argv = tongs.tong_run_argv("g", def_of(NONE_TONG), container_name="c", network="n", alias="g")
