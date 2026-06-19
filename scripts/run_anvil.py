@@ -27,14 +27,26 @@ each network-facing `shared` tong to it, and joins the anvil to it (plus the bas
 `NETWORK=` network). On exit -- including SIGINT -- the `session` tongs and the
 per-session network are torn down (and the connected `shared` tongs disconnected)
 while the long-lived `shared` tongs keep running. A `port` tong's reachability is
-injected into the anvil as environment; a `none` tong has no anvil-facing surface.
+injected into the anvil as environment; an `mcp` tong's as generated MCP config
+(see "MCP config"); a `none` tong has no anvil-facing surface.
 
 A tong's secret references are resolved on the host (see "Secret delivery") and
 handed to the tong as environment, so the launcher starts `shared` and `session`
-tongs reached over the network (`port`) or with no anvil-facing surface (`none`),
-with or without secrets. An `mcp` or `volume` interface, or a `shared` tong that
+tongs reached over the network (`mcp`/`port`) or with no anvil-facing surface
+(`none`), with or without secrets. A `volume` interface, or a `shared` tong that
 mounts the workspace, is refused with a clear message rather than started
 half-wired.
+
+MCP config
+----------
+An `mcp` tong is an HTTP MCP server reachable at its canonical alias on the
+session network. The launcher generates the per-harness MCP config (an
+`opencode.json` `mcp` fragment for OpenCode, an `mcpServers` document for Claude
+Code) for the discovered `mcp` tongs, writes it to a host temp file mounted
+read-only into the anvil, and points the harness at it: OpenCode's entrypoint
+merges the fragment via `SWARMFORGE_TONG_MCP_FILE`, while Claude Code is passed
+`--mcp-config <path>`. With no `mcp` tongs nothing is written, mounted, or
+appended, so the anvil argv is unchanged.
 
 Secret delivery
 ---------------
@@ -783,10 +795,9 @@ def unsupported_tong_reasons(merged):
     """Reasons each discovered tong is outside what the launcher can start.
 
     The launcher starts `shared` and `session` tongs reached over the network
-    (`port`) or with no anvil-facing surface (`none`), resolving any secret
+    (`mcp`/`port`) or with no anvil-facing surface (`none`), resolving any secret
     references and delivering them as env over a FIFO. Refused here:
 
-      * an `mcp` interface -- it needs generated MCP config;
       * a `volume` interface -- a shared named volume has no consumer yet, so it
         is not wired into either container;
       * a `shared` tong that mounts the `workspace` -- a `shared` tong is one
@@ -802,11 +813,6 @@ def unsupported_tong_reasons(merged):
     for name in sorted(merged):
         defn = merged[name]["definition"]
         kind = (defn.get("interface") or {}).get("kind")
-        if kind == "mcp":
-            reasons.append(
-                "tong '%s' has an 'mcp' interface, which this launcher does not "
-                "wire up" % name
-            )
         if kind == "volume":
             reasons.append(
                 "tong '%s' has a 'volume' interface, which this launcher does not "
@@ -819,6 +825,22 @@ def unsupported_tong_reasons(merged):
                 "session's workspace into the next" % name
             )
     return reasons
+
+
+def ensure_mcp_harness_supported(merged, harness):
+    """Refuse MCP tongs when no emitter exists for the selected harness."""
+    mcp_names = [
+        name for name in sorted(merged)
+        if (merged[name]["definition"].get("interface") or {}).get("kind") == "mcp"
+    ]
+    if not mcp_names or harness in tongs.MCP_EMITTERS:
+        return
+    supported = ", ".join(sorted(tongs.MCP_EMITTERS))
+    got = harness if harness else "none"
+    raise OrchestrationError(
+        "mcp tong(s) %s require --harness to be one of: %s (got %s)"
+        % (", ".join(mcp_names), supported, got)
+    )
 
 
 def _start_one_tong(docker, name, defn, *, container, network, alias,
@@ -922,6 +944,36 @@ def _injection_pre_image_args(injection):
     return args
 
 
+# Where the generated MCP config is mounted in the anvil, and the env var the
+# OpenCode entrypoint reads to merge it into opencode.json. Claude Code is pointed
+# at the same in-container path with `--mcp-config` instead.
+MCP_CONFIG_CONTAINER_PATH = "/tmp/swarmforge-tong-mcp.json"
+MCP_FILE_ENV = "SWARMFORGE_TONG_MCP_FILE"
+
+
+def _mcp_injection(mcp_config, harness, mcp_dir):
+    """Write the generated MCP config and return its `(pre, post)` anvil args.
+
+    `mcp_config` is the per-harness fragment from `tongs.plan_injection` (already
+    shaped for the harness). It is written into `mcp_dir` on the host and mounted
+    read-only into the anvil. For Claude Code the mount is paired with
+    `--mcp-config <path>` (a harness arg, so it appends after the image); for
+    OpenCode the mount is paired with `SWARMFORGE_TONG_MCP_FILE=<path>`, which the
+    entrypoint reads to merge the fragment into opencode.json. With an empty
+    fragment nothing is written, mounted, or appended, so the anvil argv is
+    unchanged.
+    """
+    if not mcp_config:
+        return [], []
+    host_path = os.path.join(mcp_dir, "tong-mcp.json")
+    with open(host_path, "w", encoding="utf-8") as handle:
+        json.dump(mcp_config, handle)
+    mount = ["-v", "%s:%s:ro" % (host_path, MCP_CONFIG_CONTAINER_PATH)]
+    if harness == "claude":
+        return mount, ["--mcp-config", MCP_CONFIG_CONTAINER_PATH]
+    return mount + ["-e", "%s=%s" % (MCP_FILE_ENV, MCP_CONFIG_CONTAINER_PATH)], []
+
+
 def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                    make_channel=open_secret_channel,
                    sleep=time.sleep, monotonic=time.monotonic):
@@ -941,8 +993,9 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     this session, and the anvil joins it plus the base network (the `NETWORK=`
     escape hatch). With no `session` tong the anvil keeps using the base network
     exactly as before. Each tong's readiness is probed on the network the anvil
-    will use, `port` reachability is injected into the anvil argv, then the anvil
-    runs in the foreground.
+    will use, then reachability is injected into the anvil argv -- `port` env
+    vars and, for `mcp` tongs, the per-harness MCP config -- and the anvil runs
+    in the foreground.
 
     On exit -- including SIGINT -- the `session` tongs and the per-session network
     are torn down (and the connected `shared` tongs disconnected) while the
@@ -953,6 +1006,7 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     `session` tong is discovered with no anvil `--name` to key the session by, and
     `SecretResolutionError` if a secret reference cannot be resolved.
     """
+    ensure_mcp_harness_supported(merged, opts.harness)
     resolver = make_secret_resolver(providers or {})
     base_network = tongs.anvil_option_value(anvil_cmd, "--network")
     session_id = tongs.anvil_option_value(anvil_cmd, "--name")
@@ -970,13 +1024,15 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
         )
 
     plan = tongs.plan_network(merged, base_network, session_id)
-    # Only `port`/`none` tongs reach this path (`mcp`/`volume` are refused
-    # upstream), so the MCP emitter is unused and the injection is `port` env only.
-    injection = tongs.plan_injection(merged, None)
+    # `volume` tongs are refused upstream, so the injection is reachability for
+    # the network-facing kinds only: `port` env vars and, for `mcp` tongs, the
+    # per-harness MCP config emitted for `opts.harness`.
+    injection = tongs.plan_injection(merged, opts.harness)
 
     created_network = None
     started_sessions = []
     connected_shared = []
+    mcp_dir = None  # host temp dir holding the generated MCP config, if any
     try:
         if plan["create"]:
             docker.ensure_network(plan["create"])
@@ -1030,9 +1086,21 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             ):
                 raise OrchestrationError("tong '%s' did not become ready in time" % name)
 
+        # `port`/`volume` reachability splices in before the image; the MCP
+        # config adds a read-only mount (and, for OpenCode, the env var the
+        # entrypoint reads) before the image, plus Claude's `--mcp-config` as a
+        # harness arg after it. With no `mcp` tongs the fragment is empty and
+        # nothing is written or appended.
+        pre_image_args = _injection_pre_image_args(injection)
+        post_image_args = []
+        if injection["mcp"]:
+            mcp_dir = tempfile.mkdtemp(prefix="swarmforge-mcp-")
+            mcp_pre, mcp_post = _mcp_injection(injection["mcp"], opts.harness, mcp_dir)
+            pre_image_args += mcp_pre
+            post_image_args += mcp_post
         injected = tongs.inject_anvil_argv(
             anvil_cmd, network=plan["network"],
-            pre_image_args=_injection_pre_image_args(injection),
+            pre_image_args=pre_image_args, post_image_args=post_image_args,
         )
         if plan["extra_networks"]:
             # The anvil joins more than one network, which docker run cannot do at
@@ -1053,6 +1121,10 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             for network, container in connected_shared:
                 docker.network_disconnect(network, container)
             docker.network_rm(created_network)
+        # The generated MCP config was bind-mounted into the anvil, which has now
+        # exited; remove the host temp file holding it.
+        if mcp_dir:
+            shutil.rmtree(mcp_dir, ignore_errors=True)
 
 
 def exec_anvil(anvil_cmd):
@@ -1111,14 +1183,34 @@ def main(argv):
         return 1
 
     # Refuse anything this launcher cannot start (see unsupported_tong_reasons:
-    # an MCP or volume interface, or a shared tong mounting the workspace) rather
-    # than starting it half-wired. Every remaining tong has a `port`/`none`
-    # interface, whose canonical alias is its unique filename, so no two can claim
-    # the same network alias.
+    # a volume interface, or a shared tong mounting the workspace) rather than
+    # starting it half-wired.
     unsupported = unsupported_tong_reasons(merged)
     if unsupported:
         for reason in unsupported:
             tongs.warn(reason)
+        return 1
+
+    # An `mcp` tong's canonical alias is its `interface.name`, not its filename,
+    # so two tongs can claim the same network alias -- which would make DNS (and
+    # so readiness, env, and MCP wiring) nondeterministic. Refuse the set rather
+    # than starting both. (`port`/`none` tongs alias to their unique filenames, so
+    # they never collide on their own.)
+    collisions = tongs.alias_collisions(merged)
+    if collisions:
+        for alias, names in sorted(collisions.items()):
+            tongs.warn(
+                "tongs %s all resolve to network alias '%s'; rename or set a "
+                "distinct interface.name" % (", ".join(names), alias)
+            )
+        return 1
+
+    # An `mcp` tong needs a per-harness config fragment. Starting it for an
+    # unknown or omitted harness would leave the anvil unable to discover it.
+    try:
+        ensure_mcp_harness_supported(merged, opts.harness)
+    except OrchestrationError as exc:
+        tongs.warn(str(exc))
         return 1
 
     # Load the secret-provider table the resolver shells out to. A malformed file
