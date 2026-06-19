@@ -1052,19 +1052,70 @@ DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
 # long-lived container is found (and staleness-checked) across sessions.
 SHARED_CONTAINER_PREFIX = "swarmforge-shared"
 
+# A scoped shared tong is isolated on its own docker network (this prefix +
+# scope token) instead of the shared base network, so another scope's anvil has
+# no interface on it and cannot reach the tong even by raw IP.
+SHARED_NETWORK_PREFIX = "swarmforge-shared-net"
+
 
 def _sanitize_container_token(name):
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-_.")
 
 
-def shared_container_name(name):
+def org_scope_token(org_tongs_dir):
+    """Stable short token identifying one org by its tongs directory.
+
+    A `shared` tong owned by the org layer must be partitioned per org: two orgs
+    that ship the same tong (same filename, same `interface.name`) but different
+    credentials would otherwise collide on one daemon-global container name --
+    each launch tearing the other's container down -- and sit reachable side by
+    side on the shared base network. The token scopes both the container name and
+    the isolating network so neither collides across orgs.
+
+    Derived from the absolute org-tongs directory path, so every launch pointed
+    at the same org (e.g. different repos under one org) shares a token while
+    different orgs differ. A readable hint from the org root (the parent of
+    `.swarmforge/`) is prefixed for `docker ps`; the hash is what guarantees
+    uniqueness. Returns None when no org layer path is given, leaving a launch
+    with no org tongs on today's global, unscoped naming.
+    """
+    if not org_tongs_dir:
+        return None
+    canonical = os.path.normpath(os.path.abspath(org_tongs_dir))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8]
+    hint = _sanitize_container_token(
+        os.path.basename(os.path.dirname(os.path.dirname(canonical)))
+    )
+    return "%s-%s" % (hint, digest) if hint else digest
+
+
+def shared_container_name(name, scope=None):
     """Stable container name for a `shared` tong (session-independent).
 
     Sanitized to the characters docker permits in a container name and prefixed
-    so the container is recognizable as a Swarmforge-managed shared tong.
+    so the container is recognizable as a Swarmforge-managed shared tong. An
+    optional `scope` token (see `org_scope_token`) partitions otherwise
+    identically-named shared tongs owned by different scopes -- so two orgs
+    shipping the same tong do not collide on one daemon-global container name.
     """
     token = _sanitize_container_token(name)
-    return "%s-%s" % (SHARED_CONTAINER_PREFIX, token) if token else SHARED_CONTAINER_PREFIX
+    parts = [SHARED_CONTAINER_PREFIX]
+    if scope:
+        parts.append(scope)
+    if token:
+        parts.append(token)
+    return "-".join(parts)
+
+
+def shared_network_name(scope):
+    """Isolated docker network hosting one scope's `shared` tongs.
+
+    A scoped `shared` tong lives alone on this network instead of the shared base
+    network, and only the matching scope's anvil joins it -- so another scope's
+    anvil has no interface on it and cannot reach the tong even by dialing a raw
+    IP. The scope token (see `org_scope_token`) keeps two orgs' networks distinct.
+    """
+    return "%s-%s" % (SHARED_NETWORK_PREFIX, scope)
 
 
 def session_container_name(session_id, name):

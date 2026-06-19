@@ -869,6 +869,46 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(tongs.shared_container_name("ollama"), "swarmforge-shared-ollama")
         self.assertEqual(tongs.shared_container_name("my tong/x"), "swarmforge-shared-my-tong-x")
 
+    def test_shared_container_name_scope_partitions_identical_names(self):
+        # Two orgs shipping the same tong name get distinct container names so
+        # they never collide on one daemon-global name (the teardown bug).
+        a = tongs.shared_container_name("asana", scope="acme-1a2b3c4d")
+        b = tongs.shared_container_name("asana", scope="globex-9f8e7d6c")
+        self.assertEqual(a, "swarmforge-shared-acme-1a2b3c4d-asana")
+        self.assertEqual(b, "swarmforge-shared-globex-9f8e7d6c-asana")
+        self.assertNotEqual(a, b)
+        # No scope is byte-identical to the unscoped name (today's behavior).
+        self.assertEqual(
+            tongs.shared_container_name("asana"), "swarmforge-shared-asana"
+        )
+
+    def test_shared_network_name_is_scope_prefixed(self):
+        self.assertEqual(
+            tongs.shared_network_name("acme-1a2b3c4d"),
+            "swarmforge-shared-net-acme-1a2b3c4d",
+        )
+
+    def test_org_scope_token_none_without_org_dir(self):
+        self.assertIsNone(tongs.org_scope_token(None))
+        self.assertIsNone(tongs.org_scope_token(""))
+
+    def test_org_scope_token_stable_per_path_and_distinct_per_org(self):
+        # Same org path (e.g. two repos under one org) => same token; different
+        # orgs => different tokens. Path is normalized so trailing slashes and
+        # `.`/`..` segments do not change identity.
+        acme = tongs.org_scope_token("/home/me/orgs/acme/.swarmforge/tongs")
+        acme_again = tongs.org_scope_token("/home/me/orgs/acme/.swarmforge/tongs/")
+        acme_dotted = tongs.org_scope_token("/home/me/orgs/acme/./.swarmforge/tongs")
+        globex = tongs.org_scope_token("/home/me/orgs/globex/.swarmforge/tongs")
+        self.assertEqual(acme, acme_again)
+        self.assertEqual(acme, acme_dotted)
+        self.assertNotEqual(acme, globex)
+
+    def test_org_scope_token_carries_readable_org_root_hint(self):
+        # The org root (parent of `.swarmforge/`) is prefixed for `docker ps`.
+        token = tongs.org_scope_token("/home/me/orgs/acme/.swarmforge/tongs")
+        self.assertTrue(token.startswith("acme-"), token)
+
     def test_session_container_name_carries_session_and_sanitizes(self):
         self.assertEqual(tongs.session_container_name("claude-proj", "github"), "claude-proj-tong-github")
         self.assertEqual(tongs.session_container_name("claude-proj", "my tong/x"), "claude-proj-tong-my-tong-x")
