@@ -877,6 +877,15 @@ SHARED_MCP = {
     "readiness": {"mode": "none"},
 }
 
+# An org-owned credential-holding MCP tong: the user's reported case. Two orgs
+# ship this same file with different credentials; each must run partitioned.
+ORG_ASANA = {
+    "lifecycle": "shared",
+    "image": "asana-mcp:latest",
+    "interface": {"kind": "mcp", "name": "asana-mcp", "port": 3000},
+    "readiness": {"mode": "none"},
+}
+
 # A per-session network service (a throwaway fixture DB) reached by host+port.
 SESSION_PORT = {
     "lifecycle": "session",
@@ -1554,6 +1563,112 @@ class RunWithTongsTests(unittest.TestCase):
                 docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
             )
         self.assertEqual(docker.calls, [])  # nothing created => nothing to tear down
+
+    # --- Per-org isolation of `shared` tongs --------------------------------
+
+    _ACME = "/orgs/acme/.swarmforge/tongs"
+    _GLOBEX = "/orgs/globex/.swarmforge/tongs"
+
+    def _run_org(self, docker, merged, org_dir, harness="opencode", anvil=None):
+        """Drive run_with_tongs with an org layer dir wired into the options."""
+        opts = run_anvil.LauncherOptions(
+            layer_dirs=[(tongs.ORG, org_dir)], workspace=None, approvals=None,
+            providers=None, harness=harness, anvil_image="anvil:img", no_prompt=False,
+        )
+        return run_anvil.run_with_tongs(
+            merged, anvil or ANVIL_ARGV, opts,
+            docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
+        )
+
+    def test_org_shared_tong_isolated_on_per_org_network(self):
+        # An org-owned shared tong starts on its own per-org network (never the
+        # shared base network), and the anvil joins that network as an extra.
+        docker = FakeDocker()
+        merged = {"asana": {"source": tongs.ORG, "definition": ORG_ASANA}}
+        self._run_org(docker, merged, self._ACME)
+        token = tongs.org_scope_token(self._ACME)
+        net = tongs.shared_network_name(token)
+        container = tongs.shared_container_name("asana", scope=token)
+        self.assertIn(("ensure_network", net), docker.calls)
+        started = docker.run_argvs[0]
+        self.assertIn(container, started)
+        self.assertEqual(started[started.index("--network") + 1], net)
+        self.assertNotEqual(started[started.index("--network") + 1], "opencode-net")
+        # The anvil keeps opencode-net as its primary (for the model backend) and
+        # joins the org network as an extra via the multi-network path.
+        self.assertEqual(docker.anvil_extra_networks, [net])
+        self.assertEqual(
+            docker.anvil_argv[docker.anvil_argv.index("--network") + 1], "opencode-net"
+        )
+
+    def test_org_shared_tong_readiness_probes_on_org_network(self):
+        # A scoped shared tong with a tcp probe is checked on its org network --
+        # the only network it lives on -- not on the anvil's base network.
+        docker = FakeDocker()
+        defn = {
+            "lifecycle": "shared", "image": "asana-mcp:latest",
+            "interface": {"kind": "mcp", "name": "asana-mcp", "port": 3000},
+            "readiness": {"mode": "tcp"},
+        }
+        merged = {"asana": {"source": tongs.ORG, "definition": defn}}
+        self._run_org(docker, merged, self._ACME)
+        net = tongs.shared_network_name(tongs.org_scope_token(self._ACME))
+        self.assertIn(("tcp_probe", net, "asana-mcp", 3000, "anvil:img"), docker.calls)
+
+    def test_two_orgs_partition_into_distinct_containers_and_networks(self):
+        # The crux: the same tong file in two orgs yields distinct containers and
+        # distinct networks (so neither tears the other down, and neither is
+        # reachable from the other), while the agent-facing MCP server name
+        # (interface.name) stays identical in both.
+        merged = {"asana": {"source": tongs.ORG, "definition": ORG_ASANA}}
+        d1 = FakeDocker()
+        self._run_org(d1, merged, self._ACME)
+        d2 = FakeDocker()
+        self._run_org(d2, merged, self._GLOBEX)
+
+        s1, s2 = d1.run_argvs[0], d2.run_argvs[0]
+        self.assertNotEqual(
+            s1[s1.index("--name") + 1], s2[s2.index("--name") + 1]
+        )
+        self.assertNotEqual(d1.anvil_extra_networks, d2.anvil_extra_networks)
+        # Same agent-facing MCP name on each org's isolated network.
+        self.assertEqual(s1[s1.index("--network-alias") + 1], "asana-mcp")
+        self.assertEqual(s2[s2.index("--network-alias") + 1], "asana-mcp")
+
+    def test_non_org_shared_tong_stays_global_even_with_org_layer(self):
+        # A repo-sourced shared tong keeps the base network and unscoped name even
+        # when the launch also carries an org layer dir -- only org-owned shared
+        # tongs are partitioned.
+        docker = FakeDocker()
+        merged = {"ollama": {"source": tongs.REPO, "definition": SHARED_OLLAMA}}
+        self._run_org(docker, merged, self._ACME)
+        started = docker.run_argvs[0]
+        self.assertIn("swarmforge-shared-ollama", started)
+        self.assertEqual(started[started.index("--network") + 1], "opencode-net")
+        self.assertNotIn("ensure_network", [c[0] for c in docker.calls])
+        self.assertIsNone(docker.anvil_extra_networks)
+
+    def test_org_shared_network_pruned_best_effort_and_tong_left_running(self):
+        # On teardown the org network is pruned best-effort (docker refuses while
+        # the long-lived tong is attached, so it persists), and the shared tong is
+        # force-removed only once -- at start, to clear a leftover -- never as a
+        # teardown step.
+        docker = FakeDocker()
+        merged = {"asana": {"source": tongs.ORG, "definition": ORG_ASANA}}
+        self._run_org(docker, merged, self._ACME)
+        token = tongs.org_scope_token(self._ACME)
+        net = tongs.shared_network_name(token)
+        container = tongs.shared_container_name("asana", scope=token)
+        self.assertIn(("network_rm", net), docker.calls)
+        self.assertEqual(docker.calls.count(("rm_force", container)), 1)
+
+    def test_org_shared_tong_without_anvil_name_raises_before_any_docker_call(self):
+        docker = FakeDocker()
+        anvil = ["docker", "run", "-it", "--rm", "--network", "opencode-net", "img"]
+        merged = {"asana": {"source": tongs.ORG, "definition": ORG_ASANA}}
+        with self.assertRaises(run_anvil.OrchestrationError):
+            self._run_org(docker, merged, self._ACME, anvil=anvil)
+        self.assertEqual(docker.calls, [])
 
 
 if __name__ == "__main__":
