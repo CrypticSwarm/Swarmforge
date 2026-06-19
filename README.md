@@ -228,6 +228,132 @@ Point to an alternative identity file with `GITCONFIG_FILE=/path/to/gitconfig ma
 Note: `opencode/opencode.json` also supports an `instructions` array for global instruction files.
 Those files are loaded in full, so avoid listing full `SKILL.md` files there unless you explicitly want them always in context.
 
+## Tongs (sidecar processes)
+
+A **tong** is a Swarmforge-managed sidecar container started alongside the anvil (the harness container you work in).
+The name captures the primary use case: a tool that holds something hot — usually credentials — so the agent never touches it directly.
+A credential-holding tong runs as a sibling container exposing an **MCP server** the agent calls over the session network; the secret material lives only in the tong's process space.
+Tongs can also be plain network services (a throwaway Postgres, a fixture server), volume providers (a build-cache populator), or background side-effect processes.
+
+Tongs are defined as YAML files and discovered across the **same four layers** as agents.
+The host-side launcher (`scripts/run_anvil.py`) discovers, approves, starts, and tears them down; `make run_opencode` / `make run_claude` already delegate to it, so no new commands are needed.
+
+### Quick start: run a tong
+
+1. (Only if the tong needs secrets) create the secret-provider table (see [Secret providers](#secret-providers) below).
+2. Drop a tong definition into one of the layer directories, e.g. a personal one at `~/.swarmforge/tongs/<name>.yaml`, or a project one at `<workspace>/.swarmforge/tongs/<name>.yaml`.
+3. Run the anvil as usual (`oc`, or `make run_claude PROJECT_DIR=$(pwd)`).
+   - A **workspace**-sourced tong prints a privilege summary and asks you to approve it on first run (see [First-run approval](#first-run-approval)).
+   - The launcher resolves any secrets (which may prompt your provider CLI to unlock), starts the tong, waits for it to become ready, injects reachability into the anvil, then runs the anvil in the foreground.
+4. On exit (including Ctrl-C), `session` tongs and the per-session network are torn down; `shared` tongs are left running.
+
+### Where definitions live
+
+One YAML file per tong under `.swarmforge/tongs/`, merged **by name** (filename = tong identity) lowest to highest precedence:
+
+- **user** — `~/.swarmforge/tongs/` (override the root with `SWARMFORGE_USER_ASSETS_DIR`; `tongs/` is appended)
+- **org** — `$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge/tongs/` (override the root with `SWARMFORGE_ORG_ASSETS_DIR`)
+- **repo** — `tongs/` in the Swarmforge checkout (override with `SWARMFORGE_REPO_TONGS_DIR`, which points directly at the directory so the rest of the checkout is never read)
+- **workspace** — `<workspace>/.swarmforge/tongs/`
+
+A higher layer replaces a same-named tong wholesale (never a file-merge). `disable: true` switches off an inherited tong.
+The user/org/repo layers are **trusted**; the workspace layer (any repo you happened to clone) is gated by first-run approval.
+
+### Definition format
+
+```yaml
+# ~/.swarmforge/tongs/github-creds.yaml
+description: Holds GitHub credentials, exposes push/PR operations as MCP
+lifecycle: session            # session | shared (required)
+image: ghcr.io/example/github-tong@sha256:...   # required; pinned digest recommended
+env:
+  GITHUB_TOKEN: ${secret:op:op://Work/github/token}  # resolved on the host launcher
+  LOG_LEVEL: info             # plain values pass through as ordinary -e env
+interface:                    # required; how (or whether) the anvil reaches the tong
+  kind: mcp                   # mcp | port | volume | none
+  transport: http             # http only in v1
+  port: 8080                  # the port the server listens on inside the container
+  name: github                # canonical MCP server name the agent sees
+mounts:                       # opt-in magic words only, never raw host paths
+  - workspace:ro
+resources:
+  memory: 512m                # string or number
+networks:                     # optional extra pre-existing networks to also join
+  - some-existing-net
+# entrypoint: [...]           # optional argv override (needed only for secret-env tongs
+# command: [...]              #   whose image entrypoint/command can't be read via inspect)
+```
+
+Required fields: `lifecycle`, `image`, and `interface` (with a valid `kind`). Unknown keys are tolerated for forward compatibility.
+
+#### Interface kinds
+
+The `interface:` block drives what gets injected into the anvil, how readiness is checked, and what plumbing is wired up:
+
+- **`mcp`** — an HTTP MCP server (the common case). Requires `port` and `name`; `transport` defaults to `http`. Injection: per-harness MCP config pointing at `http://<name>:<port>/mcp` on the session network (`interface.path` overrides the `/mcp` suffix). Readiness: TCP probe by default.
+- **`port`** — a non-MCP network service. Requires `port`; optional `protocol` is informational. Injection: `SWARMFORGE_TONG_<NAME>_HOST` (the canonical alias) and `SWARMFORGE_TONG_<NAME>_PORT` into the anvil's environment — the anvil composes its own connection string. Readiness: TCP probe by default.
+- **`volume`** — a shared named volume, no network. Requires `volume` and `mountpoint`; readiness must be declared (no port to probe). The schema accepts it, but **the launcher does not wire it up yet** and refuses to start such a tong with a clear message — there is no consumer for the shared volume yet.
+- **`none`** — a background side-effect with no anvil-facing surface. Injects nothing. Readiness must be declared.
+
+`<NAME>` in the env vars is the tong's filename uppercased with hyphens turned into underscores (`github-creds` → `SWARMFORGE_TONG_GITHUB_CREDS_*`).
+The MCP server name and the `port` alias are stable across worktrees (they are docker network aliases, not container names), so generated config is identical regardless of where the workspace is mounted.
+
+#### Readiness
+
+```yaml
+readiness:
+  mode: healthcheck           # tcp | healthcheck | none
+  command: ["test", "-S", "/run/agent.sock"]   # for mode: healthcheck (docker exec)
+  timeout: 30s                # 30s / 500ms / 2m, or a bare number of seconds (default 30s)
+```
+
+`tcp` is the implicit default for `mcp` and `port`. `volume` and `none` have no port to probe, so `mode` is **required** for them — the launcher refuses to silently fire-and-forget a portless tong. Use `mode: none` to deliberately skip the gate.
+
+#### Mounts
+
+Mounts are opt-in **magic words**, never raw host paths. Only two are recognized, each with an optional `:mode` suffix forwarded to docker verbatim:
+
+- `workspace[:mode]` — bind-mounts the session workspace at `/workspace` (e.g. `workspace:ro`).
+- `docker-socket[:mode]` — bind-mounts the host docker socket. This is full host docker control and is always called out explicitly in the workspace approval prompt; it is the grant a broker tong needs.
+
+### Lifecycle
+
+- **`session`** — started with the anvil, torn down when the anvil exits. Per-session isolation; the default for credential tongs.
+- **`shared`** — long-lived, survives across anvil sessions (ollama-style). Started on first use and connected to each session's network via a network alias; left running on teardown (no refcounting). A running `shared` container whose config-hash docker label still matches the current definition is reused untouched; a missing, stopped, or stale one is recreated automatically. A rotated secret behind an unchanged reference does **not** churn it — to force a restart (e.g. to pick up a rotated secret) remove the container yourself with `docker rm -f <container>`. A `shared` tong may not mount the `workspace` (it would leak one session's workspace into the next); use a `session` tong for per-workspace mounts.
+
+### Secret providers
+
+Secret references are resolved **on the host** by shelling out to a provider CLI — Swarmforge knows nothing about any individual secret manager.
+Declare your providers once in the user layer at `~/.swarmforge/secret-providers.yaml` (override the root with `SWARMFORGE_USER_ASSETS_DIR`):
+
+```yaml
+# ~/.swarmforge/secret-providers.yaml
+providers:
+  op:      ["op", "read", "{ref}"]
+  pass:    ["pass", "show", "{ref}"]
+  doppler: ["doppler", "secrets", "get", "{ref}", "--plain"]
+  aws:     ["aws", "secretsmanager", "get-secret-value", "--secret-id", "{ref}",
+            "--query", "SecretString", "--output", "text"]
+```
+
+Each value is an argv template; the literal token `{ref}` in any element is replaced with the reference. Command templates must be single-line flow lists.
+A missing file means no providers are configured, so any secret reference fails loudly rather than resolving to an empty value.
+
+Reference a secret from a tong's `env:` as `${secret:<provider>:<ref>}`, for example `${secret:op:op://Work/github/token}`.
+Because the launcher runs in your terminal before the anvil starts, interactive unlocks (`op signin`, biometric prompts) work for free.
+
+**Delivery is leak-resistant by design.** A resolved secret is never passed as a docker `-e` value, a command-line argument, or a file on disk (anything holding the docker socket could read those back). Instead the launcher streams the secret env to the tong over a host FIFO and wraps the tong's entrypoint with a `/bin/sh` prologue that reads the FIFO, exports the values, then execs the image's real entrypoint — so an unmodified off-the-shelf server that reads its credentials from `process.env` works as-is. A tong with secret env therefore needs a `/bin/sh` in its image; a tong without secrets runs its image entrypoint unchanged. Plain (non-secret) `env:` values still flow through `-e`.
+
+### First-run approval
+
+The user, org, and repo layers are installed deliberately and are trusted; they skip the gate.
+A **workspace**-sourced tong (from a repo you cloned) could otherwise request your secrets, host mounts, or the docker socket simply by being present, so the launcher gates it:
+
+- Before starting, it prints exactly what the tong requests — image, secret references, mounts, networks, and docker-socket access — and asks you to approve.
+- Approval is keyed by workspace path + tong name + a hash of the merged definition, stored in `~/.swarmforge/approvals.json`. Any change to the definition re-prompts.
+- The gate defaults to **No** and a non-interactive stdin reads as No. A scripted `--no-prompt` run **fails closed** rather than auto-approving.
+- Approving `image: foo:latest` approves a moving target; **pinned digests are the recommended convention** for workspace tongs.
+
 ## Skill Tests
 
 This repo includes a lightweight skill test harness.
