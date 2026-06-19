@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -78,16 +79,19 @@ class ParseArgsTests(unittest.TestCase):
         opts, _ = run_anvil.parse_args(["--", "x"])
         self.assertIsNone(opts.workspace)
         self.assertIsNone(opts.approvals)
+        self.assertIsNone(opts.providers)
         self.assertIsNone(opts.anvil_image)
         self.assertFalse(opts.no_prompt)
 
     def test_parses_workspace_approvals_and_no_prompt(self):
         opts, cmd = run_anvil.parse_args(
             ["--workspace", "/ws", "--approvals", "/a.json",
-             "--anvil-image", "anvil:img", "--no-prompt", "--", "x"]
+             "--providers", "/p.yaml", "--anvil-image", "anvil:img",
+             "--no-prompt", "--", "x"]
         )
         self.assertEqual(opts.workspace, "/ws")
         self.assertEqual(opts.approvals, "/a.json")
+        self.assertEqual(opts.providers, "/p.yaml")
         self.assertEqual(opts.anvil_image, "anvil:img")
         self.assertTrue(opts.no_prompt)
         self.assertEqual(cmd, ["x"])
@@ -103,6 +107,10 @@ class ParseArgsTests(unittest.TestCase):
     def test_approvals_without_value_raises(self):
         with self.assertRaises(run_anvil.UsageError):
             run_anvil.parse_args(["--approvals"])
+
+    def test_providers_without_value_raises(self):
+        with self.assertRaises(run_anvil.UsageError):
+            run_anvil.parse_args(["--providers"])
 
     def test_missing_separator_raises(self):
         with self.assertRaises(run_anvil.UsageError):
@@ -193,10 +201,12 @@ class PassthroughInvariantTests(unittest.TestCase):
         self.assertNotIn("tong", stderr)
 
     def test_launcher_flags_do_not_leak_into_anvil_argv(self):
-        # The Makefile always passes --anvil-image; with no tongs it is consumed
-        # by the launcher and the anvil argv is forwarded unchanged.
+        # The Makefile always passes --anvil-image and --providers; with no tongs
+        # they are consumed by the launcher and the anvil argv is forwarded
+        # unchanged (the secret-provider table is never even read).
         forwarded, stderr = _run_launcher([
             "--anvil-image", "opencode:local",
+            "--providers", "/nonexistent/secret-providers.yaml",
             "--repo-tongs", "/nonexistent/tongs",
         ])
         self.assertEqual(forwarded, ANVIL_ARGV)
@@ -233,6 +243,30 @@ class DefaultApprovalsPathTests(unittest.TestCase):
         os.environ.pop("SWARMFORGE_USER_ASSETS_DIR", None)
         expected = os.path.join(os.path.expanduser("~"), ".swarmforge", "approvals.json")
         self.assertEqual(run_anvil.default_approvals_path(), expected)
+
+
+class DefaultProvidersPathTests(unittest.TestCase):
+    def setUp(self):
+        self.saved = os.environ.get("SWARMFORGE_USER_ASSETS_DIR")
+
+    def tearDown(self):
+        if self.saved is None:
+            os.environ.pop("SWARMFORGE_USER_ASSETS_DIR", None)
+        else:
+            os.environ["SWARMFORGE_USER_ASSETS_DIR"] = self.saved
+
+    def test_honors_user_assets_dir(self):
+        os.environ["SWARMFORGE_USER_ASSETS_DIR"] = "/opt/sf"
+        self.assertEqual(
+            run_anvil.default_providers_path(), "/opt/sf/secret-providers.yaml"
+        )
+
+    def test_falls_back_to_home_swarmforge(self):
+        os.environ.pop("SWARMFORGE_USER_ASSETS_DIR", None)
+        expected = os.path.join(
+            os.path.expanduser("~"), ".swarmforge", "secret-providers.yaml"
+        )
+        self.assertEqual(run_anvil.default_providers_path(), expected)
 
 
 class RenderPrivilegeSummaryTests(unittest.TestCase):
@@ -394,12 +428,14 @@ class SecretResolverTests(unittest.TestCase):
         self.assertIn("boom", str(ctx.exception))
 
     def test_drives_plan_tong_secrets_end_to_end(self):
-        # The resolver is the impure half of tongs.plan_tong_secrets: a secret
-        # env var ends up as a tmpfs file, never as a -e value.
+        # The resolver is the impure half of tongs.plan_tong_secrets: a secret env
+        # var resolves to a value under `secrets`, never the plain `-e` env.
         resolve = run_anvil.make_secret_resolver({"echo": self._writes("sys.argv[1]")})
-        plan = tongs.plan_tong_secrets({"TOKEN": "${secret:echo:s3cr3t}"}, resolve)
-        self.assertEqual(plan["files"], {"/run/swarmforge/secrets/TOKEN": "s3cr3t"})
-        self.assertEqual(plan["env"], {"TOKEN_FILE": "/run/swarmforge/secrets/TOKEN"})
+        plan = tongs.plan_tong_secrets(
+            {"REGION": "us", "TOKEN": "${secret:echo:s3cr3t}"}, resolve
+        )
+        self.assertEqual(plan["env"], {"REGION": "us"})
+        self.assertEqual(plan["secrets"], {"TOKEN": "s3cr3t"})
 
 
 class MainGateTests(unittest.TestCase):
@@ -486,22 +522,27 @@ class MainGateTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             self.assertEqual(completed.stdout, "")  # anvil never ran
 
-    def test_secret_tong_refused_without_exec(self):
-        # A shared tong that references a secret cannot be delivered here, so it
-        # is refused before docker.
+    def test_malformed_providers_file_returns_one_without_exec(self):
+        # The secret-provider table is loaded before any tong starts, so a
+        # malformed file stops the launch (a clear error, anvil never runs) rather
+        # than dropping a provider and failing mid-resolution.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
-            with open(os.path.join(tongs_dir, "creds.yaml"), "w") as handle:
+            with open(os.path.join(tongs_dir, "shipper.yaml"), "w") as handle:
                 handle.write(
-                    "lifecycle: shared\nimage: x\n"
-                    "env:\n  TOKEN: ${secret:op:op://Work/t}\n"
-                    "interface:\n  kind: none\nreadiness:\n  mode: none\n"
+                    "lifecycle: shared\nimage: x\ninterface:\n  kind: none\n"
+                    "readiness:\n  mode: none\n"
                 )
-            completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
+            providers = os.path.join(tmp, "secret-providers.yaml")
+            with open(providers, "w") as handle:
+                handle.write("providers:\n  op: not-a-list\n")
+            completed = _run_launcher_raw(
+                ["--repo-tongs", tongs_dir, "--providers", providers]
+            )
             self.assertEqual(completed.returncode, 1)
-            self.assertEqual(completed.stdout, "")
-            self.assertIn("secret", completed.stderr)
+            self.assertEqual(completed.stdout, "")  # anvil never ran
+            self.assertIn("op", completed.stderr)
 
     def test_keyboard_interrupt_during_run_returns_130(self):
         # Ctrl-C while the anvil runs leaves the (long-lived) shared tongs up and
@@ -598,10 +639,7 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
             [],
         )
 
-    def test_secret_mcp_volume_each_refused(self):
-        self.assertTrue(self._reasons(
-            {"lifecycle": "shared", "image": "x", "env": {"T": "${secret:op:r}"},
-             "interface": {"kind": "none"}, "readiness": {"mode": "none"}}))
+    def test_mcp_and_volume_each_refused(self):
         self.assertTrue(self._reasons(
             {"lifecycle": "shared", "image": "x",
              "interface": {"kind": "mcp", "name": "g", "port": 8080},
@@ -611,12 +649,20 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
              "interface": {"kind": "volume", "volume": "v", "mountpoint": "/m"},
              "readiness": {"mode": "none"}}))
 
-    def test_session_tong_with_secret_or_mcp_still_refused(self):
-        # Lifting the session guard does not lift the secret/mcp guards; a session
-        # tong that needs either is still refused (delivered in a later phase).
-        self.assertTrue(self._reasons(
+    def test_secret_tong_is_now_startable(self):
+        # Secrets are resolved and delivered as env over a FIFO, so a tong that references
+        # one (and is otherwise reachable over the network or has no surface) is no
+        # longer refused -- on either lifecycle.
+        self.assertEqual(self._reasons(
+            {"lifecycle": "shared", "image": "x", "env": {"T": "${secret:op:r}"},
+             "interface": {"kind": "none"}, "readiness": {"mode": "none"}}), [])
+        self.assertEqual(self._reasons(
             {"lifecycle": "session", "image": "x", "env": {"T": "${secret:op:r}"},
-             "interface": {"kind": "none"}, "readiness": {"mode": "none"}}))
+             "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"}}), [])
+
+    def test_session_mcp_tong_still_refused(self):
+        # Lifting the secret guard does not lift the mcp guard; a session tong with
+        # an mcp interface is still refused (wired up in a later phase).
         self.assertTrue(self._reasons(
             {"lifecycle": "session", "image": "x",
              "interface": {"kind": "mcp", "name": "g", "port": 8080},
@@ -656,12 +702,15 @@ class FakeDocker:
     """In-process stand-in for DockerCLI that records calls and returns canned
     results, so orchestration is tested without a docker daemon."""
 
-    def __init__(self, states=None, ready=True, anvil_rc=0):
+    def __init__(self, states=None, ready=True, anvil_rc=0,
+                 image_config=(["app"], [], "")):
         self.calls = []
         self._states = states or {}      # container -> inspect_state dict
         self._ready = ready
         self._anvil_rc = anvil_rc
+        self._image_config = image_config
         self.run_argvs = []              # detached `docker run` argvs
+        self.inspected_images = []       # images whose exec config was read
         self.anvil_argv = None           # set when the anvil runs
         self.anvil_extra_networks = None  # extra networks the anvil joined
 
@@ -670,6 +719,12 @@ class FakeDocker:
 
     def run_detached(self, argv):
         self.run_argvs.append(argv)
+        container = argv[argv.index("--name") + 1] if "--name" in argv else None
+        self.calls.append(("run_detached", container))
+
+    def image_exec_config(self, image):
+        self.inspected_images.append(image)
+        return self._image_config
 
     def ensure_network(self, name):
         self.calls.append(("ensure_network", name))
@@ -708,10 +763,44 @@ class FakeDocker:
         return self._anvil_rc
 
 
+class FakeChannels:
+    """A `make_channel` stand-in that records secret deliveries without a FIFO.
+
+    Records the uid each channel is opened for, every payload delivered, and how
+    many channels were cleaned up, so a test can assert what reached the tong (and
+    that the secret never went through `-e`/argv) without touching the filesystem.
+    `deliver_error`, if set, is raised from `deliver` to exercise the failure path.
+    """
+
+    def __init__(self, deliver_error=None):
+        self.uids = []
+        self.payloads = []
+        self.cleanups = 0
+        self._deliver_error = deliver_error
+
+    def __call__(self, uid=None):
+        self.uids.append(uid)
+        return FakeChannels._Channel(self)
+
+    class _Channel:
+        host_path = "/fake/swarmforge-secret/secret-env"
+
+        def __init__(self, owner):
+            self._owner = owner
+
+        def deliver(self, payload, **kwargs):
+            self._owner.payloads.append(payload)
+            if self._owner._deliver_error is not None:
+                raise self._owner._deliver_error
+
+        def cleanup(self):
+            self._owner.cleanups += 1
+
+
 # Tiny launcher options for driving run_with_tongs directly.
 def _opts(workspace=None, anvil_image="anvil:img"):
     return run_anvil.LauncherOptions(
-        layer_dirs=[], workspace=workspace, approvals=None,
+        layer_dirs=[], workspace=workspace, approvals=None, providers=None,
         anvil_image=anvil_image, no_prompt=False,
     )
 
@@ -747,6 +836,23 @@ SESSION_PORT = {
     "lifecycle": "session",
     "image": "fixture-pg",
     "interface": {"kind": "port", "port": 5432},
+    "readiness": {"mode": "none"},
+}
+
+# A secret provider built on the test interpreter (so the suite needs no op/pass
+# installed): it echoes the {ref} it is handed, so ${secret:echo:VALUE} resolves
+# to "VALUE".
+ECHO_PROVIDERS = {
+    "echo": [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", "{ref}"]
+}
+
+# A credential-holding shared tong: its token is a secret reference, delivered to
+# the running container as env over a FIFO rather than passed as a docker env var.
+SHARED_SECRET = {
+    "lifecycle": "shared",
+    "image": "github-tong",
+    "env": {"GITHUB_TOKEN": "${secret:echo:s3cr3t}"},
+    "interface": {"kind": "none"},
     "readiness": {"mode": "none"},
 }
 
@@ -832,6 +938,112 @@ class DockerCLITests(unittest.TestCase):
         popen.assert_called_once_with(
             ["docker", "start", "--attach", "--interactive", "anvil"]
         )
+
+    @staticmethod
+    def _image_run(entrypoint_json, cmd_json, user_json, inspect_codes=(0,)):
+        """A run() that answers `docker image inspect` with canned JSON.
+
+        `inspect_codes` is the return code for each successive inspect call (so a
+        test can fail the first and succeed after a pull); other commands return 0.
+        """
+        state = {"calls": 0}
+
+        def run(argv, **kwargs):
+            if argv[:3] == ["docker", "image", "inspect"]:
+                idx = min(state["calls"], len(inspect_codes) - 1)
+                code = inspect_codes[idx]
+                state["calls"] += 1
+                out = ("%s\n%s\n%s" % (entrypoint_json, cmd_json, user_json)).encode()
+                return subprocess.CompletedProcess(argv, code, stdout=out)
+            return subprocess.CompletedProcess(argv, 0)
+
+        return run
+
+    def test_image_exec_config_parses_entrypoint_cmd_user(self):
+        cli = run_anvil.DockerCLI(run=self._image_run('["node"]', '["server.js"]', '"1000"'))
+        self.assertEqual(cli.image_exec_config("img"), (["node"], ["server.js"], "1000"))
+
+    def test_image_exec_config_treats_null_as_empty(self):
+        cli = run_anvil.DockerCLI(run=self._image_run("null", "null", "null"))
+        self.assertEqual(cli.image_exec_config("img"), ([], [], ""))
+
+    def test_image_exec_config_pulls_when_absent_then_succeeds(self):
+        rec_run = self._image_run('["app"]', "null", '""', inspect_codes=(1, 0))
+        cli = run_anvil.DockerCLI(run=rec_run)
+        self.assertEqual(cli.image_exec_config("img"), (["app"], [], ""))
+
+    def test_image_exec_config_raises_when_still_missing(self):
+        cli = run_anvil.DockerCLI(run=self._image_run("null", "null", "null",
+                                                      inspect_codes=(1, 1)))
+        with self.assertRaises(run_anvil.DockerError):
+            cli.image_exec_config("img")
+
+
+class UidOfTests(unittest.TestCase):
+    def test_bare_uid_parses(self):
+        self.assertEqual(run_anvil._uid_of("1000"), 1000)
+        self.assertEqual(run_anvil._uid_of("1000:1000"), 1000)
+
+    def test_name_or_empty_is_none(self):
+        self.assertIsNone(run_anvil._uid_of("appuser"))
+        self.assertIsNone(run_anvil._uid_of(""))
+        self.assertIsNone(run_anvil._uid_of(None))
+
+
+class SecretChannelTests(unittest.TestCase):
+    def test_times_out_when_no_reader_opens(self):
+        # No reader ever opens the FIFO, so the non-blocking write open keeps
+        # getting ENXIO; once the (fake) clock passes the deadline it fails closed
+        # rather than hanging the launcher.
+        channel = run_anvil.open_secret_channel()
+        try:
+            clock = iter([0.0, 1.0, 2.0, 99.0])
+            with self.assertRaises(run_anvil.OrchestrationError):
+                channel.deliver(
+                    "export X='y'\n", timeout=5.0, poll=0.0,
+                    sleep=lambda _s: None, monotonic=lambda: next(clock),
+                )
+        finally:
+            channel.cleanup()
+
+    def test_delivers_payload_to_a_reader(self):
+        # With a reader attached, the payload is written and the reader sees it
+        # followed by EOF -- the real FIFO round-trip, no docker involved.
+        channel = run_anvil.open_secret_channel()
+        received = []
+
+        def reader():
+            with open(channel.host_path, "r") as handle:
+                received.append(handle.read())
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        try:
+            channel.deliver("export TOKEN='s3cr3t'\n")
+        finally:
+            thread.join(timeout=5)
+            channel.cleanup()
+        self.assertEqual(received, ["export TOKEN='s3cr3t'\n"])
+
+    def test_delivers_payload_larger_than_pipe_buffer(self):
+        # A payload bigger than the pipe capacity (~64 KiB) forces several writes
+        # and a full buffer; every byte must still arrive (no silent truncation).
+        channel = run_anvil.open_secret_channel()
+        payload = "export BIG='" + ("x" * 200000) + "'\n"
+        received = []
+
+        def reader():
+            with open(channel.host_path, "r") as handle:
+                received.append(handle.read())
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        try:
+            channel.deliver(payload)
+        finally:
+            thread.join(timeout=10)
+            channel.cleanup()
+        self.assertEqual(received, [payload])
 
 
 class RunWithTongsTests(unittest.TestCase):
@@ -964,6 +1176,134 @@ class RunWithTongsTests(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         self.assertNotIn("tcp_probe", [c[0] for c in docker.calls])
+
+    # --- Secret resolution + FIFO env delivery ------------------------------
+
+    def _run_secret(self, docker, merged, providers, channels=None):
+        return run_anvil.run_with_tongs(
+            merged, ANVIL_ARGV, _opts(), docker=docker, providers=providers,
+            make_channel=channels or FakeChannels(),
+            sleep=lambda _s: None, monotonic=_Clock(),
+        )
+
+    def test_secret_delivered_as_env_via_fifo_never_in_argv(self):
+        # A resolved secret is handed to the tong over the FIFO (an `export`
+        # script), never as a docker `-e` value; the run argv carries only the
+        # entrypoint wrapper and the read-only FIFO bind, not the secret.
+        docker = FakeDocker(image_config=(["node"], ["server.js"], ""))
+        channels = FakeChannels()
+        rc = self._run_secret(
+            docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS,
+            channels=channels,
+        )
+        self.assertEqual(rc, 0)
+        started = docker.run_argvs[0]
+        # Entrypoint is wrapped and the FIFO is bind-mounted read-only.
+        self.assertEqual(started[started.index("--entrypoint") + 1], "/bin/sh")
+        self.assertIn(
+            "/fake/swarmforge-secret/secret-env:/run/swarmforge/secret-env:ro", started
+        )
+        # The image's real argv is what the wrapper execs (after the image token).
+        self.assertEqual(started[started.index("github-tong") + 1:],
+                         ["-c", started[started.index("-c") + 1],
+                          "swarmforge-tong", "node", "server.js"])
+        # The secret is nowhere in the argv -- it only went through the channel.
+        self.assertNotIn("s3cr3t", " ".join(started))
+        self.assertNotIn("GITHUB_TOKEN=s3cr3t", started)
+        self.assertEqual(channels.payloads, ["export GITHUB_TOKEN='s3cr3t'\n"])
+        self.assertEqual(channels.cleanups, 1)  # FIFO cleaned up after delivery
+
+    def test_secret_tong_reads_exec_target_from_image(self):
+        docker = FakeDocker(image_config=(["entry"], ["arg"], ""))
+        self._run_secret(
+            docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS
+        )
+        self.assertEqual(docker.inspected_images, ["github-tong"])
+
+    def test_unresolvable_secret_stops_launch_before_anvil(self):
+        # No provider for the referenced scheme => resolution fails before the tong
+        # even starts, and the anvil never runs.
+        docker = FakeDocker()
+        with self.assertRaises(run_anvil.SecretResolutionError):
+            self._run_secret(docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), {})
+        self.assertEqual(docker.run_argvs, [])  # never reached the start
+        self.assertIsNone(docker.anvil_argv)
+
+    def test_delivery_failure_removes_half_configured_container(self):
+        # If delivery over the FIFO fails after the container started, the
+        # container is removed before raising, so a `shared` tong is not left
+        # stamped with its config-hash label (and reused) while missing its secret.
+        docker = FakeDocker()
+        channels = FakeChannels(deliver_error=run_anvil.DockerError("boom"))
+        with self.assertRaises(run_anvil.DockerError):
+            self._run_secret(
+                docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS,
+                channels=channels,
+            )
+        # rm_force fires twice: clearing any leftover before start, then removing
+        # the half-configured container after the failed delivery.
+        self.assertEqual(docker.calls.count(("rm_force", "swarmforge-shared-gh")), 2)
+        self.assertEqual(channels.cleanups, 1)  # FIFO still cleaned up
+        self.assertIsNone(docker.anvil_argv)
+
+    def test_interrupt_during_delivery_removes_half_configured_container(self):
+        # Ctrl-C while delivering must still remove the container, or a `shared`
+        # tong (stamped with its config-hash label and not tracked for session
+        # teardown) would be reused next session with a missing secret.
+        docker = FakeDocker()
+        channels = FakeChannels(deliver_error=KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt):
+            self._run_secret(
+                docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS,
+                channels=channels,
+            )
+        self.assertEqual(docker.calls.count(("rm_force", "swarmforge-shared-gh")), 2)
+        self.assertEqual(channels.cleanups, 1)
+        self.assertIsNone(docker.anvil_argv)
+
+    def test_reused_shared_tong_never_resolves_or_delivers_secrets(self):
+        # A running shared tong whose hash matches is reused untouched -- deciding
+        # to reuse must never invoke a secret-provider CLI (which could prompt for
+        # an unlock every session) or open a channel.
+        states = {"swarmforge-shared-gh":
+                  {"running": True, "label": tongs.config_hash(SHARED_SECRET)}}
+        docker = FakeDocker(states=states)
+        channels = FakeChannels()
+        boom = {"echo": [sys.executable, "-c", "import sys; sys.exit(1)"]}
+        rc = self._run_secret(
+            docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), boom,
+            channels=channels,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(docker.run_argvs, [])   # reused, not restarted
+        self.assertEqual(channels.payloads, [])  # no resolution, no delivery
+        self.assertEqual(docker.inspected_images, [])  # no image inspect either
+
+    def test_session_secret_tong_delivered_over_channel(self):
+        defn = {
+            "lifecycle": "session", "image": "creds",
+            "env": {"TOKEN": "${secret:echo:abc}"},
+            "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+        }
+        docker = FakeDocker()
+        channels = FakeChannels()
+        rc = self._run_secret(
+            docker, _merged("creds", defn, source=tongs.REPO), ECHO_PROVIDERS,
+            channels=channels,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(channels.payloads, ["export TOKEN='abc'\n"])
+
+    def test_secret_uid_passed_to_channel_factory(self):
+        # The image's numeric user is passed to the channel factory so the FIFO can
+        # be chowned to the uid that will read it.
+        docker = FakeDocker(image_config=(["app"], [], "1000"))
+        channels = FakeChannels()
+        self._run_secret(
+            docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS,
+            channels=channels,
+        )
+        self.assertEqual(channels.uids, [1000])
 
     # --- Session lifecycle + per-session networks ---------------------------
 

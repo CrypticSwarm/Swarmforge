@@ -29,10 +29,32 @@ per-session network are torn down (and the connected `shared` tongs disconnected
 while the long-lived `shared` tongs keep running. A `port` tong's reachability is
 injected into the anvil as environment; a `none` tong has no anvil-facing surface.
 
-The launcher starts `shared` and `session` tongs reached over the network
-(`port`) or with no anvil-facing surface (`none`), carrying no secret references.
-A secret reference, an `mcp` or `volume` interface, or a `shared` tong that mounts
-the workspace is refused with a clear message rather than started half-wired.
+A tong's secret references are resolved on the host (see "Secret delivery") and
+handed to the tong as environment, so the launcher starts `shared` and `session`
+tongs reached over the network (`port`) or with no anvil-facing surface (`none`),
+with or without secrets. An `mcp` or `volume` interface, or a `shared` tong that
+mounts the workspace, is refused with a clear message rather than started
+half-wired.
+
+Secret delivery
+---------------
+A tong's `env:` values may carry `${secret:<provider>:<ref>}` references. The
+launcher resolves them on the host by shelling out to the provider CLIs declared
+in the user-layer table passed as `--providers` (defaulting to
+`~/.swarmforge/secret-providers.yaml`), so interactive unlocks happen in the
+user's terminal before the anvil starts. A resolved secret is never passed to a
+tong as a docker `-e` env var (anything holding the docker socket could read it
+back via `docker inspect`), never a command-line argument, and never written to
+disk. Instead the launcher creates a host FIFO, bind-mounts it read-only into the
+tong, and overrides the tong's entrypoint with a `/bin/sh` wrapper that reads the
+FIFO, exports each `NAME=value` into its environment, then execs the image's real
+entrypoint+command (looked up via `docker inspect`, or declared as
+`entrypoint:`/`command:` on the tong). The launcher writes the resolved values
+into the FIFO only once the wrapper has opened the read end, so the secrets reach
+the real process as ordinary environment variables -- present before it starts,
+since the wrapper blocks on the FIFO until delivery -- while the bytes only ever
+live in the kernel pipe buffer. A tong with secret env therefore needs a `/bin/sh`
+in its image; one without secrets runs its image entrypoint unchanged.
 
 First-run approval
 ------------------
@@ -59,10 +81,14 @@ delivery, and `--rm` cleanup it had before.
 """
 
 import collections
+import errno
 import importlib.util
+import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 # Load the pure core (layer discovery + name-based merge) by path, the same way
@@ -77,7 +103,8 @@ _spec.loader.exec_module(tongs)
 USAGE = (
     "usage: run_anvil.py [--user-tongs DIR] [--org-tongs DIR] "
     "[--repo-tongs DIR] [--workspace-tongs DIR] [--workspace PATH] "
-    "[--approvals PATH] [--anvil-image IMAGE] [--no-prompt] -- <anvil command>"
+    "[--approvals PATH] [--providers PATH] [--anvil-image IMAGE] [--no-prompt] "
+    "-- <anvil command>"
 )
 
 # Each flag names the host directory for one definition layer. The merge always
@@ -92,12 +119,13 @@ LAYER_FLAGS = {
 
 # Parsed launcher options. `workspace` is the workspace root used to key approval
 # of workspace-sourced tongs and to resolve the `workspace` mount word; `approvals`
-# is the store path (default resolved in main); `anvil_image` is the image the
-# readiness prober runs to dial a tong's network-internal port; `no_prompt` makes
-# the approval gate fail closed for scripted runs.
+# is the approvals store path and `providers` the secret-provider table path (both
+# default-resolved in main); `anvil_image` is the image the readiness prober runs
+# to dial a tong's network-internal port; `no_prompt` makes the approval gate fail
+# closed for scripted runs.
 LauncherOptions = collections.namedtuple(
     "LauncherOptions",
-    ["layer_dirs", "workspace", "approvals", "anvil_image", "no_prompt"],
+    ["layer_dirs", "workspace", "approvals", "providers", "anvil_image", "no_prompt"],
 )
 
 
@@ -116,6 +144,7 @@ def parse_args(argv):
     paths = {}
     workspace = None
     approvals = None
+    providers = None
     anvil_image = None
     no_prompt = False
     index = 0
@@ -127,7 +156,9 @@ def parse_args(argv):
                 raise UsageError("missing anvil command after '--'")
             layer_dirs = [(layer, paths[layer]) for layer in tongs.LAYERS if layer in paths]
             return (
-                LauncherOptions(layer_dirs, workspace, approvals, anvil_image, no_prompt),
+                LauncherOptions(
+                    layer_dirs, workspace, approvals, providers, anvil_image, no_prompt
+                ),
                 anvil_cmd,
             )
         if token in LAYER_FLAGS:
@@ -146,6 +177,12 @@ def parse_args(argv):
             if index + 1 >= len(argv):
                 raise UsageError("--approvals requires a path argument")
             approvals = argv[index + 1]
+            index += 2
+            continue
+        if token == "--providers":
+            if index + 1 >= len(argv):
+                raise UsageError("--providers requires a path argument")
+            providers = argv[index + 1]
             index += 2
             continue
         if token == "--anvil-image":
@@ -173,6 +210,20 @@ def default_approvals_path():
         os.path.expanduser("~"), ".swarmforge"
     )
     return os.path.join(base, "approvals.json")
+
+
+def default_providers_path():
+    """Path to the secret-provider table in the user layer when none is passed.
+
+    Mirrors the Makefile's `SWARMFORGE_USER_ASSETS_DIR` default (~/.swarmforge),
+    so the launcher finds `secret-providers.yaml` even if Make does not pass
+    `--providers` explicitly. A missing file means no providers configured, which
+    only matters if a tong actually references a secret.
+    """
+    base = os.environ.get("SWARMFORGE_USER_ASSETS_DIR") or os.path.join(
+        os.path.expanduser("~"), ".swarmforge"
+    )
+    return os.path.join(base, "secret-providers.yaml")
 
 
 def discover_tongs(layer_dirs):
@@ -332,6 +383,113 @@ def make_secret_resolver(providers):
     return resolve
 
 
+# --- Secret delivery channel --------------------------------------------------
+# Resolved secrets reach a tong over a host FIFO bind-mounted into the container,
+# not as `-e`/argv/disk. The bytes only ever live in the kernel pipe buffer: the
+# tong's `/bin/sh` wrapper blocks reading the FIFO, and the launcher writes the
+# `export NAME=value` script once the wrapper has opened the read end, so the
+# values are in the process environment before the real entrypoint starts. The
+# channel is created behind a factory so `run_with_tongs` can be tested with a
+# fake that records the payload instead of touching the filesystem.
+
+
+class SecretChannel:
+    """A host FIFO handing a tong its secret env through the kernel pipe buffer."""
+
+    def __init__(self, directory, host_path):
+        self._dir = directory
+        self.host_path = host_path
+
+    def deliver(self, payload, *, timeout=30.0, poll=0.05,
+                sleep=time.sleep, monotonic=time.monotonic):
+        """Write `payload` once the tong has opened the FIFO's read end.
+
+        Opens the write end non-blocking and retries while no reader is attached
+        (`ENXIO`), so a tong that never starts times out rather than hanging the
+        launcher forever. Once the tong's wrapper has opened the read end the open
+        succeeds; the whole payload is written -- looping over partial writes and
+        a full pipe buffer, since the channel is non-blocking and a payload can
+        exceed the pipe capacity -- and the end closed, signalling EOF so the
+        wrapper's `cat` returns and it execs the real process. Raises
+        `OrchestrationError` if no reader appears, the buffer never drains within
+        `timeout`, or the tong closes the read end before delivery completes (so a
+        truncated secret never reaches the tong silently).
+        """
+        deadline = monotonic() + timeout
+        while True:
+            try:
+                fd = os.open(self.host_path, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError as exc:
+                if exc.errno == errno.ENXIO and monotonic() < deadline:
+                    sleep(poll)
+                    continue
+                if exc.errno == errno.ENXIO:
+                    raise OrchestrationError(
+                        "tong did not open its secret channel within %gs" % timeout
+                    )
+                raise OrchestrationError("secret channel error: %s" % exc)
+        try:
+            data = memoryview(payload.encode("utf-8"))
+            while data:
+                try:
+                    data = data[os.write(fd, data):]
+                except BlockingIOError:
+                    # Pipe buffer full; the tong's `cat` is still draining. Wait,
+                    # bounded by the same deadline, rather than dropping bytes.
+                    if monotonic() >= deadline:
+                        raise OrchestrationError(
+                            "tong did not drain its secret channel within %gs" % timeout
+                        )
+                    sleep(poll)
+                except BrokenPipeError:
+                    raise OrchestrationError(
+                        "tong closed its secret channel before delivery completed"
+                    )
+        finally:
+            os.close(fd)
+
+    def cleanup(self):
+        """Remove the FIFO and its directory (best-effort)."""
+        shutil.rmtree(self._dir, ignore_errors=True)
+
+
+def open_secret_channel(uid=None):
+    """Create a host FIFO in a private temp dir, returning a `SecretChannel`.
+
+    The directory is mode 0700 and the FIFO 0600, so only the launcher's user can
+    open the read end and intercept the secret. When the tong runs as a different
+    non-root uid (from the image config) the FIFO is `chown`ed to it best-effort so
+    that user can read it; a container running as root reads it regardless.
+    """
+    directory = tempfile.mkdtemp(prefix="swarmforge-secret-")
+    os.chmod(directory, 0o700)
+    host_path = os.path.join(directory, "secret-env")
+    os.mkfifo(host_path, 0o600)
+    if uid is not None:
+        try:
+            os.chown(host_path, uid, -1)
+        except OSError:
+            pass  # not permitted (uid differs and launcher is not root); 0600 stands
+    return SecretChannel(directory, host_path)
+
+
+def _uid_of(image_user):
+    """Numeric uid from an image's configured user, or None if not a bare uid.
+
+    `docker inspect`'s `.Config.User` may be empty, a numeric `uid[:gid]`, or a
+    name. Only a bare numeric uid can be `chown`ed to without a passwd lookup; a
+    name (or empty/root) leaves the FIFO at its default 0600 launcher ownership.
+    """
+    if not image_user:
+        return None
+    token = image_user.split(":", 1)[0]
+    try:
+        return int(token)
+    except ValueError:
+        return None
+
+
 # --- Docker seam --------------------------------------------------------------
 # Every docker invocation goes through DockerCLI so the orchestration logic can
 # be unit-tested against a fake. The methods are thin wrappers; the launch
@@ -402,6 +560,41 @@ class DockerCLI:
 
     def exec_ok(self, container, command):
         return self._quiet(["docker", "exec", container] + list(command)) == 0
+
+    def image_exec_config(self, image):
+        """`(entrypoint, cmd, user)` from an image's config, pulling it if absent.
+
+        Used to reconstruct the process a secret-injecting tong must `exec` once
+        its `/bin/sh` wrapper has loaded the secret env: overriding `--entrypoint`
+        for the wrapper drops the image's own entrypoint/command, so they are read
+        back here. `entrypoint`/`cmd` are argv lists (possibly empty); `user` is
+        the image's configured user (``""`` when none). A missing image is pulled
+        once before retrying; a still-missing or unreadable image is a `DockerError`.
+        """
+        info = self._inspect_image(image)
+        if info is None:
+            self._checked(["docker", "pull", image])
+            info = self._inspect_image(image)
+        if info is None:
+            raise DockerError("cannot read image config for %r" % image)
+        return info
+
+    def _inspect_image(self, image):
+        fmt = ("{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}\n"
+               "{{json .Config.User}}")
+        completed = self._run(
+            ["docker", "image", "inspect", "--format", fmt, image],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            return None
+        lines = _decode(completed.stdout).splitlines()
+        if len(lines) < 3:
+            return None
+        entrypoint = json.loads(lines[0]) or []
+        cmd = json.loads(lines[1]) or []
+        user = json.loads(lines[2]) or ""
+        return entrypoint, cmd, user
 
     def tcp_probe(self, network, host, port, image):
         """True if `host:port` accepts a TCP connection from within `network`.
@@ -579,10 +772,9 @@ def unsupported_tong_reasons(merged):
     """Reasons each discovered tong is outside what the launcher can start.
 
     The launcher starts `shared` and `session` tongs reached over the network
-    (`port`) or with no anvil-facing surface (`none`), holding no secret. Refused
-    here:
+    (`port`) or with no anvil-facing surface (`none`), resolving any secret
+    references and delivering them as env over a FIFO. Refused here:
 
-      * a secret reference -- it needs tmpfs delivery;
       * an `mcp` interface -- it needs generated MCP config;
       * a `volume` interface -- a shared named volume has no consumer yet, so it
         is not wired into either container;
@@ -599,11 +791,6 @@ def unsupported_tong_reasons(merged):
     for name in sorted(merged):
         defn = merged[name]["definition"]
         kind = (defn.get("interface") or {}).get("kind")
-        if tongs.find_secret_refs(defn):
-            reasons.append(
-                "tong '%s' references a secret, which this launcher does not "
-                "deliver" % name
-            )
         if kind == "mcp":
             reasons.append(
                 "tong '%s' has an 'mcp' interface, which this launcher does not "
@@ -623,62 +810,90 @@ def unsupported_tong_reasons(merged):
     return reasons
 
 
-def _start_shared_tong(docker, name, defn, *, container, network, alias,
-                       workspace, label_hash):
-    """Start one `shared` tong container detached, replacing any old one.
+def _start_one_tong(docker, name, defn, *, container, network, alias,
+                    resolver, workspace, label_hash, make_channel):
+    """Start one tong container detached, delivering any secret env over a FIFO.
 
-    The launcher only reaches here for a secret-less tong, so the definition's
-    `env` is passed straight through as `-e`; any existing container of the same
-    name is removed first so a stale or stopped one is replaced cleanly.
+    Resolves the definition's secret references through `resolver` and splits the
+    env into plain (`-e`) and secret. With no secret env the image's own entrypoint
+    runs unchanged. With secret env, the tong's entrypoint is overridden with a
+    `/bin/sh` wrapper (built from the image's real entrypoint+command, read via
+    `docker inspect` or declared on the tong) that reads a bind-mounted host FIFO,
+    exports each `NAME=value` into its environment, then execs the real process. The
+    launcher writes the resolved values into the FIFO only once the wrapper has
+    opened the read end, so the secrets are present in the environment before the
+    real process starts, while the bytes live only in the kernel pipe buffer --
+    never `-e`, argv, or disk.
+
+    Any existing container of the same name is removed first so a stale or stopped
+    one is replaced cleanly. If anything fails after the container starts -- a
+    docker error, a delivery timeout, or a Ctrl-C -- the container is removed
+    before re-raising, so a half-configured `shared` tong (stamped with its
+    config-hash label) is not reused on the next session despite missing its
+    secret. The FIFO is always cleaned up.
     """
-    argv = tongs.tong_run_argv(
-        name, defn,
-        container_name=container, network=network, alias=alias,
-        env=defn.get("env") or {}, label_hash=label_hash, workspace=workspace,
-    )
-    docker.rm_force(container)
-    docker.run_detached(argv)
+    plan = tongs.plan_tong_secrets(defn.get("env"), resolver)
+    plain_env = plan["env"]
+    secrets = plan["secrets"]
+
+    if not secrets:
+        argv = tongs.tong_run_argv(
+            name, defn,
+            container_name=container, network=network, alias=alias,
+            env=plain_env, label_hash=label_hash, workspace=workspace,
+        )
+        docker.rm_force(container)
+        docker.run_detached(argv)
+        return
+
+    image_entrypoint, image_cmd, image_user = docker.image_exec_config(defn["image"])
+    try:
+        target = tongs.resolve_exec_target(defn, image_entrypoint, image_cmd)
+    except ValueError as exc:
+        raise OrchestrationError(str(exc))
+    entrypoint, command = tongs.secret_inject_argv(target)
+    payload = tongs.render_secret_exports(secrets)
+
+    channel = make_channel(_uid_of(image_user))
+    try:
+        argv = tongs.tong_run_argv(
+            name, defn,
+            container_name=container, network=network, alias=alias,
+            env=plain_env, label_hash=label_hash, workspace=workspace,
+            fifo_host_path=channel.host_path, entrypoint=entrypoint, command=command,
+        )
+        docker.rm_force(container)
+        docker.run_detached(argv)
+        channel.deliver(payload)
+    except BaseException:
+        docker.rm_force(container)
+        raise
+    finally:
+        channel.cleanup()
 
 
 def _ensure_shared_tong(docker, name, defn, *, container, network, alias,
-                        workspace, label_hash):
+                        resolver, workspace, label_hash, make_channel):
     """Start a `shared` tong, or reuse the running one, recreating it if stale.
 
     A `shared` tong is one long-lived container keyed by `shared_container_name`.
     Its config-hash label answers "did the definition change since it started?":
     a missing container, a stopped one, or a hash mismatch triggers a fresh start
     (removing any old container first); a running container with a matching hash
-    is reused untouched. The hash is over the merged definition, so the same
-    long-lived container is reused across sessions while the definition is stable.
+    is reused untouched. The hash is over the merged (pre-resolution) definition,
+    so the same long-lived container is reused across sessions while the
+    definition is stable -- and deciding to reuse one never runs a secret-provider
+    CLI, so a rotated secret behind an unchanged reference does not churn it.
     """
     state = docker.inspect_state(container)
     if state and state["running"] and state["label"] == label_hash:
         return
-    _start_shared_tong(
+    _start_one_tong(
         docker, name, defn,
         container=container, network=network, alias=alias,
-        workspace=workspace, label_hash=label_hash,
+        resolver=resolver, workspace=workspace, label_hash=label_hash,
+        make_channel=make_channel,
     )
-
-
-def _start_session_tong(docker, name, defn, *, container, network, alias, workspace):
-    """Start one `session` tong container detached on the per-session network.
-
-    A `session` tong is per-session and torn down with the anvil, so it gets a
-    session-suffixed container name and lives only on the per-session network
-    under its canonical alias. The launcher only reaches here for a secret-less
-    tong, so the definition's `env` is passed straight through as `-e`; any
-    leftover container of the same name (from a crashed prior session) is removed
-    first so it is replaced cleanly.
-    """
-    argv = tongs.tong_run_argv(
-        name, defn,
-        container_name=container, network=network, alias=alias,
-        env=defn.get("env") or {}, label_hash=tongs.config_hash(defn),
-        workspace=workspace,
-    )
-    docker.rm_force(container)
-    docker.run_detached(argv)
 
 
 def _injection_pre_image_args(injection):
@@ -696,22 +911,27 @@ def _injection_pre_image_args(injection):
     return args
 
 
-def run_with_tongs(merged, anvil_cmd, opts, *, docker,
+def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
+                   make_channel=open_secret_channel,
                    sleep=time.sleep, monotonic=time.monotonic):
     """Start the discovered tongs, run the anvil, and tear down session state.
 
     Only reached when at least one tong was discovered and every tong is startable
     (the empty case stays a direct exec; unsupported tongs are refused earlier).
 
-    `shared` tongs are ensured on the anvil's base network, reusing a running one
-    whose config hash still matches. When any `session` tong exists a per-session
-    network is created: the `session` tongs start on it under their canonical
-    aliases, each network-facing `shared` tong is connected to it for this session,
-    and the anvil joins it plus the base network (the `NETWORK=` escape hatch).
-    With no `session` tong the anvil keeps using the base network exactly as
-    before. Each tong's readiness is probed on the network the anvil will use,
-    `port` reachability is injected into the anvil argv, then the anvil runs in the
-    foreground.
+    Each tong's secret references are resolved through the provider CLIs in
+    `providers` (the user-layer table) and delivered as env over a FIFO (created by
+    `make_channel`) as the tong starts; a tong without secrets gets none of that
+    machinery. `shared` tongs are ensured
+    on the anvil's base network, reusing a running one whose config hash still
+    matches (which never re-resolves its secrets). When any `session` tong exists a
+    per-session network is created: the `session` tongs start on it under their
+    canonical aliases, each network-facing `shared` tong is connected to it for
+    this session, and the anvil joins it plus the base network (the `NETWORK=`
+    escape hatch). With no `session` tong the anvil keeps using the base network
+    exactly as before. Each tong's readiness is probed on the network the anvil
+    will use, `port` reachability is injected into the anvil argv, then the anvil
+    runs in the foreground.
 
     On exit -- including SIGINT -- the `session` tongs and the per-session network
     are torn down (and the connected `shared` tongs disconnected) while the
@@ -719,8 +939,10 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker,
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
     becomes ready (the anvil does not run against a half-up environment) or a
-    `session` tong is discovered with no anvil `--name` to key the session by.
+    `session` tong is discovered with no anvil `--name` to key the session by, and
+    `SecretResolutionError` if a secret reference cannot be resolved.
     """
+    resolver = make_secret_resolver(providers or {})
     base_network = tongs.anvil_option_value(anvil_cmd, "--network")
     session_id = tongs.anvil_option_value(anvil_cmd, "--name")
 
@@ -755,10 +977,11 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker,
             alias = tongs.canonical_alias(name, defn)
             if defn.get("lifecycle") == "session":
                 container = tongs.session_container_name(session_id, name)
-                _start_session_tong(
+                _start_one_tong(
                     docker, name, defn,
                     container=container, network=plan["network"], alias=alias,
-                    workspace=opts.workspace,
+                    resolver=resolver, workspace=opts.workspace,
+                    label_hash=tongs.config_hash(defn), make_channel=make_channel,
                 )
                 started_sessions.append(container)
             else:
@@ -766,7 +989,8 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker,
                 _ensure_shared_tong(
                     docker, name, defn,
                     container=container, network=base_network, alias=alias,
-                    workspace=opts.workspace, label_hash=tongs.config_hash(defn),
+                    resolver=resolver, workspace=opts.workspace,
+                    label_hash=tongs.config_hash(defn), make_channel=make_channel,
                 )
             ready_checks.append((name, defn, alias, container))
 
@@ -876,23 +1100,34 @@ def main(argv):
         return 1
 
     # Refuse anything this launcher cannot start (see unsupported_tong_reasons:
-    # a secret reference, an MCP or volume interface, or a shared tong mounting
-    # the workspace) rather than starting it half-wired. Every remaining tong has
-    # a `port`/`none` interface, whose canonical alias is its unique filename, so
-    # no two can claim the same network alias.
+    # an MCP or volume interface, or a shared tong mounting the workspace) rather
+    # than starting it half-wired. Every remaining tong has a `port`/`none`
+    # interface, whose canonical alias is its unique filename, so no two can claim
+    # the same network alias.
     unsupported = unsupported_tong_reasons(merged)
     if unsupported:
         for reason in unsupported:
             tongs.warn(reason)
         return 1
 
+    # Load the secret-provider table the resolver shells out to. A malformed file
+    # stops the launch with a clear message rather than silently dropping a
+    # provider; a missing file is fine until a tong actually references a secret.
+    try:
+        providers = tongs.load_secret_providers(opts.providers or default_providers_path())
+    except ValueError as exc:
+        tongs.warn(str(exc))
+        return 1
+
     # run_with_tongs runs the anvil in the foreground and returns its exit code,
     # leaving the (long-lived) shared tongs running. A tong that never becomes
-    # ready stops the launch rather than running the anvil against a half-up
-    # environment.
+    # ready, or a secret reference that cannot be resolved, stops the launch
+    # rather than running the anvil against a half-up environment.
     try:
-        return run_with_tongs(merged, anvil_cmd, opts, docker=DockerCLI())
-    except (OrchestrationError, DockerError) as exc:
+        return run_with_tongs(
+            merged, anvil_cmd, opts, docker=DockerCLI(), providers=providers
+        )
+    except (OrchestrationError, DockerError, SecretResolutionError) as exc:
         tongs.warn(str(exc))
         return 1
     except KeyboardInterrupt:
