@@ -103,8 +103,8 @@ _spec.loader.exec_module(tongs)
 USAGE = (
     "usage: run_anvil.py [--user-tongs DIR] [--org-tongs DIR] "
     "[--repo-tongs DIR] [--workspace-tongs DIR] [--workspace PATH] "
-    "[--approvals PATH] [--providers PATH] [--anvil-image IMAGE] [--no-prompt] "
-    "-- <anvil command>"
+    "[--approvals PATH] [--providers PATH] [--harness NAME] "
+    "[--anvil-image IMAGE] [--no-prompt] -- <anvil command>"
 )
 
 # Each flag names the host directory for one definition layer. The merge always
@@ -120,12 +120,15 @@ LAYER_FLAGS = {
 # Parsed launcher options. `workspace` is the workspace root used to key approval
 # of workspace-sourced tongs and to resolve the `workspace` mount word; `approvals`
 # is the approvals store path and `providers` the secret-provider table path (both
-# default-resolved in main); `anvil_image` is the image the readiness prober runs
-# to dial a tong's network-internal port; `no_prompt` makes the approval gate fail
-# closed for scripted runs.
+# default-resolved in main); `harness` names the anvil harness (`opencode` /
+# `claude`) so the MCP config for `mcp` tongs is emitted in that harness's shape;
+# `anvil_image` is the image the readiness prober runs to dial a tong's
+# network-internal port; `no_prompt` makes the approval gate fail closed for
+# scripted runs.
 LauncherOptions = collections.namedtuple(
     "LauncherOptions",
-    ["layer_dirs", "workspace", "approvals", "providers", "anvil_image", "no_prompt"],
+    ["layer_dirs", "workspace", "approvals", "providers", "harness", "anvil_image",
+     "no_prompt"],
 )
 
 
@@ -145,6 +148,7 @@ def parse_args(argv):
     workspace = None
     approvals = None
     providers = None
+    harness = None
     anvil_image = None
     no_prompt = False
     index = 0
@@ -157,7 +161,8 @@ def parse_args(argv):
             layer_dirs = [(layer, paths[layer]) for layer in tongs.LAYERS if layer in paths]
             return (
                 LauncherOptions(
-                    layer_dirs, workspace, approvals, providers, anvil_image, no_prompt
+                    layer_dirs, workspace, approvals, providers, harness,
+                    anvil_image, no_prompt
                 ),
                 anvil_cmd,
             )
@@ -183,6 +188,12 @@ def parse_args(argv):
             if index + 1 >= len(argv):
                 raise UsageError("--providers requires a path argument")
             providers = argv[index + 1]
+            index += 2
+            continue
+        if token == "--harness":
+            if index + 1 >= len(argv):
+                raise UsageError("--harness requires a name argument")
+            harness = argv[index + 1]
             index += 2
             continue
         if token == "--anvil-image":

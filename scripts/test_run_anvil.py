@@ -96,6 +96,18 @@ class ParseArgsTests(unittest.TestCase):
         self.assertTrue(opts.no_prompt)
         self.assertEqual(cmd, ["x"])
 
+    def test_parses_harness(self):
+        opts, _ = run_anvil.parse_args(["--harness", "claude", "--", "x"])
+        self.assertEqual(opts.harness, "claude")
+
+    def test_harness_defaults_to_none(self):
+        opts, _ = run_anvil.parse_args(["--", "x"])
+        self.assertIsNone(opts.harness)
+
+    def test_harness_without_value_raises(self):
+        with self.assertRaises(run_anvil.UsageError):
+            run_anvil.parse_args(["--harness"])
+
     def test_anvil_image_without_value_raises(self):
         with self.assertRaises(run_anvil.UsageError):
             run_anvil.parse_args(["--anvil-image"])
@@ -798,10 +810,10 @@ class FakeChannels:
 
 
 # Tiny launcher options for driving run_with_tongs directly.
-def _opts(workspace=None, anvil_image="anvil:img"):
+def _opts(workspace=None, anvil_image="anvil:img", harness="opencode"):
     return run_anvil.LauncherOptions(
         layer_dirs=[], workspace=workspace, approvals=None, providers=None,
-        anvil_image=anvil_image, no_prompt=False,
+        harness=harness, anvil_image=anvil_image, no_prompt=False,
     )
 
 
