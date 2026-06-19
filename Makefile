@@ -194,6 +194,7 @@ define run_agent_container
 	  --workspace "$$workspace_dir" \
 	  --approvals "$(SWARMFORGE_USER_ASSETS_DIR)/approvals.json" \
 	  --providers "$(SWARMFORGE_USER_ASSETS_DIR)/secret-providers.yaml" \
+	  --harness "$(7)" \
 	  --anvil-image "$(4)" \
 	  -- \
 	  docker run -it --rm --name "$(1)" \
@@ -251,7 +252,7 @@ run_opencode: opencode_network
 	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
 	@mkdir -p "$(SWARMFORGE_REPO_CONFIG_DIR)"
 	@mkdir -p "$(DATA_DIR)"
-	$(call run_agent_container,$(OPENCODE_CTR),$(OPENCODE_RUN_ENV),$(OPENCODE_RUN_MOUNTS),$(OPENCODE_IMG),$(PROFILE_FLAG) $(OPENCODE_ARGS),)
+	$(call run_agent_container,$(OPENCODE_CTR),$(OPENCODE_RUN_ENV),$(OPENCODE_RUN_MOUNTS),$(OPENCODE_IMG),$(PROFILE_FLAG) $(OPENCODE_ARGS),,opencode)
 
 stop_opencode:
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
@@ -270,7 +271,7 @@ run_claude: opencode_network
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/skills"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/commands"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/agents"
-	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS),repo-slug)
+	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS),repo-slug,claude)
 
 stop_claude:
 	@docker rm -f $(CLAUDE_CTR) >/dev/null 2>&1 || true

@@ -96,6 +96,18 @@ class ParseArgsTests(unittest.TestCase):
         self.assertTrue(opts.no_prompt)
         self.assertEqual(cmd, ["x"])
 
+    def test_parses_harness(self):
+        opts, _ = run_anvil.parse_args(["--harness", "claude", "--", "x"])
+        self.assertEqual(opts.harness, "claude")
+
+    def test_harness_defaults_to_none(self):
+        opts, _ = run_anvil.parse_args(["--", "x"])
+        self.assertIsNone(opts.harness)
+
+    def test_harness_without_value_raises(self):
+        with self.assertRaises(run_anvil.UsageError):
+            run_anvil.parse_args(["--harness"])
+
     def test_anvil_image_without_value_raises(self):
         with self.assertRaises(run_anvil.UsageError):
             run_anvil.parse_args(["--anvil-image"])
@@ -482,22 +494,22 @@ class MainGateTests(unittest.TestCase):
 
     def test_approved_workspace_tong_passes_gate_then_refused_as_unsupported(self):
         # Approval is no longer the only gate: an approved (and otherwise valid)
-        # workspace tong clears the approval prompt but, having an `mcp` interface
-        # this launcher cannot wire up yet, is then refused as unsupported --
-        # proving the gate passed without the anvil ever running.
+        # workspace tong clears the approval prompt but, having a `volume`
+        # interface this launcher cannot wire up yet, is then refused as
+        # unsupported -- proving the gate passed without the anvil ever running.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
-            with open(os.path.join(tongs_dir, "gh.yaml"), "w") as handle:
+            with open(os.path.join(tongs_dir, "cache.yaml"), "w") as handle:
                 handle.write(
                     "lifecycle: shared\nimage: x\ninterface:\n"
-                    "  kind: mcp\n  name: github\n  port: 8080\n"
+                    "  kind: volume\n  volume: build-cache\n  mountpoint: /cache\n"
                     "readiness:\n  mode: none\n"
                 )
-            defn = tongs.load_tong_file(os.path.join(tongs_dir, "gh.yaml"))
+            defn = tongs.load_tong_file(os.path.join(tongs_dir, "cache.yaml"))
             approvals_path = os.path.join(tmp, "approvals.json")
             tongs.save_approvals(
-                approvals_path, tongs.record_approval({}, tmp, "gh", defn)
+                approvals_path, tongs.record_approval({}, tmp, "cache", defn)
             )
             completed = _run_launcher_raw(
                 [
@@ -508,7 +520,7 @@ class MainGateTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 1)
             self.assertEqual(completed.stdout, "")  # anvil never ran
-            self.assertIn("mcp", completed.stderr)
+            self.assertIn("volume", completed.stderr)
             self.assertNotIn("fails closed", completed.stderr)
 
     def test_invalid_tong_returns_one_without_exec(self):
@@ -559,22 +571,45 @@ class MainGateTests(unittest.TestCase):
                 rc = run_anvil.main(["--repo-tongs", tongs_dir, "--", "/no/such/binary-xyz"])
             self.assertEqual(rc, 130)
 
-    def test_mcp_tong_refused_without_exec(self):
-        # An `mcp`-interface tong needs generated MCP config the launcher does not
-        # emit here, so it is refused before docker.
+    def test_colliding_mcp_aliases_refused_without_exec(self):
+        # Two `mcp` tongs that resolve to the same canonical alias (their shared
+        # interface.name) would make DNS nondeterministic, so the set is refused
+        # before docker -- the anvil never runs.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
-            with open(os.path.join(tongs_dir, "gh.yaml"), "w") as handle:
-                handle.write(
-                    "lifecycle: shared\nimage: x\ninterface:\n"
-                    "  kind: mcp\n  name: github\n  port: 8080\n"
-                    "readiness:\n  mode: none\n"
-                )
+            for filename in ("gh.yaml", "gh2.yaml"):
+                with open(os.path.join(tongs_dir, filename), "w") as handle:
+                    handle.write(
+                        "lifecycle: shared\nimage: x\ninterface:\n"
+                        "  kind: mcp\n  name: github\n  port: 8080\n"
+                        "readiness:\n  mode: none\n"
+                    )
             completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
             self.assertEqual(completed.returncode, 1)
             self.assertEqual(completed.stdout, "")
-            self.assertIn("mcp", completed.stderr)
+            self.assertIn("github", completed.stderr)  # the colliding alias
+
+    def test_mcp_tong_without_supported_harness_refused_without_exec(self):
+        # MCP tongs need a harness-specific config emitter. A direct launcher use
+        # without --harness, or a typo, must stop before starting the tong.
+        for harness_args in ([], ["--harness", "opencdoe"]):
+            with self.subTest(harness_args=harness_args):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tongs_dir = os.path.join(tmp, "tongs")
+                    os.makedirs(tongs_dir)
+                    with open(os.path.join(tongs_dir, "gh.yaml"), "w") as handle:
+                        handle.write(
+                            "lifecycle: shared\nimage: x\ninterface:\n"
+                            "  kind: mcp\n  name: github\n  port: 8080\n"
+                            "readiness:\n  mode: none\n"
+                        )
+                    completed = _run_launcher_raw(
+                        harness_args + ["--repo-tongs", tongs_dir]
+                    )
+                    self.assertEqual(completed.returncode, 1)
+                    self.assertEqual(completed.stdout, "")
+                    self.assertIn("--harness", completed.stderr)
 
     def test_volume_tong_refused_without_exec(self):
         # A `volume` interface (a shared named volume) has no consumer yet, so it
@@ -639,15 +674,25 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
             [],
         )
 
-    def test_mcp_and_volume_each_refused(self):
-        self.assertTrue(self._reasons(
-            {"lifecycle": "shared", "image": "x",
-             "interface": {"kind": "mcp", "name": "g", "port": 8080},
-             "readiness": {"mode": "none"}}))
+    def test_volume_refused(self):
+        # A `volume` interface (a shared named volume) has no anvil-side consumer
+        # yet, so it remains refused.
         self.assertTrue(self._reasons(
             {"lifecycle": "shared", "image": "x",
              "interface": {"kind": "volume", "volume": "v", "mountpoint": "/m"},
              "readiness": {"mode": "none"}}))
+
+    def test_mcp_tong_is_now_startable(self):
+        # An `mcp` tong is reached via generated MCP config, so it is no longer
+        # refused -- on either lifecycle.
+        self.assertEqual(self._reasons(
+            {"lifecycle": "shared", "image": "x",
+             "interface": {"kind": "mcp", "name": "g", "port": 8080},
+             "readiness": {"mode": "none"}}), [])
+        self.assertEqual(self._reasons(
+            {"lifecycle": "session", "image": "x",
+             "interface": {"kind": "mcp", "name": "g", "port": 8080},
+             "readiness": {"mode": "none"}}), [])
 
     def test_secret_tong_is_now_startable(self):
         # Secrets are resolved and delivered as env over a FIFO, so a tong that references
@@ -659,14 +704,6 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
         self.assertEqual(self._reasons(
             {"lifecycle": "session", "image": "x", "env": {"T": "${secret:op:r}"},
              "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"}}), [])
-
-    def test_session_mcp_tong_still_refused(self):
-        # Lifting the secret guard does not lift the mcp guard; a session tong with
-        # an mcp interface is still refused (wired up in a later phase).
-        self.assertTrue(self._reasons(
-            {"lifecycle": "session", "image": "x",
-             "interface": {"kind": "mcp", "name": "g", "port": 8080},
-             "readiness": {"mode": "none"}}))
 
     def test_shared_workspace_mount_refused_but_docker_socket_allowed(self):
         # A shared tong that mounts the workspace leaks it across sessions, so it
@@ -798,10 +835,10 @@ class FakeChannels:
 
 
 # Tiny launcher options for driving run_with_tongs directly.
-def _opts(workspace=None, anvil_image="anvil:img"):
+def _opts(workspace=None, anvil_image="anvil:img", harness="opencode"):
     return run_anvil.LauncherOptions(
         layer_dirs=[], workspace=workspace, approvals=None, providers=None,
-        anvil_image=anvil_image, no_prompt=False,
+        harness=harness, anvil_image=anvil_image, no_prompt=False,
     )
 
 
@@ -828,6 +865,15 @@ SHARED_NONE = {
     "lifecycle": "shared",
     "image": "log-shipper",
     "interface": {"kind": "none"},
+    "readiness": {"mode": "none"},
+}
+
+# A credential-holding MCP tong: an HTTP MCP server the anvil reaches at its
+# canonical alias (interface.name) on the session/base network.
+SHARED_MCP = {
+    "lifecycle": "shared",
+    "image": "github-tong",
+    "interface": {"kind": "mcp", "name": "github", "port": 8080},
     "readiness": {"mode": "none"},
 }
 
@@ -1046,10 +1092,46 @@ class SecretChannelTests(unittest.TestCase):
         self.assertEqual(received, [payload])
 
 
+class McpInjectionTests(unittest.TestCase):
+    """_mcp_injection writes the generated config and shapes the anvil args."""
+
+    FRAGMENT = {"mcp": {"github": {"type": "remote", "url": "http://github:8080/mcp"}}}
+
+    def test_empty_fragment_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pre, post = run_anvil._mcp_injection({}, "opencode", tmp)
+            self.assertEqual((pre, post), ([], []))
+            self.assertEqual(os.listdir(tmp), [])  # no file written
+
+    def test_opencode_mounts_and_sets_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pre, post = run_anvil._mcp_injection(self.FRAGMENT, "opencode", tmp)
+            host_path = os.path.join(tmp, "tong-mcp.json")
+            self.assertEqual(post, [])  # OpenCode reads it via the entrypoint
+            self.assertEqual(
+                pre,
+                ["-v", "%s:%s:ro" % (host_path, run_anvil.MCP_CONFIG_CONTAINER_PATH),
+                 "-e", "%s=%s" % (run_anvil.MCP_FILE_ENV, run_anvil.MCP_CONFIG_CONTAINER_PATH)],
+            )
+            with open(host_path, encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), self.FRAGMENT)
+
+    def test_claude_mounts_and_appends_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pre, post = run_anvil._mcp_injection(self.FRAGMENT, "claude", tmp)
+            host_path = os.path.join(tmp, "tong-mcp.json")
+            self.assertEqual(
+                pre, ["-v", "%s:%s:ro" % (host_path, run_anvil.MCP_CONFIG_CONTAINER_PATH)]
+            )
+            self.assertEqual(post, ["--mcp-config", run_anvil.MCP_CONFIG_CONTAINER_PATH])
+            with open(host_path, encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), self.FRAGMENT)
+
+
 class RunWithTongsTests(unittest.TestCase):
-    def _run(self, docker, merged, anvil=None, workspace=None):
+    def _run(self, docker, merged, anvil=None, workspace=None, harness="opencode"):
         return run_anvil.run_with_tongs(
-            merged, anvil or ANVIL_ARGV, _opts(workspace=workspace),
+            merged, anvil or ANVIL_ARGV, _opts(workspace=workspace, harness=harness),
             docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
         )
 
@@ -1147,6 +1229,60 @@ class RunWithTongsTests(unittest.TestCase):
         docker = FakeDocker()
         self._run(docker, _merged("shipper", SHARED_NONE, source=tongs.REPO))
         self.assertEqual(docker.anvil_argv, ANVIL_ARGV)
+
+    def _mcp_mount_host_path(self, argv):
+        """Host path of the read-only MCP-config bind mount in an anvil argv."""
+        suffix = ":%s:ro" % run_anvil.MCP_CONFIG_CONTAINER_PATH
+        for index, token in enumerate(argv):
+            if token == "-v" and argv[index + 1].endswith(suffix):
+                return argv[index + 1][: -len(suffix)]
+        self.fail("no MCP-config mount found in anvil argv")
+
+    def test_opencode_mcp_tong_mounts_config_and_sets_env(self):
+        # An OpenCode session reaches an `mcp` tong via the entrypoint merge: the
+        # generated config is bind-mounted read-only and pointed at by the env var.
+        docker = FakeDocker()
+        self._run(docker, _merged("github-creds", SHARED_MCP, source=tongs.REPO),
+                  harness="opencode")
+        argv = docker.anvil_argv
+        self.assertIn("github", docker.run_argvs[0])  # tong started under its alias
+        self.assertIn(
+            "%s=%s" % (run_anvil.MCP_FILE_ENV, run_anvil.MCP_CONFIG_CONTAINER_PATH), argv
+        )
+        self._mcp_mount_host_path(argv)  # the read-only mount is present
+        self.assertNotIn("--mcp-config", argv)  # OpenCode does not use the flag
+
+    def test_claude_mcp_tong_mounts_config_and_appends_flag(self):
+        # A Claude session reads the generated config directly via --mcp-config,
+        # appended after the image so it reaches the harness binary.
+        docker = FakeDocker()
+        self._run(docker, _merged("github-creds", SHARED_MCP, source=tongs.REPO),
+                  harness="claude")
+        argv = docker.anvil_argv
+        self.assertEqual(argv[-2:], ["--mcp-config", run_anvil.MCP_CONFIG_CONTAINER_PATH])
+        self.assertNotIn("%s=%s" % (run_anvil.MCP_FILE_ENV, run_anvil.MCP_CONFIG_CONTAINER_PATH),
+                         argv)
+        self._mcp_mount_host_path(argv)  # the read-only mount is present
+
+    def test_mcp_tong_with_unknown_harness_raises_before_docker(self):
+        for harness in (None, "opencdoe"):
+            with self.subTest(harness=harness):
+                docker = FakeDocker()
+                with self.assertRaisesRegex(run_anvil.OrchestrationError, "--harness"):
+                    self._run(docker, _merged("github-creds", SHARED_MCP, source=tongs.REPO),
+                              harness=harness)
+                self.assertEqual(docker.calls, [])
+                self.assertEqual(docker.run_argvs, [])
+                self.assertIsNone(docker.anvil_argv)
+
+    def test_mcp_config_tempfile_cleaned_up_after_run(self):
+        # The generated config lives in a host temp dir bind-mounted into the
+        # anvil; once the anvil exits the temp dir is removed.
+        docker = FakeDocker()
+        self._run(docker, _merged("github-creds", SHARED_MCP, source=tongs.REPO),
+                  harness="opencode")
+        host_path = self._mcp_mount_host_path(docker.anvil_argv)
+        self.assertFalse(os.path.exists(host_path))
 
     def test_unready_tong_raises_and_anvil_never_runs(self):
         docker = FakeDocker(ready=False)
