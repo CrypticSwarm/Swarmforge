@@ -114,13 +114,13 @@ Both `run_opencode` and `run_claude` mount the shared Swarmforge assets so every
 Those paths are exported in-container as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
 When launching Claude Code, the container entrypoint copies these into `~/.claude/skills/` and `~/.claude/commands/` so Claude can discover them as native skills/commands.
 When launching OpenCode, the same entrypoint step copies them into the merged config destination (`~/.config/opencode/skills/` and `~/.config/opencode/command/`).
-In-container `~/.claude/skills/`, `~/.claude/commands/`, and `~/.claude/agents/` are container-private tmpfs mounts that mask the shared persistent `CLAUDE_HOME_DIR`: each container starts them empty and the entrypoint repopulates them, lowest to highest precedence — skills and commands from the config layers (user, org, repo), the harness shared assets, and the current workspace's `.agents` overlay; agents from the `.swarmforge` asset layers described under `## Agents`.
+In-container `~/.claude/skills/`, `~/.claude/commands/`, and `~/.claude/agents/` are container-private tmpfs mounts that mask the shared persistent `CLAUDE_HOME_DIR`: each container starts them empty and the entrypoint repopulates them, lowest to highest precedence — skills and commands from the user and org `.agents/{skills,commands}` layers, the harness shared assets (this repo's own `skills/` and `commands/`), and the current workspace's `.agents` overlay; agents from the `.swarmforge` asset layers described under `## Agents`.
 All Swarmforge layers carry these assets in Swarmforge formats — skills and commands are portable and copied as-is, while agents use the unified format and are translated from the harness-neutral `.swarmforge/agents/` layers described under `## Agents`. Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude itself, outside the Swarmforge pipeline.
 This keeps per-repo skills, commands, and agents from accumulating in the persistent home and leaking into other repos' sessions.
 The layered config merge skips skills and commands for every harness — they travel only through this asset pipeline, so each skill package is replaced wholesale by the highest-precedence layer that provides it instead of being file-merged across layers — and additionally skips `agents/` for Claude.
 
-You can ship project-local skills/commands in your workspace and have them overlay the harness defaults: the entrypoint reads `<workspace>/.agents/skills/` and `<workspace>/.agents/commands/`, and workspace entries override harness entries with the same name.
-Harness-native repo-local dirs (such as `<workspace>/.opencode/`) belong to their own harness and are not consumed for Claude.
+Skills and commands follow the harness-neutral `.agents/{skills,commands}` convention at every layer. The user and org layers are read from `~/.agents/{skills,commands}` and `$(SWARMFORGE_ORG_CONFIG_ROOT)/.agents/{skills,commands}` (override the roots with `SWARMFORGE_USER_DOTAGENTS_DIR` / `SWARMFORGE_ORG_DOTAGENTS_DIR`); the Swarmforge repo keeps its own shared `skills/` and `commands/`; and the workspace overlay is `<workspace>/.agents/{skills,commands}`. Later layers override earlier entries with the same name, so a workspace skill wins over an org skill of the same name.
+Harness-native dirs (such as `<layer>/.opencode/skills/` or `<layer>/.claude/skills/`) are not consumed for skills/commands — those formats are portable and live under `.agents` instead.
 
 Claude config layering uses three sources (lowest to highest precedence):
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude` for `run_claude`)
@@ -170,7 +170,7 @@ Unified agents live in harness-neutral `.swarmforge/agents/` directories — one
 
 The asset layers are mounted read-only at `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the env vars `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` point at the layer roots), and the entrypoint translates the stacked sources — identical for every harness — into the harness's native location: `~/.config/opencode/agents/` for OpenCode, `~/.claude/agents/` (a container-private tmpfs scoped to the current repo) for Claude Code. Later layers override earlier ones by filename.
 
-Native `agents/` directories are never carried by this asset pipeline. For OpenCode they still pass through the layered config merge (the merged config dir is OpenCode's own discovery); for Claude they are excluded from the merge entirely, and Claude-native definitions belong in Claude's own discovery (`<workspace>/.claude/agents/`, or `<workspace>/.opencode/agents/` for OpenCode), which each harness reads directly. (Skills and commands keep their `.agents/{skills,commands}` workspace convention — those formats are portable across harnesses, while agents are Swarmforge-specific and translated.)
+Native `agents/` directories are never carried by this asset pipeline. For OpenCode they still pass through the layered config merge (the merged config dir is OpenCode's own discovery); for Claude they are excluded from the merge entirely, and Claude-native definitions belong in Claude's own discovery (`<workspace>/.claude/agents/`, or `<workspace>/.opencode/agents/` for OpenCode), which each harness reads directly. (Skills and commands use the `.agents/{skills,commands}` convention at the user, org, and workspace layers — those formats are portable across harnesses, while agents are Swarmforge-specific and translated.)
 
 Run the translator's tests with `python3 scripts/test_translate_agents.py`.
 
@@ -197,7 +197,7 @@ When you run OpenCode via `make run_opencode`, config is layered from three sour
 - `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/` for `run_opencode`)
 
 At container startup these layers are merged into `/home/opencode/.config/opencode`, so Swarmforge-layer files can override org files, and org files can override personal defaults.
-Skills and commands are excluded from that merge and travel through the same asset pipeline Claude Code uses: the user, org, and repo config layers, then the shared `skills/` and `commands/`, then any `<workspace>/.agents/{skills,commands}` overlay.
+Skills and commands are excluded from that merge and travel through the same asset pipeline Claude Code uses: the user and org `.agents/{skills,commands}` layers, then the shared `skills/` and `commands/`, then any `<workspace>/.agents/{skills,commands}` overlay.
 Each skill package is replaced wholesale by the highest-precedence layer that provides it (never file-merged across layers), which keeps the shared skills exposed by default while still allowing personal and org-specific overlays.
 
 For `opencode.json`, layers are merged by key (not plain file overwrite), which lets org-level MCP servers in `.opencode/opencode.json` remain available even when the Swarmforge repo layer also defines `opencode.json`.
