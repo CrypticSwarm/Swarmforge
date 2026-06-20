@@ -63,6 +63,15 @@ SWARMFORGE_REPO_AGENTS_DIR ?= $(SWARMFORGE_DIR)/agents
 # wildcard guard below leaves the layer absent until one is added.
 SWARMFORGE_REPO_TONGS_DIR ?= $(SWARMFORGE_DIR)/tongs
 
+# Portable skills/commands overlay layers. These follow the harness-neutral
+# .agents/{skills,commands} convention (a sibling of .swarmforge under the same
+# user $HOME / org SWARMFORGE_ORG_CONFIG_ROOT roots). Named DOTAGENTS to keep
+# them distinct from the unified-agent asset pipeline above (whose agents live
+# in .swarmforge/agents and use SWARMFORGE_ASSETS_*). The repo layer keeps its
+# own special shared skills/ and commands/ (SHARED_SKILLS_DIR/SHARED_COMMAND_DIR).
+SWARMFORGE_USER_DOTAGENTS_DIR ?= $(HOME)/.agents
+SWARMFORGE_ORG_DOTAGENTS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.agents,)
+
 # Host python used to run the anvil launcher (run_anvil.py).
 PYTHON ?= python3
 
@@ -78,6 +87,8 @@ SWARMFORGE_LAYER_MOUNTS = \
 	$(if $(and $(strip $(SWARMFORGE_USER_ASSETS_DIR)),$(wildcard $(SWARMFORGE_USER_ASSETS_DIR))),-v "$(SWARMFORGE_USER_ASSETS_DIR)":/tmp/swarmforge-assets/user:ro,) \
 	$(if $(and $(strip $(SWARMFORGE_ORG_ASSETS_DIR)),$(wildcard $(SWARMFORGE_ORG_ASSETS_DIR))),-v "$(SWARMFORGE_ORG_ASSETS_DIR)":/tmp/swarmforge-assets/org:ro,) \
 	$(if $(and $(strip $(SWARMFORGE_REPO_AGENTS_DIR)),$(wildcard $(SWARMFORGE_REPO_AGENTS_DIR))),-v "$(SWARMFORGE_REPO_AGENTS_DIR)":/tmp/swarmforge-assets/repo/agents:ro,) \
+	$(if $(and $(strip $(SWARMFORGE_USER_DOTAGENTS_DIR)),$(wildcard $(SWARMFORGE_USER_DOTAGENTS_DIR))),-v "$(SWARMFORGE_USER_DOTAGENTS_DIR)":/tmp/swarmforge-dotagents/user:ro,) \
+	$(if $(and $(strip $(SWARMFORGE_ORG_DOTAGENTS_DIR)),$(wildcard $(SWARMFORGE_ORG_DOTAGENTS_DIR))),-v "$(SWARMFORGE_ORG_DOTAGENTS_DIR)":/tmp/swarmforge-dotagents/org:ro,) \
 	-v "$(SHARED_SKILLS_DIR)":/home/opencode/.swarmforge/skills:ro \
 	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro
 
@@ -88,6 +99,8 @@ SWARMFORGE_LAYER_ENV = \
 	-e SWARMFORGE_ASSETS_USER_DIR=/tmp/swarmforge-assets/user \
 	-e SWARMFORGE_ASSETS_ORG_DIR=/tmp/swarmforge-assets/org \
 	-e SWARMFORGE_ASSETS_REPO_DIR=/tmp/swarmforge-assets/repo \
+	-e SWARMFORGE_DOTAGENTS_USER_DIR=/tmp/swarmforge-dotagents/user \
+	-e SWARMFORGE_DOTAGENTS_ORG_DIR=/tmp/swarmforge-dotagents/org \
 	-e SWARMFORGE_CONFIG_DEST=$(SWARMFORGE_CONFIG_DEST) \
 	-e SWARMFORGE_CONFIG_RESET=$(SWARMFORGE_CONFIG_RESET) \
 	-e SWARMFORGE_SKILLS_DIR=/home/opencode/.swarmforge/skills \

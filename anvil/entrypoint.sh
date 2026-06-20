@@ -59,15 +59,17 @@ copy_dir_entries() {
 # Sources are applied lowest- to highest-precedence, identically for every
 # harness; the config merge excludes skills/commands so this is their only
 # transport:
-#   1. Config layers: user, org, then repo (read using the layer's
-#      harness-native commands dir name: commands/ for Claude, command/ for
-#      OpenCode).
+#   1. Portable .agents layers: user, then org. These follow the harness-neutral
+#      .agents/{skills,commands} convention (mounted via SWARMFORGE_DOTAGENTS_USER_DIR
+#      / SWARMFORGE_DOTAGENTS_ORG_DIR), so the source dir names are the same for
+#      every harness.
 #   2. Harness shared assets (mounted via SWARMFORGE_SKILLS_DIR /
-#      SWARMFORGE_COMMAND_DIR): the Swarmforge repo's skills/ and commands/.
+#      SWARMFORGE_COMMAND_DIR): the Swarmforge repo's own skills/ and commands/.
 #   3. Workspace overlay: <workspace>/.agents/{skills,commands}.
 #
-# Harness-native repo-local dirs (such as <workspace>/.opencode) belong to
-# their own harness and are never consumed here.
+# Harness-native config dirs (such as <layer>/.claude or <layer>/.opencode) are
+# never consumed for skills/commands; those formats are portable and live under
+# the .agents convention instead.
 #
 # For Claude the destinations are container-private tmpfs mounts masking the
 # shared persistent home, so each container starts empty and sees only the
@@ -79,23 +81,21 @@ copy_shared_assets() {
     claude)
       skills_dst="${OPENCODE_HOME}/.claude/skills"
       commands_dst="${OPENCODE_HOME}/.claude/commands"
-      layer_commands_name="commands"
       ;;
     opencode)
       config_dest="${SWARMFORGE_CONFIG_DEST:-${OPENCODE_HOME}/.config/opencode}"
       skills_dst="${config_dest}/skills"
       commands_dst="${config_dest}/command"
-      layer_commands_name="command"
       ;;
     *)
       return 0
       ;;
   esac
 
-  for layer_src in "${SWARMFORGE_CONFIG_USER_DIR:-}" "${SWARMFORGE_CONFIG_ORG_DIR:-}" "${SWARMFORGE_CONFIG_REPO_DIR:-}"; do
+  for layer_src in "${SWARMFORGE_DOTAGENTS_USER_DIR:-}" "${SWARMFORGE_DOTAGENTS_ORG_DIR:-}"; do
     [ -n "${layer_src}" ] || continue
     copy_dir_entries "${layer_src}/skills" "${skills_dst}"
-    copy_dir_entries "${layer_src}/${layer_commands_name}" "${commands_dst}"
+    copy_dir_entries "${layer_src}/commands" "${commands_dst}"
   done
 
   copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
