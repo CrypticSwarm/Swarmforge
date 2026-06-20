@@ -1023,6 +1023,23 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             "session tongs require the anvil '--name' as a session handle"
         )
 
+    # An org-layer `shared` tong is partitioned onto its own isolated network,
+    # which the anvil joins by name -- so a scoped launch needs the anvil --name
+    # for the same reason a session launch does. Derive the org scope token from
+    # the org layer's directory (None when no org layer was passed, leaving every
+    # shared tong on today's global, unscoped naming).
+    org_token = tongs.org_scope_token(dict(opts.layer_dirs).get(tongs.ORG))
+    has_org_shared = bool(org_token) and any(
+        merged[name]["definition"].get("lifecycle") != "session"
+        and merged[name]["source"] == tongs.ORG
+        for name in merged
+    )
+    if has_org_shared and not session_id:
+        raise OrchestrationError(
+            "org-scoped shared tongs require the anvil '--name' as a handle to "
+            "join their isolated network"
+        )
+
     plan = tongs.plan_network(merged, base_network, session_id)
     # `volume` tongs are refused upstream, so the injection is reachability for
     # the network-facing kinds only: `port` env vars and, for `mcp` tongs, the
@@ -1032,13 +1049,15 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     created_network = None
     started_sessions = []
     connected_shared = []
+    joined_shared_networks = []  # isolated per-scope networks the anvil must join
+    anvil_multi = False          # the anvil was created via the multi-network path
     mcp_dir = None  # host temp dir holding the generated MCP config, if any
     try:
         if plan["create"]:
             docker.ensure_network(plan["create"])
             created_network = plan["create"]
 
-        ready_checks = []
+        ready_checks = []  # (name, defn, alias, container, probe_network)
         for name in sorted(merged):
             defn = merged[name]["definition"]
             alias = tongs.canonical_alias(name, defn)
@@ -1051,15 +1070,29 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                     label_hash=tongs.config_hash(defn), make_channel=make_channel,
                 )
                 started_sessions.append(container)
+                probe_network = plan["network"]
             else:
-                container = tongs.shared_container_name(name)
+                # An org-sourced shared tong is partitioned onto an isolated
+                # per-org network and a scoped container name; every other shared
+                # tong stays on the shared base network, unscoped, as before.
+                scope = org_token if merged[name]["source"] == tongs.ORG else None
+                container = tongs.shared_container_name(name, scope=scope)
+                if scope:
+                    tong_network = tongs.shared_network_name(scope)
+                    docker.ensure_network(tong_network)
+                    if tong_network not in joined_shared_networks:
+                        joined_shared_networks.append(tong_network)
+                    probe_network = tong_network
+                else:
+                    tong_network = base_network
+                    probe_network = plan["network"]
                 _ensure_shared_tong(
                     docker, name, defn,
-                    container=container, network=base_network, alias=alias,
+                    container=container, network=tong_network, alias=alias,
                     resolver=resolver, workspace=opts.workspace,
                     label_hash=tongs.config_hash(defn), make_channel=make_channel,
                 )
-            ready_checks.append((name, defn, alias, container))
+            ready_checks.append((name, defn, alias, container, probe_network))
 
         # Attach each network-facing `shared` tong to the per-session network under
         # its canonical alias, so the anvil reaches it there without the long-lived
@@ -1068,6 +1101,12 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
         # because a `none` session tong with no alias must still be started; only the
         # network-facing `shared` tongs in plan["shared_connect"] are connected here.)
         for name, alias in plan["shared_connect"]:
+            if org_token and merged[name]["source"] == tongs.ORG:
+                # An org-scoped shared tong is isolated on its own network, which
+                # the anvil joins directly -- it is deliberately never attached to
+                # the per-session network, so the session reaches it only through
+                # that org network and never via the shared base/session fabric.
+                continue
             container = tongs.shared_container_name(name)
             # ensure_network may have reused a network left by a hard-killed prior
             # session whose teardown never ran, with this shared tong still attached;
@@ -1077,11 +1116,13 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             docker.network_connect(plan["network"], container, alias=alias)
             connected_shared.append((plan["network"], container))
 
-        # Probe readiness on the network the anvil will use, so a `shared` tong is
-        # checked at the alias the anvil dials (connected to that network above).
-        for name, defn, alias, container in ready_checks:
+        # Probe readiness on the network the anvil will reach each tong over: the
+        # session/base network for ordinary tongs, but the isolated org network
+        # for a scoped shared tong (it lives only there, never on the session
+        # fabric), so each is checked at the alias the anvil actually dials.
+        for name, defn, alias, container, probe_network in ready_checks:
             if not wait_ready(
-                docker, container, defn, alias, plan["network"],
+                docker, container, defn, alias, probe_network,
                 anvil_image=opts.anvil_image, sleep=sleep, monotonic=monotonic,
             ):
                 raise OrchestrationError("tong '%s' did not become ready in time" % name)
@@ -1102,12 +1143,17 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             anvil_cmd, network=plan["network"],
             pre_image_args=pre_image_args, post_image_args=post_image_args,
         )
-        if plan["extra_networks"]:
+        # The anvil joins the base network (the `NETWORK=` escape hatch) when a
+        # per-session network is its primary, plus every isolated org network its
+        # scoped shared tongs live on.
+        extra_networks = list(plan["extra_networks"]) + joined_shared_networks
+        if extra_networks:
             # The anvil joins more than one network, which docker run cannot do at
             # creation, so create -> connect the extras -> start it attached.
-            return docker.run_foreground_multi(
-                injected, plan["extra_networks"], session_id
-            )
+            # (session_id is guaranteed here: a session network or an org network
+            # both require the anvil --name, checked above.)
+            anvil_multi = True
+            return docker.run_foreground_multi(injected, extra_networks, session_id)
         return docker.run_foreground(injected)
     finally:
         # Tear down per-session state, leaving the long-lived `shared` tongs
@@ -1116,11 +1162,20 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
         # refuses to delete a network while endpoints remain.
         for container in started_sessions:
             docker.rm_force(container)
-        if created_network:
+        # A multi-network anvil is an explicitly-created container (left for us so
+        # a failed connect/start is not orphaned); the plain single-network run
+        # uses `--rm` and self-removes, so it is only force-removed here.
+        if anvil_multi:
             docker.rm_force(session_id)
-            for network, container in connected_shared:
-                docker.network_disconnect(network, container)
+        for network, container in connected_shared:
+            docker.network_disconnect(network, container)
+        if created_network:
             docker.network_rm(created_network)
+        # Best-effort prune of each isolated org network: docker refuses while the
+        # long-lived shared tong is still attached, so the network persists with
+        # its tong and is reclaimed only once nothing is on it.
+        for network in joined_shared_networks:
+            docker.network_rm(network)
         # The generated MCP config was bind-mounted into the anvil, which has now
         # exited; remove the host temp file holding it.
         if mcp_dir:
