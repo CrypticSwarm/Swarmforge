@@ -1,0 +1,46 @@
+# Reference broker command set. This is illustrative: replace the images and
+# commands with the narrow, task-shaped verbs your project actually needs, and
+# pin image digests for anything you depend on.
+#
+# Every image a command may run must appear in `allowed_images` -- that list is
+# the broker's entire allowlist. There is no verb that runs an arbitrary image or
+# mounts an arbitrary host path: a worker may only mount the session `workspace`,
+# and parameters can only toggle a fixed effect (boolean) or pick a value from a
+# fixed set (enum).
+name: docker-broker
+description: >-
+  Reference Swarmforge broker. Spawns short-lived worker containers on demand so
+  the anvil can compile and test without holding the docker socket itself.
+
+allowed_images:
+  - node:24-alpine
+
+commands:
+  - name: build
+    description: Run `npm run build` against the project workspace.
+    image: node:24-alpine
+    mounts: [workspace:/work]
+    workdir: /work
+    command: [npm, run, build]
+    resources:
+      memory: 1g
+    params:
+      - name: production
+        type: boolean
+        description: Build in production mode (sets NODE_ENV=production).
+        when_true:
+          env:
+            NODE_ENV: production
+
+  - name: test
+    description: Run the project's test suite, optionally narrowed to one suite.
+    image: node:24-alpine
+    mounts: [workspace:/work:ro]
+    workdir: /work
+    command: [npm, test, --]
+    params:
+      - name: suite
+        type: enum
+        description: Which test suite to run; omit to run them all.
+        values: [unit, integration, e2e]
+        append_value: true
