@@ -13,11 +13,10 @@ It emphasizes robustness, constraint-driven design, and interoperability over ad
 bash ./install.sh
 ```
 
-This appends an `oc` alias to your shell rc file so it shells out to `make -C <repo> run_opencode PROJECT_DIR=$(pwd)`.
-The installer is a Bash script (uses Bash arrays), so run it with `bash` even if your login shell is Zsh.
-On macOS the installer prefers `~/.zshrc` (the default since Catalina) and falls back to `~/.bash_profile` for legacy Bash shells, so you do not need to create `~/.bashrc` manually.
-Because macOS login shells source `.bash_profile` before `.bashrc`, keeping the alias in whichever file the installer chose ensures it loads during Terminal launches.
-Override the target explicitly by running `OC_RC_FILE=/path/to/rc bash ./install.sh`.
+This appends an `oc` alias to your shell rc file that runs `make run_opencode PROJECT_DIR=$(pwd)` against the repo's Makefile.
+Run it with `bash` (it uses Bash arrays) even if your login shell is Zsh.
+On macOS it prefers `~/.zshrc` and falls back to `~/.bash_profile`, so you don't need to create `~/.bashrc` manually.
+Override the target file with `OC_RC_FILE=/path/to/rc bash ./install.sh`.
 
 2. Build one or both container images:
 
@@ -33,107 +32,93 @@ make build_opencode OPENCODE_VERSION=1.4.14
 make update_opencode OPENCODE_VERSION=1.4.14
 ```
 
-Both images share the same Debian base and toolchain (Node.js + Python; see `anvil/Dockerfile` for configured versions).
-Build targets pass `AGENT=opencode|claude` so only the requested agent install step runs (works with both legacy Docker builder and BuildKit).
+Both images share the same Debian base and toolchain (Node.js + Python; see `anvil/Dockerfile`).
+Build targets pass `AGENT=opencode|claude` so only the requested agent install step runs.
 
 3. Run from your project directory:
 
 - OpenCode: `oc`
 - Claude Code: `make run_claude PROJECT_DIR=$(pwd)`
-- Pass OpenCode overrides either as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
-- Override container timezone per run (affects git commit timestamps): `oc TIMEZONE=America/New_York` or `make run_claude PROJECT_DIR=$(pwd) TIMEZONE=America/New_York`.
+- Pass OpenCode overrides as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
+- Override the container timezone per run (affects git commit timestamps): `oc TIMEZONE=America/New_York`.
 
 ### Repo-local env vars
 
-`make run_opencode` loads a repo-local env file if it exists at `.swarmforge/env`.
-Override with `ENV_FILE=/path/to/env make run_opencode`.
-
-`make run_claude` uses the same repo-local env file path.
-Override with `ENV_FILE=/path/to/env make run_claude PROJECT_DIR=$(pwd)`.
-
-Both `make run_opencode` and `make run_claude` support `TIMEZONE=<Region/City>` (default: `Etc/UTC`) and pass it as `TZ` into the container.
+`make run_opencode` and `make run_claude` load a repo-local env file from `.swarmforge/env` if it exists; override with `ENV_FILE=/path/to/env`.
+Both also accept `TIMEZONE=<Region/City>` (default `Etc/UTC`), passed into the container as `TZ`.
 
 ### Multiple aliases (work/personal)
 
-You can define multiple aliases that point at the same Swarmforge checkout but use different storage roots and git identities (for example: work keys vs personal keys).
-
-Example:
+Define multiple aliases that point at the same Swarmforge checkout but use different storage roots and git identities (for example: work keys vs personal keys):
 
 ```bash
 alias ocd='make -C PATH_TO_SWARMFORGE run_opencode PROJECT_DIR=$(pwd) DATA_DIR=$HOME/.local/share/opencode-work GITCONFIG_FILE=$HOME/.gitconfig-agent'
 alias ccd='make -C PATH_TO_SWARMFORGE run_claude PROJECT_DIR=$(pwd) CLAUDE_DATA_DIR=$HOME/.local/share/claude-work GITCONFIG_FILE=$HOME/.gitconfig-agent'
 ```
 
-`GITCONFIG_FILE` is useful if you keep an agent-specific git config rather than using your default `~/.gitconfig`.
-For Claude Code, use separate `CLAUDE_DATA_DIR` roots to isolate work/personal logins and session state.
-`CLAUDE_HOME_DIR` defaults to `$(CLAUDE_DATA_DIR)/home`, and can be overridden directly if needed.
-Config layering is controlled with shared variables: `SWARMFORGE_USER_CONFIG_DIR`, `SWARMFORGE_ORG_CONFIG_DIR`, and `SWARMFORGE_REPO_CONFIG_DIR`.
-If your org config repo has both agent layouts, you can set `SWARMFORGE_ORG_CONFIG_ROOT=/path/to/org-repo` and defaults resolve to:
-- OpenCode: `$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode`
-- Claude: `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude`
+- `GITCONFIG_FILE` points at an agent-specific git config instead of `~/.gitconfig`.
+- For Claude Code, use separate `CLAUDE_DATA_DIR` roots to isolate work/personal logins and session state. `CLAUDE_HOME_DIR` defaults to `$(CLAUDE_DATA_DIR)/home`.
+- Config layering uses `SWARMFORGE_USER_CONFIG_DIR`, `SWARMFORGE_ORG_CONFIG_DIR`, and `SWARMFORGE_REPO_CONFIG_DIR` (their defaults differ per harness — see OpenCode layering under [Skills](#skills) and [Claude config layering](#claude-config-layering)). Set `SWARMFORGE_ORG_CONFIG_ROOT=/path/to/org-repo` to resolve org defaults to `.opencode` (OpenCode) and `.claude` (Claude) under that root.
 
-Important: `SWARMFORGE_REPO_CONFIG_DIR` refers to the Swarmforge checkout (the harness repo), not the active working project mounted at `/workspace`.
-By default this means:
-- `run_opencode` uses `$(SWARMFORGE_DIR)/opencode`
-- `run_claude` uses `$(SWARMFORGE_DIR)/claude` (if present)
-
-Project-local config in the working repo is still handled by the agent tools themselves (for example `.opencode/`), independent of this Swarmforge layering.
+`SWARMFORGE_REPO_CONFIG_DIR` refers to the Swarmforge checkout (the harness repo), not the working project mounted at `/workspace`.
+By default it is `$(SWARMFORGE_DIR)/opencode` for `run_opencode` and `$(SWARMFORGE_DIR)/claude` (if present) for `run_claude`.
+Project-local config in the working repo (for example `.opencode/`) is still handled by the agent tools themselves.
 
 ### Git repos and worktrees
 
-`make run_opencode` auto-detects the git root from `PROJECT_DIR` and mounts that root at `/workspace`.
-If the target is a linked git worktree, it also mounts the shared git common directory so git operations keep working inside the container.
-
+`make run_opencode` and `make run_claude` auto-detect the git root from `PROJECT_DIR` and mount it at `/workspace`.
+For a linked git worktree they also mount the shared git common directory so git operations keep working inside the container.
 This means `oc` works from repo roots, subdirectories, and linked worktrees without extra flags.
 
 ## Ollama
 
-Run an LLMs locally.
+Run LLMs locally. `make run_ollama` starts an Ollama container on the shared network (`make stop_ollama` / `make clean` to tear down).
+The `run_*` model targets (for example `make run_gpt-oss-20b`) exec into it to pull and run a model; `make gpu_stat` wraps `nvidia-smi`.
 
 ## OpenCode
 
-Test harness that has a standard set of tools exposed to LLM geared at editing code.
+A coding-agent harness that exposes a standard set of code-editing tools to the LLM.
 
 ## Claude Code
 
-`make run_claude` starts a Claude Code container with the same workspace and git-worktree mounting behavior as `make run_opencode`.
-Claude state is persisted by mounting `$(CLAUDE_HOME_DIR)` to `/home/opencode`, which keeps account/session files such as `~/.claude/` and `~/.claude.json`.
-By default it mounts the repo to a stable path derived from the git remote slug and starts Claude there (while still mounting `/workspace` for compatibility), which improves session grouping across worktrees without relying on host-specific absolute paths.
-
-Session compatibility notes:
+`make run_claude` starts a Claude Code container with the same workspace and git-worktree mounting as `make run_opencode`.
+Claude state persists by mounting `$(CLAUDE_HOME_DIR)` to `/home/opencode`, keeping account/session files like `~/.claude/` and `~/.claude.json`.
+The repo is mounted at a stable path derived from the git remote slug (with `/workspace` still mounted for compatibility), which groups sessions consistently across worktrees without host-specific absolute paths.
 
 - To reuse existing host-native Claude sessions directly, run with `CLAUDE_HOME_DIR=$HOME`.
-- GitHub remote slugs map to deterministic paths, for example `git@github.com:crypticswarm/Swarmforge.git` -> `/repos/crypticswarm/Swarmforge`.
-- Override slug detection with `CLAUDE_REPO_SLUG=crypticswarm/Swarmforge` and remote selection with `CLAUDE_REMOTE_NAME=<remote>`.
+- Remote slugs map deterministically, e.g. `git@github.com:crypticswarm/Swarmforge.git` -> `/repos/crypticswarm/Swarmforge`. Override with `CLAUDE_REPO_SLUG=crypticswarm/Swarmforge` and `CLAUDE_REMOTE_NAME=<remote>`.
 
-Both `run_opencode` and `run_claude` mount the shared Swarmforge assets so every harness can access common resources:
+### Shared assets (skills, commands, agents)
 
-- `skills/` -> `/home/opencode/.swarmforge/skills`
-- `commands/` -> `/home/opencode/.swarmforge/command`
+Both harnesses mount this repo's `skills/` and `commands/` into the container, exported as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
+The entrypoint copies them into each harness's native location — `~/.claude/skills/` and `~/.claude/commands/` for Claude, the merged config dir (`~/.config/opencode/skills/`, `~/.config/opencode/command/`) for OpenCode.
+For Claude these dirs (plus `~/.claude/agents/`) are container-private tmpfs mounts that mask the persistent home and are repopulated each run, so per-repo assets never accumulate in `CLAUDE_HOME_DIR` or leak into other repos' sessions.
 
-Those paths are exported in-container as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
-When launching Claude Code, the container entrypoint copies these into `~/.claude/skills/` and `~/.claude/commands/` so Claude can discover them as native skills/commands.
-When launching OpenCode, the same entrypoint step copies them into the merged config destination (`~/.config/opencode/skills/` and `~/.config/opencode/command/`).
-In-container `~/.claude/skills/`, `~/.claude/commands/`, and `~/.claude/agents/` are container-private tmpfs mounts that mask the shared persistent `CLAUDE_HOME_DIR`: each container starts them empty and the entrypoint repopulates them, lowest to highest precedence — skills and commands from the user and org `.agents/{skills,commands}` layers, the harness shared assets (this repo's own `skills/` and `commands/`), and the current workspace's `.agents` overlay; agents from the `.swarmforge` asset layers described under `## Agents`.
-All Swarmforge layers carry these assets in Swarmforge formats — skills and commands are portable and copied as-is, while agents use the unified format and are translated from the harness-neutral `.swarmforge/agents/` layers described under `## Agents`. Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude itself, outside the Swarmforge pipeline.
-This keeps per-repo skills, commands, and agents from accumulating in the persistent home and leaking into other repos' sessions.
-The layered config merge skips skills and commands for every harness — they travel only through this asset pipeline, so each skill package is replaced wholesale by the highest-precedence layer that provides it instead of being file-merged across layers — and additionally skips `agents/` for Claude.
+Skills, commands, and agents come from four layers, lowest to highest precedence — later layers override same-named entries wholesale (never file-merged):
 
-Skills and commands follow the harness-neutral `.agents/{skills,commands}` convention at every layer. The user and org layers are read from `~/.agents/{skills,commands}` and `$(SWARMFORGE_ORG_CONFIG_ROOT)/.agents/{skills,commands}` (override the roots with `SWARMFORGE_USER_DOTAGENTS_DIR` / `SWARMFORGE_ORG_DOTAGENTS_DIR`); the Swarmforge repo keeps its own shared `skills/` and `commands/`; and the workspace overlay is `<workspace>/.agents/{skills,commands}`. Later layers override earlier entries with the same name, so a workspace skill wins over an org skill of the same name.
-Harness-native dirs (such as `<layer>/.opencode/skills/` or `<layer>/.claude/skills/`) are not consumed for skills/commands — those formats are portable and live under `.agents` instead.
+- **user** — `~/.agents/{skills,commands}` and `~/.swarmforge/agents/`
+- **org** — `$(SWARMFORGE_ORG_CONFIG_ROOT)/.agents/{skills,commands}` and `.../.swarmforge/agents/`
+- **repo** — this checkout's `skills/`, `commands/`, and `agents/`
+- **workspace** — `<workspace>/.agents/{skills,commands}` and `<workspace>/.swarmforge/agents/`
 
-Claude config layering uses three sources (lowest to highest precedence):
-- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude` for `run_claude`)
-- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude` when `SWARMFORGE_ORG_CONFIG_ROOT` is set)
-- `SWARMFORGE_REPO_CONFIG_DIR` (default `claude/` for `run_claude`, if present)
+Skills and commands follow the harness-neutral `.agents/{skills,commands}` convention and are copied as-is; agents use the unified format (see [Agents](#agents)) and are translated per harness.
+Harness-native dirs (`<layer>/.opencode/skills/`, `<layer>/.claude/skills/`) are not consumed for skills/commands.
+Override the `.agents` roots with `SWARMFORGE_USER_DOTAGENTS_DIR` / `SWARMFORGE_ORG_DOTAGENTS_DIR`.
 
-At startup these are merged into `~/.claude` inside the container, so personal defaults can be overlaid with org settings and repo-local overrides.
+### Claude config layering
+
+Three sources merge into `~/.claude` at startup (lowest to highest precedence):
+- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude`)
+- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude` when that root is set)
+- `SWARMFORGE_REPO_CONFIG_DIR` (default `claude/`, if present)
+
+Skills, commands, and `agents/` are excluded from this merge — they travel through the asset pipeline above.
 
 ## Agents
 
-Subagent definitions are stored under `agents/` in a single unified format and rewritten to each harness's native dialect by the container entrypoint (`anvil/translate_agents.py`), the same way `.claude` assets are populated for Claude Code.
+Subagent definitions live under `agents/` in a single unified format and are rewritten to each harness's native dialect by the container entrypoint (`anvil/translate_agents.py`).
 
-A unified agent is a markdown file whose body is the agent's system prompt and whose YAML frontmatter is a superset of the OpenCode agent schema. The filename is the agent's identity (`reviewer.md` -> agent `reviewer`):
+A unified agent is a markdown file whose body is the system prompt and whose YAML frontmatter is a superset of the OpenCode agent schema. The filename is the agent's identity (`reviewer.md` -> agent `reviewer`):
 
 ```markdown
 ---
@@ -155,54 +140,51 @@ You are the reviewer agent...
 Field handling per harness:
 
 - `description` and the prompt body pass through everywhere.
-- `tools` uses OpenCode's lowercase tool ids mapped to booleans. For Claude Code, disabled tools become `disallowedTools` (`write: false` -> `disallowedTools: Write`); ids without a Claude equivalent are dropped.
-- `model` accepts a provider-qualified id (`anthropic/claude-sonnet-4-6`) which passes through to OpenCode and is stripped to the bare id for Claude Code (non-Anthropic providers are dropped), or a Claude alias (`sonnet`, `haiku`) which is Claude-only and dropped for OpenCode.
+- `tools` uses OpenCode's lowercase tool ids mapped to booleans. For Claude Code, disabled tools become `disallowedTools` (`write: false` -> `disallowedTools: Write`); ids with no Claude equivalent are dropped.
+- `model` accepts a provider-qualified id (`anthropic/claude-sonnet-4-6`, passed through to OpenCode and stripped to the bare id for Claude — non-Anthropic providers dropped) or a Claude alias (`sonnet`, `haiku`, Claude-only and dropped for OpenCode).
 - `mode`, `temperature`, and other OpenCode-only fields are dropped for Claude Code.
-- `claude:` / `opencode:` blocks merge verbatim into that harness's output frontmatter, for anything the unified fields don't cover.
-- `disable: true` passes through to OpenCode and skips emitting the agent for Claude Code.
+- `claude:` / `opencode:` blocks merge verbatim into that harness's output frontmatter.
+- `disable: true` passes through to OpenCode and skips the agent for Claude Code.
 
-Unified agents live in harness-neutral `.swarmforge/agents/` directories — one definition serves every harness, so the layers are deliberately not harness-specific. Lowest to highest precedence:
+Unified agents live in harness-neutral `.swarmforge/agents/` directories across the same four layers as shared assets (lowest to highest precedence):
 
-- user: `~/.swarmforge/agents/` (override with `SWARMFORGE_USER_ASSETS_DIR`, which points at the `.swarmforge` root; `agents/` is appended)
-- org: `$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge/agents/` (override with `SWARMFORGE_ORG_ASSETS_DIR`, same root convention)
-- repo: `agents/` in the Swarmforge checkout (override with `SWARMFORGE_REPO_AGENTS_DIR`, which unlike the other two points directly at an agents directory so the rest of the checkout is never mounted)
-- workspace: `<workspace>/.swarmforge/agents/`
+- **user** — `~/.swarmforge/agents/` (override the `.swarmforge` root with `SWARMFORGE_USER_ASSETS_DIR`)
+- **org** — `$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge/agents/` (override with `SWARMFORGE_ORG_ASSETS_DIR`)
+- **repo** — `agents/` in the checkout (override with `SWARMFORGE_REPO_AGENTS_DIR`, which points directly at an agents dir so the rest of the checkout is never mounted)
+- **workspace** — `<workspace>/.swarmforge/agents/`
 
-The asset layers are mounted read-only at `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the env vars `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` point at the layer roots), and the entrypoint translates the stacked sources — identical for every harness — into the harness's native location: `~/.config/opencode/agents/` for OpenCode, `~/.claude/agents/` (a container-private tmpfs scoped to the current repo) for Claude Code. Later layers override earlier ones by filename.
-
-Native `agents/` directories are never carried by this asset pipeline. For OpenCode they still pass through the layered config merge (the merged config dir is OpenCode's own discovery); for Claude they are excluded from the merge entirely, and Claude-native definitions belong in Claude's own discovery (`<workspace>/.claude/agents/`, or `<workspace>/.opencode/agents/` for OpenCode), which each harness reads directly. (Skills and commands use the `.agents/{skills,commands}` convention at the user, org, and workspace layers — those formats are portable across harnesses, while agents are Swarmforge-specific and translated.)
+Layers mount read-only under `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the in-container `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` env vars point at the layer roots); the entrypoint translates the stacked sources into each harness's native location (`~/.config/opencode/agents/` for OpenCode, the container-private `~/.claude/agents/` for Claude). Later layers override earlier ones by filename.
+Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude directly, outside this pipeline.
 
 Run the translator's tests with `python3 scripts/test_translate_agents.py`.
 
 ## Commands
 
-Slash commands are stored under `commands/` (and optionally `.opencode/command/` for repo-local commands).
-To run one, start your prompt with the command name (for example `/commit` will inject [`commands/commit.md`](commands/commit.md)).
+Slash commands live under `commands/` (and optionally `.opencode/command/` for repo-local commands).
+Start your prompt with the command name to inject it (for example `/commit` injects [`commands/commit.md`](commands/commit.md)).
 
-Command prompt files often include `!` shell-expansion blocks, for example:
+Command files can include `!` shell-expansion blocks, for example:
 
 ```
 !`git status --short`
 ```
 
-OpenCode runs these shell commands and injects their output into the prompt context, so the agent sees the live repo state without you copy/pasting it.
+The harness runs these and injects their output into the prompt context, so the agent sees live repo state without copy/pasting.
 
 ## Skills
 
-Skills are stored under `skills/` (harness-neutral, shared by every harness).
+Skills live under `skills/` (harness-neutral, shared by every harness).
+OpenCode auto-discovers them using only the YAML frontmatter (`name` + `description`); the full `SKILL.md` body loads on demand when a skill is invoked, keeping the default context small.
 
-When you run OpenCode via `make run_opencode`, config is layered from three sources (lowest to highest precedence):
-- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.config/opencode` for `run_opencode`)
-- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode` when `SWARMFORGE_ORG_CONFIG_ROOT` is set)
-- `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/` for `run_opencode`)
+`make run_opencode` merges config into `/home/opencode/.config/opencode` from three sources (lowest to highest precedence):
+- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.config/opencode`)
+- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode` when that root is set)
+- `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/`)
 
-At container startup these layers are merged into `/home/opencode/.config/opencode`, so Swarmforge-layer files can override org files, and org files can override personal defaults.
-Skills and commands are excluded from that merge and travel through the same asset pipeline Claude Code uses: the user and org `.agents/{skills,commands}` layers, then the shared `skills/` and `commands/`, then any `<workspace>/.agents/{skills,commands}` overlay.
-Each skill package is replaced wholesale by the highest-precedence layer that provides it (never file-merged across layers), which keeps the shared skills exposed by default while still allowing personal and org-specific overlays.
+`opencode.json` is merged by key (not file overwrite), so org-level MCP servers survive even when the repo layer also defines `opencode.json`.
+Skills and commands are excluded from this merge and travel through the asset pipeline described under [Claude Code](#claude-code).
 
-For `opencode.json`, layers are merged by key (not plain file overwrite), which lets org-level MCP servers in `.opencode/opencode.json` remain available even when the Swarmforge repo layer also defines `opencode.json`.
-
-You can also define MCP servers directly in a project-local `.opencode/opencode.json` file. Example:
+You can also define MCP servers in a project-local `.opencode/opencode.json` — often the cleanest place to attach them to a specific repo:
 
 ```json
 {
@@ -217,46 +199,38 @@ You can also define MCP servers directly in a project-local `.opencode/opencode.
 }
 ```
 
-That is often the cleanest place for OpenCode MCP definitions when you want them attached to a specific repo.
+`make run_opencode` mounts your host `~/.gitconfig` into the container if it exists, so agents inherit your `user.name` and `user.email`.
+Point at an alternative with `GITCONFIG_FILE=/path/to/gitconfig`.
 
-OpenCode auto-discovers skills from that directory and uses only the YAML frontmatter (`name` + `description`) for discovery.
-The full `SKILL.md` body is loaded on-demand when a skill is invoked, which helps keep the default context small.
-
-When `make run_opencode` starts the container, it now mounts your host `~/.gitconfig` into `/home/opencode/.gitconfig` if the file exists so agents inherit your configured `user.name` and `user.email`.
-Point to an alternative identity file with `GITCONFIG_FILE=/path/to/gitconfig make run_opencode`.
-
-Note: `opencode/opencode.json` also supports an `instructions` array for global instruction files.
-Those files are loaded in full, so avoid listing full `SKILL.md` files there unless you explicitly want them always in context.
+Note: `opencode/opencode.json` also supports an `instructions` array for global instruction files, which load in full — avoid listing full `SKILL.md` files there unless you want them always in context.
 
 ## Tongs (sidecar processes)
 
 A **tong** is a Swarmforge-managed sidecar container started alongside the anvil (the harness container you work in).
-The name captures the primary use case: a tool that holds something hot — usually credentials — so the agent never touches it directly.
+The name captures the primary use case: holding something hot — usually credentials — so the agent never touches it directly.
 A credential-holding tong runs as a sibling container exposing an **MCP server** the agent calls over the session network; the secret material lives only in the tong's process space.
-Tongs can also be plain network services (a throwaway Postgres, a fixture server), volume providers (a build-cache populator), or background side-effect processes.
+Tongs can also be plain network services (a throwaway Postgres, a fixture server), volume providers, or background side-effect processes.
 
-Tongs are defined as YAML files and discovered across the **same four layers** as agents.
-The host-side launcher (`scripts/run_anvil.py`) discovers, approves, starts, and tears them down; `make run_opencode` / `make run_claude` already delegate to it, so no new commands are needed.
+Tongs are YAML files discovered across the **same four layers** as agents.
+The host-side launcher (`scripts/run_anvil.py`) discovers, approves, starts, and tears them down; `make run_opencode` / `make run_claude` already delegate to it.
 
 ### Quick start: run a tong
 
-1. (Only if the tong needs secrets) create the secret-provider table (see [Secret providers](#secret-providers) below).
-2. Drop a tong definition into one of the layer directories, e.g. a personal one at `~/.swarmforge/tongs/<name>.yaml`, or a project one at `<workspace>/.swarmforge/tongs/<name>.yaml`.
-3. Run the anvil as usual (`oc`, or `make run_claude PROJECT_DIR=$(pwd)`).
-   - A **workspace**-sourced tong prints a privilege summary and asks you to approve it on first run (see [First-run approval](#first-run-approval)).
-   - The launcher resolves any secrets (which may prompt your provider CLI to unlock), starts the tong, waits for it to become ready, injects reachability into the anvil, then runs the anvil in the foreground.
+1. (Only if the tong needs secrets) configure the secret-provider table (see [Secret providers](#secret-providers)).
+2. Drop a tong definition into a layer directory, e.g. `~/.swarmforge/tongs/<name>.yaml` (personal) or `<workspace>/.swarmforge/tongs/<name>.yaml` (project).
+3. Run the anvil as usual (`oc`, or `make run_claude PROJECT_DIR=$(pwd)`). A **workspace**-sourced tong prints a privilege summary and asks for approval on first run (see [First-run approval](#first-run-approval)). The launcher resolves secrets (which may prompt your provider CLI to unlock), starts the tong, waits for readiness, injects reachability into the anvil, then runs the anvil in the foreground.
 4. On exit (including Ctrl-C), `session` tongs and the per-session network are torn down; `shared` tongs are left running.
 
 ### Where definitions live
 
-One YAML file per tong under `.swarmforge/tongs/`, merged **by name** (filename = tong identity) lowest to highest precedence:
+One YAML file per tong under `.swarmforge/tongs/`, merged **by name** (filename = identity) lowest to highest precedence:
 
-- **user** — `~/.swarmforge/tongs/` (override the root with `SWARMFORGE_USER_ASSETS_DIR`; `tongs/` is appended)
-- **org** — `$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge/tongs/` (override the root with `SWARMFORGE_ORG_ASSETS_DIR`)
-- **repo** — `tongs/` in the Swarmforge checkout (override with `SWARMFORGE_REPO_TONGS_DIR`, which points directly at the directory so the rest of the checkout is never read)
+- **user** — `~/.swarmforge/tongs/` (override the root with `SWARMFORGE_USER_ASSETS_DIR`)
+- **org** — `$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge/tongs/` (override with `SWARMFORGE_ORG_ASSETS_DIR`)
+- **repo** — `tongs/` in the checkout (override with `SWARMFORGE_REPO_TONGS_DIR`, which points directly at the directory)
 - **workspace** — `<workspace>/.swarmforge/tongs/`
 
-A higher layer replaces a same-named tong wholesale (never a file-merge). `disable: true` switches off an inherited tong.
+A higher layer replaces a same-named tong wholesale; `disable: true` switches off an inherited tong.
 The user/org/repo layers are **trusted**; the workspace layer (any repo you happened to clone) is gated by first-run approval.
 
 ### Definition format
@@ -290,13 +264,13 @@ Required fields: `lifecycle`, `image`, and `interface` (with a valid `kind`). Un
 
 The `interface:` block drives what gets injected into the anvil, how readiness is checked, and what plumbing is wired up:
 
-- **`mcp`** — an HTTP MCP server (the common case). Requires `port` and `name`; `transport` defaults to `http`. Injection: per-harness MCP config pointing at `http://<name>:<port>/mcp` on the session network (`interface.path` overrides the `/mcp` suffix). Readiness: TCP probe by default.
-- **`port`** — a non-MCP network service. Requires `port`; optional `protocol` is informational. Injection: `SWARMFORGE_TONG_<NAME>_HOST` (the canonical alias) and `SWARMFORGE_TONG_<NAME>_PORT` into the anvil's environment — the anvil composes its own connection string. Readiness: TCP probe by default.
-- **`volume`** — a shared named volume, no network. Requires `volume` and `mountpoint`; readiness must be declared (no port to probe). The schema accepts it, but **the launcher does not wire it up yet** and refuses to start such a tong with a clear message — there is no consumer for the shared volume yet.
+- **`mcp`** — an HTTP MCP server (the common case). Requires `port` and `name`; `transport` defaults to `http`. Injects per-harness MCP config pointing at `http://<name>:<port>/mcp` on the session network (`interface.path` overrides the `/mcp` suffix). TCP readiness probe by default.
+- **`port`** — a non-MCP network service. Requires `port`; optional `protocol` is informational. Injects `SWARMFORGE_TONG_<NAME>_HOST` (the canonical alias) and `SWARMFORGE_TONG_<NAME>_PORT` so the anvil composes its own connection string. TCP readiness probe by default.
+- **`volume`** — a shared named volume, no network. Requires `volume` and `mountpoint`; readiness must be declared. The schema accepts it, but **the launcher does not wire it up yet** and refuses to start such a tong with a clear message.
 - **`none`** — a background side-effect with no anvil-facing surface. Injects nothing. Readiness must be declared.
 
-`<NAME>` in the env vars is the tong's filename uppercased with hyphens turned into underscores (`github-creds` → `SWARMFORGE_TONG_GITHUB_CREDS_*`).
-The MCP server name and the `port` alias are stable across worktrees (they are docker network aliases, not container names), so generated config is identical regardless of where the workspace is mounted.
+`<NAME>` is the filename uppercased with hyphens turned into underscores (`github-creds` → `SWARMFORGE_TONG_GITHUB_CREDS_*`).
+The MCP server name and the `port` alias are docker network aliases (not container names), so generated config is identical regardless of where the workspace is mounted.
 
 #### Readiness
 
@@ -307,7 +281,7 @@ readiness:
   timeout: 30s                # 30s / 500ms / 2m, or a bare number of seconds (default 30s)
 ```
 
-`tcp` is the implicit default for `mcp` and `port`. `volume` and `none` have no port to probe, so `mode` is **required** for them — the launcher refuses to silently fire-and-forget a portless tong. Use `mode: none` to deliberately skip the gate.
+`tcp` is the implicit default for `mcp` and `port`. `volume` and `none` have no port to probe, so `mode` is **required** for them; use `mode: none` to deliberately skip the gate.
 
 #### Mounts
 
@@ -318,8 +292,8 @@ Mounts are opt-in **magic words**, never raw host paths. Only two are recognized
 
 ### Lifecycle
 
-- **`session`** — started with the anvil, torn down when the anvil exits. Per-session isolation; the default for credential tongs.
-- **`shared`** — long-lived, survives across anvil sessions (ollama-style). Started on first use and connected to each session's network via a network alias; left running on teardown (no refcounting). A running `shared` container whose config-hash docker label still matches the current definition is reused untouched; a missing, stopped, or stale one is recreated automatically. A rotated secret behind an unchanged reference does **not** churn it — to force a restart (e.g. to pick up a rotated secret) remove the container yourself with `docker rm -f <container>`. A `shared` tong may not mount the `workspace` (it would leak one session's workspace into the next); use a `session` tong for per-workspace mounts.
+- **`session`** — started with the anvil, torn down when it exits. Per-session isolation; the default for credential tongs.
+- **`shared`** — long-lived, survives across anvil sessions (ollama-style). Started on first use, connected to each session's network via a network alias, and left running on teardown (no refcounting). A running `shared` container whose config-hash docker label still matches the current definition is reused untouched; a missing, stopped, or stale one is recreated automatically. A rotated secret behind an unchanged reference does **not** churn it — force a restart with `docker rm -f <container>`. A `shared` tong may not mount the `workspace` (it would leak one session's workspace into the next); use a `session` tong for per-workspace mounts.
 
 ### Secret providers
 
@@ -342,7 +316,7 @@ A missing file means no providers are configured, so any secret reference fails 
 Reference a secret from a tong's `env:` as `${secret:<provider>:<ref>}`, for example `${secret:op:op://Work/github/token}`.
 Because the launcher runs in your terminal before the anvil starts, interactive unlocks (`op signin`, biometric prompts) work for free.
 
-**Delivery is leak-resistant by design.** A resolved secret is never passed as a docker `-e` value, a command-line argument, or a file on disk (anything holding the docker socket could read those back). Instead the launcher streams the secret env to the tong over a host FIFO and wraps the tong's entrypoint with a `/bin/sh` prologue that reads the FIFO, exports the values, then execs the image's real entrypoint — so an unmodified off-the-shelf server that reads its credentials from `process.env` works as-is. A tong with secret env therefore needs a `/bin/sh` in its image; a tong without secrets runs its image entrypoint unchanged. Plain (non-secret) `env:` values still flow through `-e`.
+**Delivery is leak-resistant by design.** A resolved secret is never passed as a docker `-e` value, a command-line argument, or a file on disk (anything holding the docker socket could read those back). Instead the launcher streams the secret env to the tong over a host FIFO and wraps the tong's entrypoint with a `/bin/sh` prologue that reads the FIFO, exports the values, then execs the image's real entrypoint — so an unmodified off-the-shelf server that reads its credentials from `process.env` works as-is. A tong with secret env therefore needs `/bin/sh` in its image; a tong without secrets runs its image entrypoint unchanged. Plain (non-secret) `env:` values still flow through `-e`.
 
 ### First-run approval
 
@@ -351,22 +325,19 @@ A **workspace**-sourced tong (from a repo you cloned) could otherwise request yo
 
 - Before starting, it prints exactly what the tong requests — image, secret references, mounts, networks, and docker-socket access — and asks you to approve.
 - Approval is keyed by workspace path + tong name + a hash of the merged definition, stored in `~/.swarmforge/approvals.json`. Any change to the definition re-prompts.
-- The gate defaults to **No** and a non-interactive stdin reads as No. A scripted `--no-prompt` run **fails closed** rather than auto-approving.
+- The gate defaults to **No**, and a non-interactive stdin reads as No. A scripted `--no-prompt` run **fails closed** rather than auto-approving.
 - Approving `image: foo:latest` approves a moving target; **pinned digests are the recommended convention** for workspace tongs.
 
 ## Skill Tests
 
-This repo includes a lightweight skill test harness.
-It runs scenario prompts against a chosen model and verifies expected behavior.
+A lightweight skill test harness runs scenario prompts against a chosen model and verifies expected behavior.
 
 - Run all skill tests: `make test MODEL=<provider/model>`
 - Run a single skill's tests: `make test MODEL=<provider/model> TEST_SKILL=<skill-name>`
 - Optional judge mode: `make test MODEL=<student> TEST_ENABLE_JUDGE=1 EVAL_MODEL=<judge>`
 - Timeout override: `make test MODEL=<provider/model> TEST_TIMEOUT_S=<seconds>`
 
-Tests live in `skills/<skill-name>/tests/*.json`.
-The runner is `scripts/test_skills.py`.
-
+Tests live in `skills/<skill-name>/tests/*.json`; the runner is `scripts/test_skills.py`.
 Assertions can be:
 
 - Output patterns: `expect.must_match` and `expect.must_not_match` (regex against formatted output)
