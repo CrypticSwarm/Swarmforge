@@ -1,8 +1,10 @@
 // HTTP entrypoint for the broker. Loads the baked command config, then serves a
 // stateless Streamable-HTTP MCP endpoint at /mcp (a fresh server per request, as
-// the SDK's stateless example does) plus a /healthz probe for the tong readiness
-// check. The config path, port, and workspace host path all come from the
-// environment so the same image serves any baked or mounted configuration.
+// the SDK's stateless example does) plus a /healthz liveness endpoint (the
+// example tong gates readiness with a TCP probe; /healthz is available for a
+// `healthcheck`-mode readiness if one is configured). The config path, port, and
+// workspace host path all come from the environment so the same image serves any
+// baked or mounted configuration.
 
 import express, { type Request, type Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";

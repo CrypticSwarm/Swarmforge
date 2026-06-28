@@ -55,8 +55,19 @@ Safety rules enforced at load time (the server refuses to start otherwise):
 - A worker may only mount `workspace[:<target>][:<mode>]` — never the docker
   socket and never a raw host path.
 - Parameters are limited to `boolean` (apply a fixed `append_command`/`env`
-  effect) and `enum` (a value drawn from a fixed `values` set). Values reach the
-  worker as whole argv words; the worker is spawned without a shell.
+  effect) and `enum` (insert a value drawn from a fixed `values` set via
+  `append_value`/`env_var`). Values reach the worker as whole argv words; the
+  worker is spawned without a shell.
+
+Notes:
+
+- There is deliberately **no free-form `string` parameter** in v1: an
+  unconstrained value is exactly the injection surface the broker exists to
+  avoid. Enumerate the values you want to allow with an `enum` param instead.
+- The `workspace:<target>` mount form (a custom mountpoint) is **broker-config
+  only** — it describes where a *worker* sees the workspace. A Swarmforge tong
+  definition's own `mounts:` accepts only `workspace[:mode]` and always mounts at
+  `/workspace`.
 
 ## Develop
 
