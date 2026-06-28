@@ -1,0 +1,24 @@
+# Example tong definition for the reference docker-task broker.
+#
+# This file is deliberately NOT auto-discovered. Tong discovery only reads
+# top-level *.yaml in a layer's tongs/ directory, and this lives a level down, so
+# shipping it in the checkout does not hand every repo a docker-socket broker.
+#
+# To enable the broker:
+#   1. make build_broker                       # build the swarmforge-docker-broker image
+#   2. cp tongs/docker-broker/docker-broker.tong.yaml ~/.swarmforge/tongs/docker-broker.yaml
+#
+# Because it holds the docker socket, a workspace-sourced copy of this definition
+# is always called out in the first-run approval prompt before it can start.
+description: Spawns narrow docker-task workers on demand so the anvil never holds the docker socket itself.
+lifecycle: session
+image: swarmforge-docker-broker:latest
+interface:
+  kind: mcp
+  transport: http
+  port: 8080
+  name: docker-broker
+mounts:
+  - docker-socket
+readiness:
+  mode: tcp
