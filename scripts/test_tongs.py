@@ -1022,6 +1022,43 @@ class DockerArgvTests(unittest.TestCase):
         argv = tongs.tong_run_argv("g", def_of(NONE_TONG), container_name="c", network="n", alias="g")
         self.assertNotIn("swarmforge.tong.config-hash=", " ".join(argv))
 
+    def test_run_argv_injects_workspace_host_path_for_socket_tong(self):
+        # A broker (socket-holding) tong is handed the workspace's host path so it
+        # can bind-mount the workspace into the workers it spawns.
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["docker-socket"]
+        argv = tongs.tong_run_argv(
+            "broker", defn, container_name="c", network="n", alias="broker",
+            workspace="/host/ws",
+        )
+        self.assertIn("SWARMFORGE_WORKSPACE_HOST_PATH=/host/ws", argv)
+
+    def test_run_argv_omits_workspace_host_path_for_non_socket_tong(self):
+        # Ordinary tongs never see the host path, so the env they get is unchanged.
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["workspace:ro"]
+        argv = tongs.tong_run_argv(
+            "w", defn, container_name="c", network="n", alias="w", workspace="/host/ws",
+        )
+        self.assertNotIn("SWARMFORGE_WORKSPACE_HOST_PATH", " ".join(argv))
+
+    def test_run_argv_omits_workspace_host_path_when_workspace_unknown(self):
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["docker-socket"]
+        argv = tongs.tong_run_argv("broker", defn, container_name="c", network="n", alias="broker")
+        self.assertNotIn("SWARMFORGE_WORKSPACE_HOST_PATH", " ".join(argv))
+
+    def test_run_argv_explicit_workspace_host_path_wins(self):
+        # A tong that sets the name itself keeps its own value (setdefault).
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["docker-socket"]
+        argv = tongs.tong_run_argv(
+            "broker", defn, container_name="c", network="n", alias="broker",
+            env={"SWARMFORGE_WORKSPACE_HOST_PATH": "/explicit"}, workspace="/host/ws",
+        )
+        self.assertIn("SWARMFORGE_WORKSPACE_HOST_PATH=/explicit", argv)
+        self.assertNotIn("SWARMFORGE_WORKSPACE_HOST_PATH=/host/ws", argv)
+
     def test_anvil_option_value_reads_name_and_network(self):
         self.assertEqual(tongs.anvil_option_value(ANVIL_ARGV, "--name"), "claude-proj")
         self.assertEqual(tongs.anvil_option_value(ANVIL_ARGV, "--network"), "opencode-net")
