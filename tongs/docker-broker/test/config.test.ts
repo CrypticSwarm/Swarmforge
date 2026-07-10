@@ -87,6 +87,20 @@ test("a boolean param with no effect is refused", () => {
   assert.throws(() => parseConfig(doc), /has no effect/);
 });
 
+test("a boolean param that omits when_true is refused", () => {
+  const doc = base({
+    commands: [
+      {
+        name: "x",
+        description: "d",
+        image: "toolchain@sha256:abc",
+        params: [{ name: "flag", type: "boolean" }],
+      },
+    ],
+  });
+  assert.throws(() => parseConfig(doc), /when_true is required/);
+});
+
 test("an enum param needs exactly one target", () => {
   const both = base({
     commands: [

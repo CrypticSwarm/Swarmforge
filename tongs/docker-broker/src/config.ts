@@ -165,7 +165,6 @@ function validateResources(value: unknown, where: string): Resources {
 }
 
 function validateEffect(value: unknown, where: string): Effect {
-  if (value === undefined) return { appendCommand: [], env: {} };
   if (!isPlainObject(value)) throw new ConfigError(`${where} must be a mapping`);
   const effect: Effect = {
     appendCommand: asStringArray(value.append_command, `${where}.append_command`),
@@ -189,6 +188,10 @@ function validateParam(value: unknown, where: string): Param {
   if (type === "boolean") {
     const dflt = value.default === undefined ? false : value.default;
     if (typeof dflt !== "boolean") throw new ConfigError(`${where}.default must be a boolean`);
+    // An omitted when_true would advertise a parameter that does nothing when set.
+    if (value.when_true === undefined) {
+      throw new ConfigError(`${where}.when_true is required (a boolean param must declare its effect)`);
+    }
     return {
       name,
       type: "boolean",

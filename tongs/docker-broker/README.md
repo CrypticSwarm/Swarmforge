@@ -55,8 +55,9 @@ Safety rules enforced at load time (the server refuses to start otherwise):
 - A worker may only mount `workspace[:<target>][:<mode>]` — never the docker
   socket and never a raw host path.
 - Parameters are limited to `boolean` (apply a fixed `append_command`/`env`
-  effect) and `enum` (insert a value drawn from a fixed `values` set via
-  `append_value`/`env_var`). Values reach the worker as whole argv words; the
+  effect — a boolean param must declare a non-empty `when_true`, so it can never
+  be a silent no-op) and `enum` (insert a value drawn from a fixed `values` set
+  via `append_value`/`env_var`). Values reach the worker as whole argv words; the
   worker is spawned without a shell.
 
 Notes:
