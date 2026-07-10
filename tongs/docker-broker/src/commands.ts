@@ -19,6 +19,8 @@ export type RunResult = {
 
 export type Spawn = (command: string, args: string[]) => Promise<RunResult>;
 
+export const MAX_WORKER_OUTPUT_BYTES = 1024 * 1024;
+
 // Resolve a validated `workspace[:<target>][:<mode>]` spec to a docker `-v` value
 // against the host workspace path.
 export function resolveWorkspaceMount(spec: string, workspaceHost: string): string {
@@ -110,17 +112,39 @@ export function buildWorkerArgv(
 const realSpawn: Spawn = (command, args) =>
   new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const appendBounded = (chunks: Buffer[], currentBytes: number, chunk: Buffer | string): number => {
+      if (currentBytes >= MAX_WORKER_OUTPUT_BYTES) return currentBytes;
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const remaining = MAX_WORKER_OUTPUT_BYTES - currentBytes;
+      const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer;
+      chunks.push(next);
+      return currentBytes + next.length;
+    };
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      stdoutBytes = appendBounded(stdoutChunks, stdoutBytes, chunk);
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      stderrBytes = appendBounded(stderrChunks, stderrBytes, chunk);
     });
     child.on("error", reject);
-    child.on("close", (code) => resolve({ exitCode: code ?? 0, stdout, stderr }));
+    child.on("close", (code) =>
+      resolve({
+        exitCode: code ?? 0,
+        stdout: Buffer.concat(stdoutChunks, stdoutBytes).toString(),
+        stderr: Buffer.concat(stderrChunks, stderrBytes).toString(),
+      }),
+    );
   });
+
+function capOutput(value: string): string {
+  const bytes = Buffer.byteLength(value);
+  if (bytes <= MAX_WORKER_OUTPUT_BYTES) return value;
+  return Buffer.from(value).subarray(0, MAX_WORKER_OUTPUT_BYTES).toString();
+}
 
 // Run one worker to completion, capturing its output. The container is `--rm`, so
 // nothing is left behind once it exits.
@@ -131,7 +155,11 @@ export function runWorker(
   doSpawn: Spawn = realSpawn,
 ): Promise<RunResult> {
   const argv = buildWorkerArgv(command, inputs, workspaceHost);
-  return doSpawn("docker", argv);
+  return doSpawn("docker", argv).then((result) => ({
+    ...result,
+    stdout: capOutput(result.stdout),
+    stderr: capOutput(result.stderr),
+  }));
 }
 
 export function formatResult(label: string, result: RunResult): string {

@@ -1,7 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseConfig, type CommandDef } from "../src/config.js";
-import { buildWorkerArgv, applyParams, resolveWorkspaceMount, BrokerError } from "../src/commands.js";
+import {
+  buildWorkerArgv,
+  applyParams,
+  resolveWorkspaceMount,
+  BrokerError,
+  runWorker,
+  MAX_WORKER_OUTPUT_BYTES,
+} from "../src/commands.js";
 
 function commandFrom(command: Record<string, unknown>): CommandDef {
   const cfg = parseConfig({
@@ -153,4 +160,16 @@ test("resources and networks render as docker flags", () => {
   assert.ok(argv.includes("--network") && argv[argv.indexOf("--network") + 1] === "build-net");
   assert.ok(argv.includes("--memory") && argv[argv.indexOf("--memory") + 1] === "512m");
   assert.ok(argv.includes("--gpus") && argv[argv.indexOf("--gpus") + 1] === "all");
+});
+
+test("worker output capture is capped", async () => {
+  const cmd = commandFrom({ name: "x", description: "d", command: ["go"] });
+  const result = await runWorker(cmd, {}, undefined, async () => ({
+    exitCode: 0,
+    stdout: "x".repeat(MAX_WORKER_OUTPUT_BYTES + 1),
+    stderr: "y".repeat(MAX_WORKER_OUTPUT_BYTES + 1),
+  }));
+
+  assert.equal(result.stdout.length, MAX_WORKER_OUTPUT_BYTES);
+  assert.equal(result.stderr.length, MAX_WORKER_OUTPUT_BYTES);
 });
