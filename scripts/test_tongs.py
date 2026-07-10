@@ -1059,6 +1059,18 @@ class DockerArgvTests(unittest.TestCase):
         self.assertIn("SWARMFORGE_WORKSPACE_HOST_PATH=/explicit", argv)
         self.assertNotIn("SWARMFORGE_WORKSPACE_HOST_PATH=/host/ws", argv)
 
+    def test_run_argv_omits_workspace_host_path_for_shared_socket_tong(self):
+        # A `shared` broker is reused across sessions, so it must not receive a
+        # per-session workspace path.
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["docker-socket"]
+        defn["lifecycle"] = "shared"
+        argv = tongs.tong_run_argv(
+            "broker", defn, container_name="c", network="n", alias="broker",
+            workspace="/host/ws",
+        )
+        self.assertNotIn("SWARMFORGE_WORKSPACE_HOST_PATH", " ".join(argv))
+
     def test_anvil_option_value_reads_name_and_network(self):
         self.assertEqual(tongs.anvil_option_value(ANVIL_ARGV, "--name"), "claude-proj")
         self.assertEqual(tongs.anvil_option_value(ANVIL_ARGV, "--network"), "opencode-net")

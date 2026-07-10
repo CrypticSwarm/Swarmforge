@@ -1213,9 +1213,11 @@ def tong_run_argv(
     launch can detect a stale `shared` container. `env` (the tong's plain,
     non-secret values from `plan_tong_secrets`) is passed as `-e` in sorted order;
     resolved secret values never appear here -- they arrive over the FIFO instead.
-    A socket-holding (broker) tong additionally receives
+    A socket-holding (broker) `session` tong additionally receives
     `SWARMFORGE_WORKSPACE_HOST_PATH` so it can bind-mount the session workspace into
-    the workers it spawns; a tong that sets that name itself keeps its own value.
+    the workers it spawns; a tong that sets that name itself keeps its own value. A
+    `shared` socket tong does not get it -- its container is reused across sessions,
+    so a per-session workspace path would be stale (and a leak) for later ones.
 
     When the tong has secret env, the launcher passes `fifo_host_path` (bind-mounted
     read-only as the secret channel), `entrypoint` (`/bin/sh`), and `command` (the
@@ -1237,7 +1239,9 @@ def tong_run_argv(
     if fifo_host_path:
         argv += ["-v", "%s:%s:ro" % (fifo_host_path, SECRET_FIFO_TARGET)]
     effective_env = dict(env or {})
-    if workspace and _has_socket_mount(defn):
+    # A `shared` container is reused across sessions, so a per-session workspace
+    # path baked into it would be stale for later ones; only `session` tongs get it.
+    if workspace and _has_socket_mount(defn) and defn.get("lifecycle") == "session":
         effective_env.setdefault(WORKSPACE_HOST_ENV, workspace)
     for key in sorted(effective_env):
         argv += ["-e", "%s=%s" % (key, effective_env[key])]
