@@ -216,6 +216,15 @@ class ValidationTests(unittest.TestCase):
     def test_known_mounts_accepted(self):
         self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:ro", "docker-socket"])), [])
 
+    def test_rw_mount_mode_accepted(self):
+        self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:rw"])), [])
+
+    def test_target_path_mount_rejected(self):
+        # `workspace:/target` is broker-config only; as a tong mount the launcher
+        # would forward it as a bogus docker mode.
+        errors = tongs.validate_tong("t", self._base(mounts=["workspace:/work:ro"]))
+        self.assertTrue(any("invalid mode" in e for e in errors))
+
     def test_non_string_network_rejected(self):
         errors = tongs.validate_tong("t", self._base(networks=[{"name": "x"}]))
         self.assertTrue(any("network" in e for e in errors))

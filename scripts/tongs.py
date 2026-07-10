@@ -304,9 +304,19 @@ def validate_tong(name, defn):
         for mount in mounts:
             if not isinstance(mount, str):
                 err("mount entries must be strings, got %r" % (mount,))
-            elif mount.split(":", 1)[0] not in (WORKSPACE_MOUNT, SOCKET_MOUNT):
+                continue
+            word, sep, mode = mount.partition(":")
+            if word not in (WORKSPACE_MOUNT, SOCKET_MOUNT):
                 err("unknown mount %r (expected '%s' or '%s')"
                     % (mount, WORKSPACE_MOUNT, SOCKET_MOUNT))
+                continue
+            # `tong_mount_specs` forwards everything after the first colon verbatim
+            # as the docker mount mode; the `workspace:/target` form is broker-config
+            # only, not valid in a tong definition.
+            if sep and mode not in ("ro", "rw"):
+                err("mount %r has an invalid mode %r (expected 'ro' or 'rw'; the "
+                    "'workspace:/target' form is broker-config only, not a tong mount)"
+                    % (mount, mode))
 
     networks = defn.get("networks")
     if isinstance(networks, list):
