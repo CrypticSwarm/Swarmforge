@@ -66,6 +66,13 @@ test("a mount access mode must come last", () => {
   assert.throws(() => parseConfig(doc), /must be the final field/);
 });
 
+test("a workspace mount may only specify one target path", () => {
+  const doc = base({
+    commands: [{ name: "x", description: "d", image: "toolchain@sha256:abc", mounts: ["workspace:/code:/other"] }],
+  });
+  assert.throws(() => parseConfig(doc), /multiple target paths/);
+});
+
 test("a boolean param with no effect is refused", () => {
   const doc = base({
     commands: [

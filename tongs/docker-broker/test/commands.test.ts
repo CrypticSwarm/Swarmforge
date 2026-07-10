@@ -35,6 +35,16 @@ test("a boolean param appends tokens and env only when true", () => {
   assert.deepEqual(applyParams(cmd, {}), { append: [], env: {} });
 });
 
+test("a boolean param rejects non-booleans if schema validation is bypassed", () => {
+  const cmd = commandFrom({
+    name: "x",
+    description: "d",
+    command: ["start"],
+    params: [{ name: "local", type: "boolean", when_true: { append_command: ["--local"] } }],
+  });
+  assert.throws(() => applyParams(cmd, { local: "false" }), BrokerError);
+});
+
 test("a boolean default applies when the arg is absent", () => {
   const cmd = commandFrom({
     name: "x",

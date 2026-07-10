@@ -130,6 +130,7 @@ function validateMount(raw: unknown, where: string): string {
   if (parts.length > 3) {
     throw new ConfigError(`${where}: '${spec}' has too many ':'-separated fields`);
   }
+  let seenTarget = false;
   for (let i = 1; i < parts.length; i++) {
     const field = parts[i];
     const looksLikePath = field.startsWith("/");
@@ -140,6 +141,12 @@ function validateMount(raw: unknown, where: string): string {
     // A mode may only appear last.
     if (looksLikeMode && i !== parts.length - 1) {
       throw new ConfigError(`${where}: access mode '${field}' must be the final field`);
+    }
+    if (looksLikePath) {
+      if (seenTarget) {
+        throw new ConfigError(`${where}: '${spec}' has multiple target paths`);
+      }
+      seenTarget = true;
     }
   }
   return spec;

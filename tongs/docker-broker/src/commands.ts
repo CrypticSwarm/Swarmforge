@@ -44,7 +44,10 @@ export function applyParams(
   const env: Record<string, string> = {};
   for (const param of command.params) {
     if (param.type === "boolean") {
-      const value = param.name in inputs ? Boolean(inputs[param.name]) : param.default;
+      const value = param.name in inputs ? inputs[param.name] : param.default;
+      if (typeof value !== "boolean") {
+        throw new BrokerError(`parameter '${param.name}' must be a boolean`);
+      }
       if (value) {
         append.push(...param.whenTrue.appendCommand);
         Object.assign(env, param.whenTrue.env);
