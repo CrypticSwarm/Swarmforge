@@ -6,7 +6,8 @@
   "description": "A Swarmforge broker tong: exposes a configured set of narrow docker-task verbs as an HTTP MCP server.",
   "scripts": {
     "build": "tsc",
-    "test": "tsc && node --test \"dist/test/**/*.test.js\"",
+    "test": "tsc && node --test \"dist/test/*.test.js\"",
+    "test:e2e": "tsc && node --test \"dist/test/e2e/*.test.js\"",
     "start": "node dist/src/index.js"
   },
   "dependencies": {

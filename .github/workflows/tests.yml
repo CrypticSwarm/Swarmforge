@@ -34,3 +34,21 @@ jobs:
       - name: Run broker unit tests
         run: npm test
         working-directory: tongs/docker-broker
+
+  docker-broker-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: tongs/docker-broker/package-lock.json
+      - name: Install broker deps
+        run: npm ci
+        working-directory: tongs/docker-broker
+      - name: Pre-pull worker image
+        run: docker pull alpine:3.20
+      - name: Run broker end-to-end tests
+        run: npm run test:e2e
+        working-directory: tongs/docker-broker
