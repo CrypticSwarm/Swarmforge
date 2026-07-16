@@ -397,21 +397,124 @@ def substitute_secrets(value, resolver):
 #       pass: ["pass", "show", "{ref}"]
 #
 # Each value is an argv template; the literal token "{ref}" in any element is
-# replaced with the reference. Loading the table and building the argv are pure
-# and live here; the subprocess that actually runs the CLI is the caller's (see
-# run_anvil.make_secret_resolver), keeping this module side-effect free.
+# replaced with the reference.
+#
+# A provider value may instead be a *structured* entry, so a shared (org-layer)
+# tong can reference `${secret:<provider>:<ref>}` while each developer's personal
+# table decides how each individual secret is fetched -- one dev's `pass`, another
+# dev's `1Password`, all under the same reference:
+#
+#     providers:
+#       shared:
+#         default: ["pass", "show", "{ref}"]        # fallback for unlisted refs
+#         overrides:
+#           ci-token: ["doppler", "secrets", "get", "CI_TOKEN", "--plain"]
+#
+# Resolving `${secret:shared:<ref>}` uses the argv in `overrides` for that ref,
+# falling back to `default`; a ref with neither raises `UnmappedSecretError`.
+# `default` and `overrides` live in separate namespaces on purpose: a secret
+# literally named "default" is just `overrides.default`, distinct from the
+# fallback, and any other key at the provider level is a typo caught at load.
+#
+# Loading the table and building the argv are pure and live here; the subprocess
+# that actually runs the CLI is the caller's (see run_anvil.make_secret_resolver),
+# keeping this module side-effect free.
 
 SECRET_REF_TOKEN = "{ref}"
+
+# The two keys a structured provider entry may hold. `default` is the argv used
+# for any ref `overrides` does not name, so a table can override a couple of
+# secrets without re-declaring the command for all the rest. Kept as a frozenset
+# so an unrecognized key (a typo) fails loudly at load rather than being ignored.
+PROVIDER_DEFAULT_KEY = "default"
+PROVIDER_OVERRIDES_KEY = "overrides"
+PROVIDER_ENTRY_KEYS = frozenset({PROVIDER_DEFAULT_KEY, PROVIDER_OVERRIDES_KEY})
+
+
+class UnmappedSecretError(Exception):
+    """A structured provider entry declares no command for this ref.
+
+    Distinct from the `KeyError` raised for an unknown provider so the caller can
+    report the two misconfigurations differently. Carries `provider`/`ref` (never
+    a resolved value) for a clean, leak-free launch error.
+    """
+
+    def __init__(self, provider, ref):
+        self.provider = provider
+        self.ref = ref
+        super().__init__(
+            "no command mapped for secret %r under provider %r" % (ref, provider)
+        )
+
+
+def _coerce_provider_command(label, template):
+    """Validate one argv template, returning a fresh copy.
+
+    `label` names the offending entry in error messages (e.g. `provider 'op'` or
+    `provider 'shared' override 'ci-token'`). Raises `ValueError` for anything
+    that is not a non-empty list of strings, so a typo surfaces at load time.
+    """
+    if not isinstance(template, list) or not template:
+        raise ValueError(
+            "secret-providers: %s must be a non-empty command list" % label
+        )
+    if not all(isinstance(part, str) for part in template):
+        raise ValueError(
+            "secret-providers: %s command must be a list of strings" % label
+        )
+    return list(template)
+
+
+def _load_provider_entry(name, entry):
+    """Validate one structured provider entry into `{default, overrides}`.
+
+    `entry` is the mapping under a provider name. Recognizes only `default` (an
+    argv template) and `overrides` (a `{ref: argv}` map); any other key, a
+    non-mapping `overrides`, or an entry declaring neither raises `ValueError` so
+    misconfiguration surfaces at load. Returns a normalized dict with a `default`
+    of `None` when absent and an `overrides` map (possibly empty).
+    """
+    unknown = set(entry) - PROVIDER_ENTRY_KEYS
+    if unknown:
+        raise ValueError(
+            "secret-providers: provider %r has unknown key(s) %s; only %s are "
+            "allowed" % (
+                name,
+                ", ".join(repr(k) for k in sorted(unknown)),
+                " and ".join(repr(k) for k in sorted(PROVIDER_ENTRY_KEYS)),
+            )
+        )
+    default = entry.get(PROVIDER_DEFAULT_KEY)
+    if default is not None:
+        default = _coerce_provider_command("provider %r default" % name, default)
+    raw_overrides = entry.get(PROVIDER_OVERRIDES_KEY)
+    if raw_overrides is not None and not isinstance(raw_overrides, dict):
+        raise ValueError(
+            "secret-providers: provider %r 'overrides' must be a mapping" % name
+        )
+    overrides = {
+        ref: _coerce_provider_command("provider %r override %r" % (name, ref), template)
+        for ref, template in (raw_overrides or {}).items()
+    }
+    if default is None and not overrides:
+        raise ValueError(
+            "secret-providers: provider %r must declare 'default' and/or "
+            "'overrides'" % name
+        )
+    return {PROVIDER_DEFAULT_KEY: default, PROVIDER_OVERRIDES_KEY: overrides}
 
 
 def load_secret_providers(path):
     """Load the user-layer secret-provider table.
 
-    Returns `{provider: [argv template, ...]}`. A missing file (or one without a
-    `providers:` block) yields `{}` -- no providers configured, so resolving any
-    secret reference later fails loudly rather than silently. Raises `ValueError`
-    if the file is present but malformed, so a typo surfaces at load time instead
-    of dropping a provider.
+    Returns `{provider: entry}` where each `entry` is either a single argv
+    template (`[str, ...]`, one command for every ref) or a structured mapping
+    (`{"default": argv_or_None, "overrides": {ref: argv}}`) that resolves each ref
+    through its own command. A missing file (or one without a `providers:` block)
+    yields `{}` -- no providers configured, so resolving any secret reference
+    later fails loudly rather than silently. Raises `ValueError` if the file is
+    present but malformed, so a typo surfaces at load time instead of dropping a
+    provider.
 
     Command templates must be single-line flow lists; the dependency-free YAML
     subset parser does not join a list wrapped across lines.
@@ -425,16 +528,11 @@ def load_secret_providers(path):
     if not isinstance(providers, dict):
         raise ValueError("secret-providers: 'providers' must be a mapping")
     out = {}
-    for name, template in providers.items():
-        if not isinstance(template, list) or not template:
-            raise ValueError(
-                "secret-providers: provider %r must be a non-empty command list" % name
-            )
-        if not all(isinstance(part, str) for part in template):
-            raise ValueError(
-                "secret-providers: provider %r command must be a list of strings" % name
-            )
-        out[name] = list(template)
+    for name, entry in providers.items():
+        if isinstance(entry, dict):
+            out[name] = _load_provider_entry(name, entry)
+        else:
+            out[name] = _coerce_provider_command("provider %r" % name, entry)
     return out
 
 
@@ -442,10 +540,21 @@ def secret_provider_command(providers, provider, ref):
     """Concrete argv that resolves `ref` through `provider`.
 
     Substitutes the literal `{ref}` token in every element of the provider's argv
-    template. Raises `KeyError` if the provider is not declared (the caller turns
-    this into a clean launch error naming the missing provider).
+    template. A structured provider resolves `ref` through its `overrides` map,
+    falling back to `default`. Raises `KeyError` if the provider is not declared,
+    and `UnmappedSecretError` if a structured provider covers neither `ref` nor
+    `default` (the caller turns each into a clean launch error).
     """
-    return [part.replace(SECRET_REF_TOKEN, ref) for part in providers[provider]]
+    entry = providers[provider]
+    if isinstance(entry, dict):
+        template = entry[PROVIDER_OVERRIDES_KEY].get(ref)
+        if template is None:
+            template = entry[PROVIDER_DEFAULT_KEY]
+        if template is None:
+            raise UnmappedSecretError(provider, ref)
+    else:
+        template = entry
+    return [part.replace(SECRET_REF_TOKEN, ref) for part in template]
 
 
 # --- Secret delivery ----------------------------------------------------------

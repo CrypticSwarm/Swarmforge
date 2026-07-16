@@ -416,6 +416,23 @@ class SecretResolverTests(unittest.TestCase):
         with self.assertRaises(run_anvil.SecretResolutionError):
             resolve("vault", "x")
 
+    def test_per_secret_mapping_resolves_matching_ref(self):
+        resolve = run_anvil.make_secret_resolver(
+            {"shared": {"tok": self._writes("sys.argv[1]")}}
+        )
+        self.assertEqual(resolve("shared", "tok"), "tok")
+
+    def test_unmapped_ref_without_default_raises(self):
+        # A per-secret mapping that names neither the ref nor `default` stops the
+        # launch with a clear message rather than shelling out to a wrong command.
+        resolve = run_anvil.make_secret_resolver(
+            {"shared": {"tok": ["op", "read", "{ref}"]}}
+        )
+        with self.assertRaises(run_anvil.SecretResolutionError) as ctx:
+            resolve("shared", "other")
+        self.assertIn("shared", str(ctx.exception))
+        self.assertIn("other", str(ctx.exception))
+
     def test_nonzero_exit_raises(self):
         resolve = run_anvil.make_secret_resolver(
             {"boom": [sys.executable, "-c", "import sys; sys.exit(3)"]}

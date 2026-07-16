@@ -316,6 +316,18 @@ A missing file means no providers are configured, so any secret reference fails 
 Reference a secret from a tong's `env:` as `${secret:<provider>:<ref>}`, for example `${secret:op:op://Work/github/token}`.
 Because the launcher runs in your terminal before the anvil starts, interactive unlocks (`op signin`, biometric prompts) work for free.
 
+**Per-secret overrides.** A provider value may instead be a mapping of `ref → argv`, so a *shared* tong (say in the org layer) can reference `${secret:<provider>:<ref>}` while each developer's personal table decides how each individual secret is fetched. One developer resolves a ref through `pass`, another through `1Password`, without touching the shared tong:
+
+```yaml
+# ~/.swarmforge/secret-providers.yaml
+providers:
+  shared:
+    default:  ["pass", "show", "{ref}"]        # used for any ref not named below
+    ci-token: ["doppler", "secrets", "get", "CI_TOKEN", "--plain"]
+```
+
+Resolving `${secret:shared:<ref>}` uses the argv mapped to `<ref>`, falling back to the reserved `default` key. A ref with neither an explicit entry nor a `default` stops the launch with a clear message. `{ref}` substitution still applies to whichever command is chosen.
+
 **Delivery is leak-resistant by design.** A resolved secret is never passed as a docker `-e` value, a command-line argument, or a file on disk (anything holding the docker socket could read those back). Instead the launcher streams the secret env to the tong over a host FIFO and wraps the tong's entrypoint with a `/bin/sh` prologue that reads the FIFO, exports the values, then execs the image's real entrypoint — so an unmodified off-the-shelf server that reads its credentials from `process.env` works as-is. A tong with secret env therefore needs `/bin/sh` in its image; a tong without secrets runs its image entrypoint unchanged. Plain (non-secret) `env:` values still flow through `-e`.
 
 ### First-run approval
