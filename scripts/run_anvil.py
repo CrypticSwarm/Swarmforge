@@ -389,6 +389,12 @@ def make_secret_resolver(providers):
                 "no secret provider %r is configured; declare it in "
                 "secret-providers.yaml" % provider
             )
+        except tongs.UnmappedSecretError:
+            raise SecretResolutionError(
+                "secret provider %r maps no command for %r; add it (or a "
+                "'default') under that provider in secret-providers.yaml"
+                % (provider, ref)
+            )
         try:
             completed = subprocess.run(command, stdout=subprocess.PIPE, check=False)
         except OSError as exc:

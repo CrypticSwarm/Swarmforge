@@ -379,6 +379,120 @@ class SecretProviderTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             tongs.secret_provider_command({"op": ["op"]}, "vault", "x")
 
+    def test_loads_structured_provider_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "secret-providers.yaml")
+            with open(path, "w") as f:
+                f.write(
+                    "providers:\n"
+                    "  op: [\"op\", \"read\", \"{ref}\"]\n"
+                    "  shared:\n"
+                    "    default: [\"pass\", \"show\", \"{ref}\"]\n"
+                    "    overrides:\n"
+                    "      ci-token: [\"doppler\", \"secrets\", \"get\", \"CI\", \"--plain\"]\n"
+                )
+            self.assertEqual(
+                tongs.load_secret_providers(path),
+                {
+                    "op": ["op", "read", "{ref}"],
+                    "shared": {
+                        "default": ["pass", "show", "{ref}"],
+                        "overrides": {
+                            "ci-token": ["doppler", "secrets", "get", "CI", "--plain"],
+                        },
+                    },
+                },
+            )
+
+    def test_loads_overrides_only_entry(self):
+        # `default` is optional: overrides alone is valid, with a `None` default.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.yaml")
+            with open(path, "w") as f:
+                f.write(
+                    "providers:\n"
+                    "  shared:\n"
+                    "    overrides:\n"
+                    "      tok: [\"op\", \"read\", \"{ref}\"]\n"
+                )
+            self.assertEqual(
+                tongs.load_secret_providers(path),
+                {"shared": {"default": None, "overrides": {"tok": ["op", "read", "{ref}"]}}},
+            )
+
+    def test_unknown_provider_key_raises(self):
+        # A typo at the provider level (not `default`/`overrides`) fails loudly.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.yaml")
+            with open(path, "w") as f:
+                f.write('providers:\n  shared:\n    ci-token: ["op", "read", "{ref}"]\n')
+            with self.assertRaises(ValueError):
+                tongs.load_secret_providers(path)
+
+    def test_entry_without_default_or_overrides_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.yaml")
+            with open(path, "w") as f:
+                f.write("providers:\n  shared: {}\n")
+            with self.assertRaises(ValueError):
+                tongs.load_secret_providers(path)
+
+    def test_non_mapping_overrides_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.yaml")
+            with open(path, "w") as f:
+                f.write("providers:\n  shared:\n    overrides: nope\n")
+            with self.assertRaises(ValueError):
+                tongs.load_secret_providers(path)
+
+    def test_non_list_override_command_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "p.yaml")
+            with open(path, "w") as f:
+                f.write('providers:\n  shared:\n    overrides:\n      ci: "doppler get CI"\n')
+            with self.assertRaises(ValueError):
+                tongs.load_secret_providers(path)
+
+    def test_command_resolves_override_ref(self):
+        providers = {
+            "shared": {
+                "default": ["pass", "show", "{ref}"],
+                "overrides": {"ci-token": ["doppler", "secrets", "get", "CI", "--plain"]},
+            }
+        }
+        self.assertEqual(
+            tongs.secret_provider_command(providers, "shared", "ci-token"),
+            ["doppler", "secrets", "get", "CI", "--plain"],
+        )
+
+    def test_command_falls_back_to_default(self):
+        providers = {"shared": {"default": ["pass", "show", "{ref}"], "overrides": {}}}
+        self.assertEqual(
+            tongs.secret_provider_command(providers, "shared", "github/token"),
+            ["pass", "show", "github/token"],
+        )
+
+    def test_secret_named_default_is_distinct_from_fallback(self):
+        # A secret literally named "default" lives under overrides and is served
+        # by its own command, never conflated with the sibling `default` fallback.
+        providers = {
+            "shared": {
+                "default": ["pass", "show", "{ref}"],
+                "overrides": {"default": ["op", "read", "{ref}"]},
+            }
+        }
+        self.assertEqual(
+            tongs.secret_provider_command(providers, "shared", "default"),
+            ["op", "read", "default"],
+        )
+
+    def test_command_unmapped_ref_without_default_raises(self):
+        providers = {"shared": {"default": None, "overrides": {"ci-token": ["doppler", "get", "CI"]}}}
+        with self.assertRaises(tongs.UnmappedSecretError) as caught:
+            tongs.secret_provider_command(providers, "shared", "github/token")
+        self.assertEqual(caught.exception.provider, "shared")
+        self.assertEqual(caught.exception.ref, "github/token")
+
 
 class SecretDeliveryTests(unittest.TestCase):
     def test_partition_splits_plain_from_secret_bearing_env(self):
