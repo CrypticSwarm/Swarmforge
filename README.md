@@ -254,8 +254,8 @@ resources:
   memory: 512m                # string or number
 networks:                     # optional extra pre-existing networks to also join
   - some-existing-net
-# entrypoint: [...]           # optional argv override (needed only for secret-env tongs
-# command: [...]              #   whose image entrypoint/command can't be read via inspect)
+# entrypoint: [...]           # optional argv override of the image ENTRYPOINT
+# command: [...]              # optional argv override of the image CMD
 ```
 
 Required fields: `lifecycle`, `image`, and `interface` (with a valid `kind`). Unknown keys are tolerated for forward compatibility.
