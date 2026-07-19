@@ -275,8 +275,8 @@ def validate_tong(name, defn):
             if not ENV_NAME_RE.match(secret_name):
                 err("invalid secret env name %r (must be a valid identifier)" % secret_name)
 
-    # `entrypoint`/`command` override what the secret-injection wrapper execs, so
-    # they must be argv lists of strings if present.
+    # `entrypoint`/`command` override the image's entrypoint/command (and what the
+    # secret-injection wrapper execs), so they must be argv lists of strings.
     for argvish in ("entrypoint", "command"):
         value = defn.get(argvish)
         if value is not None and not (
@@ -678,6 +678,24 @@ def resolve_exec_target(defn, image_entrypoint, image_cmd):
             "exec; set 'command' in the tong definition" % defn.get("image")
         )
     return target
+
+
+def declared_run_override(defn):
+    """`(--entrypoint token, trailing args)` for a tong's declared overrides.
+
+    Applied on the non-secret launch path, where there is no `/bin/sh` wrapper to
+    restore the image defaults, so a tong's `entrypoint:`/`command:` must be turned
+    into ordinary `docker run` overrides. A declared `command:` overrides the image
+    `CMD` (it trails the image). A declared `entrypoint:` overrides the image
+    `ENTRYPOINT`; docker's `--entrypoint` takes a single token, so any extra
+    entrypoint tokens lead the trailing args. Returns `(None, [])` when the tong
+    declares neither, leaving the image's own entrypoint and command untouched.
+    """
+    entrypoint = defn.get("entrypoint") or []
+    command = defn.get("command") or []
+    if entrypoint:
+        return entrypoint[0], list(entrypoint[1:]) + list(command)
+    return None, list(command)
 
 
 # --- Environment-variable naming ----------------------------------------------
@@ -1302,7 +1320,7 @@ def tong_run_argv(
     socket_path=DEFAULT_DOCKER_SOCKET,
     fifo_host_path=None,
     entrypoint=None,
-    command=(),
+    command=None,
 ):
     """Full `docker run -d` argv that starts one tong container.
 
@@ -1318,10 +1336,15 @@ def tong_run_argv(
     When the tong has secret env, the launcher passes `fifo_host_path` (bind-mounted
     read-only as the secret channel), `entrypoint` (`/bin/sh`), and `command` (the
     wrapper that reads the FIFO and execs the image's real argv) -- see
-    `secret_inject_argv`. With no secrets all three are omitted and the image's own
-    entrypoint runs unchanged. `mounts:` magic words and `resources:` are appended,
-    then the image, then any `command` tokens.
+    `secret_inject_argv`. With no secrets all three are omitted; the tong's declared
+    `entrypoint:`/`command:` are then applied as ordinary docker overrides (via
+    `declared_run_override`) so a secret-free tong still honors them, falling back
+    to the image's own entrypoint/command when it declares neither. `mounts:` magic
+    words and `resources:` are appended, then the image, then the trailing argv.
     """
+    if entrypoint is None and command is None:
+        entrypoint, command = declared_run_override(defn)
+    command = list(command or [])
     argv = ["docker", "run", "-d", "--name", container_name]
     if network:
         argv += ["--network", network]

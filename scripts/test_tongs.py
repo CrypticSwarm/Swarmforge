@@ -1132,6 +1132,44 @@ class DockerArgvTests(unittest.TestCase):
         self.assertNotIn("secret-env", " ".join(argv))
         self.assertEqual(argv[-1], def_of(NONE_TONG)["image"])  # nothing after image
 
+    def test_run_argv_without_secrets_applies_declared_command(self):
+        # A secret-free tong's command: still overrides the image CMD (regression:
+        # it used to be honored only on the secret-injection path).
+        defn = def_of(PORT_TONG)
+        defn["command"] = ["redis-server", "--port", "5002"]
+        argv = tongs.tong_run_argv(
+            "r", defn, container_name="c", network="n", alias="r",
+        )
+        image = defn["image"]
+        self.assertEqual(argv[argv.index(image) + 1 :], ["redis-server", "--port", "5002"])
+        self.assertNotIn("--entrypoint", argv)  # command: alone keeps the image entrypoint
+
+    def test_run_argv_without_secrets_applies_declared_entrypoint(self):
+        defn = def_of(NONE_TONG)
+        defn["entrypoint"] = ["/bin/tini", "--"]
+        defn["command"] = ["serve"]
+        argv = tongs.tong_run_argv(
+            "w", defn, container_name="c", network="n", alias="w",
+        )
+        self.assertEqual(argv[argv.index("--entrypoint") + 1], "/bin/tini")
+        image = defn["image"]
+        self.assertEqual(argv[argv.index(image) + 1 :], ["--", "serve"])
+
+    def test_declared_run_override_command_only(self):
+        self.assertEqual(
+            tongs.declared_run_override({"command": ["redis-server", "--port", "5002"]}),
+            (None, ["redis-server", "--port", "5002"]),
+        )
+
+    def test_declared_run_override_entrypoint_leads_trailing_args(self):
+        self.assertEqual(
+            tongs.declared_run_override({"entrypoint": ["/bin/tini", "--"], "command": ["serve"]}),
+            ("/bin/tini", ["--", "serve"]),
+        )
+
+    def test_declared_run_override_none_leaves_image_defaults(self):
+        self.assertEqual(tongs.declared_run_override({}), (None, []))
+
     def test_run_argv_does_not_emit_empty_hash_label(self):
         argv = tongs.tong_run_argv("g", def_of(NONE_TONG), container_name="c", network="n", alias="g")
         self.assertNotIn("swarmforge.tong.config-hash=", " ".join(argv))
