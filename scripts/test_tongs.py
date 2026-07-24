@@ -989,7 +989,7 @@ class SessionNetworkTests(unittest.TestCase):
         # The anvil also joins the pre-existing base network (the NETWORK= hatch).
         self.assertEqual(plan["extra_networks"], ["opencode-net"])
         # Aliased by the MCP server name, not the tong's own name.
-        self.assertEqual(plan["session_aliases"], [("github-creds", "github")])
+        self.assertEqual(plan["session_aliases"], [("github-creds", ["github"])])
 
     def test_shared_tong_connected_per_session_when_network_exists(self):
         # A session tong forces a per-session network; the shared tong is then
@@ -999,8 +999,8 @@ class SessionNetworkTests(unittest.TestCase):
             "ollama": {"source": tongs.REPO, "definition": def_of(SHARED_PORT_TONG)},
         }
         plan = tongs.plan_network(merged, "opencode-net", "wt")
-        self.assertEqual(plan["session_aliases"], [("github-creds", "github")])
-        self.assertEqual(plan["shared_connect"], [("ollama", "ollama")])
+        self.assertEqual(plan["session_aliases"], [("github-creds", ["github"])])
+        self.assertEqual(plan["shared_connect"], [("ollama", ["ollama"])])
 
     def test_portless_session_tongs_get_no_alias(self):
         # volume/none tongs have no listener; they still trigger a per-session
@@ -1013,7 +1013,7 @@ class SessionNetworkTests(unittest.TestCase):
         plan = tongs.plan_network(merged, "opencode-net", "wt")
         self.assertEqual(plan["create"], "swarmforge-session-wt")
         # Only the network-facing port tong is aliased.
-        self.assertEqual(plan["session_aliases"], [("pg", "pg")])
+        self.assertEqual(plan["session_aliases"], [("pg", ["pg"])])
 
     def test_empty_base_network_yields_no_extras(self):
         merged = {"pg": {"source": tongs.REPO, "definition": def_of(PORT_TONG)}}
@@ -1031,9 +1031,34 @@ class SessionNetworkTests(unittest.TestCase):
             "github": {"source": tongs.REPO, "definition": def_of(SHARED_PORT_TONG)},
         }
         plan = tongs.plan_network(merged, "opencode-net", "wt")
-        self.assertEqual(plan["session_aliases"], [("a-creds", "github")])
+        self.assertEqual(plan["session_aliases"], [("a-creds", ["github"])])
         # The shared tong loses the alias and is not connected.
         self.assertEqual(plan["shared_connect"], [])
+
+    def test_plan_carries_every_declared_alias(self):
+        defn = def_of(GITHUB_TONG)
+        defn["interface"]["aliases"] = ["api", "local.example.test"]
+        merged = {"github-creds": {"source": tongs.REPO, "definition": defn}}
+        plan = tongs.plan_network(merged, "opencode-net", "wt")
+        self.assertEqual(
+            plan["session_aliases"],
+            [("github-creds", ["github", "api", "local.example.test"])],
+        )
+
+    def test_contested_alias_drops_only_that_name(self):
+        # Dedup is per alias: the loser keeps the names nobody else claimed
+        # rather than dropping off the network entirely.
+        first = def_of(GITHUB_TONG)
+        first["interface"]["aliases"] = ["api"]
+        second = def_of(SHARED_PORT_TONG)
+        second["interface"]["aliases"] = ["api", "console"]
+        merged = {
+            "a-creds": {"source": tongs.REPO, "definition": first},
+            "ollama": {"source": tongs.REPO, "definition": second},
+        }
+        plan = tongs.plan_network(merged, "opencode-net", "wt")
+        self.assertEqual(plan["session_aliases"], [("a-creds", ["github", "api"])])
+        self.assertEqual(plan["shared_connect"], [("ollama", ["ollama", "console"])])
 
 
 ANVIL_ARGV = [
@@ -1157,6 +1182,33 @@ class DockerArgvTests(unittest.TestCase):
         self.assertIn("PGDATA=/data", argv)
         # image is last
         self.assertEqual(argv[-1], "postgres:16")
+
+    def test_run_argv_emits_one_flag_per_declared_alias(self):
+        defn = def_of(PORT_TONG)
+        defn["interface"]["aliases"] = ["api", "local.example.test"]
+        argv = tongs.tong_run_argv(
+            "pg", defn, container_name="ctr-pg", network="net", alias="pg",
+        )
+        flagged = [argv[i + 1] for i, part in enumerate(argv) if part == "--network-alias"]
+        # Canonical first, then the declared extras, in declaration order.
+        self.assertEqual(flagged, ["pg", "api", "local.example.test"])
+
+    def test_run_argv_alias_flags_unchanged_without_extras(self):
+        # The inert case: a definition that declares no extras produces exactly
+        # the single alias flag it produced before extras existed.
+        argv = tongs.tong_run_argv(
+            "pg", def_of(PORT_TONG), container_name="ctr-pg", network="net", alias="pg",
+        )
+        self.assertEqual(argv.count("--network-alias"), 1)
+
+    def test_run_argv_does_not_repeat_an_extra_matching_the_canonical(self):
+        defn = def_of(PORT_TONG)
+        defn["interface"]["aliases"] = ["pg", "api"]
+        argv = tongs.tong_run_argv(
+            "pg", defn, container_name="ctr-pg", network="net", alias="pg",
+        )
+        flagged = [argv[i + 1] for i, part in enumerate(argv) if part == "--network-alias"]
+        self.assertEqual(flagged, ["pg", "api"])
 
     def test_run_argv_non_network_facing_omits_alias(self):
         argv = tongs.tong_run_argv(
@@ -1391,6 +1443,29 @@ class AliasCollisionTests(unittest.TestCase):
             creds={"interface": {"kind": "mcp", "name": "github", "port": 1}},
         )
         self.assertEqual(tongs.alias_collisions(merged), {"github": ["creds", "github"]})
+
+    def test_detects_collision_between_two_extra_aliases(self):
+        # A contested name is a collision wherever it is declared, so extras are
+        # folded in alongside canonical aliases.
+        merged = self._m(
+            a={"interface": {"kind": "port", "port": 1, "aliases": ["api"]}},
+            b={"interface": {"kind": "port", "port": 2, "aliases": ["api"]}},
+        )
+        self.assertEqual(tongs.alias_collisions(merged), {"api": ["a", "b"]})
+
+    def test_detects_extra_alias_colliding_with_a_canonical_alias(self):
+        merged = self._m(
+            api={"interface": {"kind": "port", "port": 1}},
+            b={"interface": {"kind": "port", "port": 2, "aliases": ["api"]}},
+        )
+        self.assertEqual(tongs.alias_collisions(merged), {"api": ["api", "b"]})
+
+    def test_distinct_extra_aliases_do_not_collide(self):
+        merged = self._m(
+            a={"interface": {"kind": "port", "port": 1, "aliases": ["api", "console"]}},
+            b={"interface": {"kind": "port", "port": 2, "aliases": ["docs"]}},
+        )
+        self.assertEqual(tongs.alias_collisions(merged), {})
 
     def test_non_network_facing_tongs_do_not_claim_aliases(self):
         merged = self._m(

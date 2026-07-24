@@ -875,23 +875,22 @@ def anvil_mounts(name, defn):
 
 
 def alias_collisions(merged):
-    """Tong names grouped by canonical alias, for aliases claimed by >1 tong.
+    """Tong names grouped by DNS alias, for aliases claimed by >1 tong.
 
     Returns `{alias: [tong names]}` for the aliases more than one tong resolves
     to (empty when every alias is unique). Two tongs on one network cannot share
     a DNS alias without nondeterministic resolution, so the live launcher refuses
     such a set; the planning functions that build per-anvil config instead keep
-    the first and warn. Only network-facing tongs (mcp/port) claim a
-    `--network-alias`, so volume/none tongs are skipped -- they never register a
-    DNS name and so cannot collide.
+    the first and warn. Every name a tong registers is folded in -- canonical and
+    declared extras alike -- so a shared *extra* alias is caught too. Only
+    network-facing tongs (mcp/port) claim a `--network-alias`, so volume/none
+    tongs contribute nothing: they never register a DNS name and so cannot collide.
     """
     by_alias = {}
     for name in sorted(merged):
         defn = merged[name]["definition"]
-        if not _is_network_facing(defn):
-            continue
-        alias = canonical_alias(name, defn)
-        by_alias.setdefault(alias, []).append(name)
+        for alias in tong_aliases(name, defn):
+            by_alias.setdefault(alias, []).append(name)
     return {alias: names for alias, names in by_alias.items() if len(names) > 1}
 
 
@@ -1027,13 +1026,12 @@ def plan_network(merged, base_network, session_id):
                              joins (the `NETWORK=` escape hatch): `base_network`
                              when a per-session network is created, else none --
                              reusing `base_network` already joins it as primary.
-      * `session_aliases` -- `[(tong_name, alias)]` for each network-facing
+      * `session_aliases` -- `[(tong_name, [alias, ...])]` for each network-facing
                              `session` tong, attached to the per-session network
-                             under its canonical alias.
-      * `shared_connect`  -- `[(tong_name, alias)]` for each network-facing
+                             under its canonical alias and any declared extras.
+      * `shared_connect`  -- `[(tong_name, [alias, ...])]` for each network-facing
                              `shared` tong, connected to the per-session network
-                             under its canonical alias and disconnected on
-                             teardown.
+                             under those aliases and disconnected on teardown.
 
     A per-session network is created **only when `session` tongs exist**. With
     none, the anvil keeps using `base_network` and `shared` tongs (if any) stay
@@ -1056,28 +1054,33 @@ def plan_network(merged, base_network, session_id):
 
     net = session_network_name(session_id)
     # All network-facing tongs share the one per-session network, so two tongs
-    # resolving to the same canonical alias would collide there -- DNS would
-    # resolve nondeterministically. Keep the first by sorted tong name and drop
-    # the rest with a warning, mirroring the MCP-config and env-var collision
-    # guards. One pass over both lifecycles keeps the winner deterministic
-    # regardless of whether the loser is a `session` or `shared` tong.
+    # claiming the same alias would collide there -- DNS would resolve
+    # nondeterministically. Keep the first claim by sorted tong name and drop the
+    # rest with a warning, mirroring the MCP-config and env-var collision guards.
+    # Dedup is per alias, not per tong, so a tong that loses one contested name
+    # still registers under the rest. One pass over both lifecycles keeps the
+    # winner deterministic regardless of whether the loser is `session` or `shared`.
     session_aliases = []
     shared_connect = []
     seen = {}
     for name in sorted(merged):
         defn = merged[name]["definition"]
         lifecycle = defn.get("lifecycle")
-        if lifecycle not in LIFECYCLES or not _is_network_facing(defn):
+        if lifecycle not in LIFECYCLES:
             continue
-        alias = canonical_alias(name, defn)
-        if alias in seen:
-            warn(
-                "tong '%s' reuses network alias '%s' (already used by '%s'); "
-                "ignoring the duplicate" % (name, alias, seen[alias])
-            )
+        aliases = []
+        for alias in tong_aliases(name, defn):
+            if alias in seen:
+                warn(
+                    "tong '%s' reuses network alias '%s' (already used by '%s'); "
+                    "ignoring the duplicate" % (name, alias, seen[alias])
+                )
+                continue
+            seen[alias] = name
+            aliases.append(alias)
+        if not aliases:
             continue
-        seen[alias] = name
-        (session_aliases if lifecycle == "session" else shared_connect).append((name, alias))
+        (session_aliases if lifecycle == "session" else shared_connect).append((name, aliases))
     return {
         "network": net,
         "create": net,
@@ -1403,10 +1406,11 @@ def tong_run_argv(
 
     Assumes a validated definition. The container is detached (the launcher
     manages its lifecycle explicitly rather than tying it to the launcher's tty),
-    named `container_name`, joined to `network` under `alias` as a
-    `--network-alias` (only for network-facing tongs -- `volume`/`none` tongs need
-    no DNS name), and stamped with the tong-name and config-hash labels so a later
-    launch can detect a stale `shared` container. `env` (the tong's plain,
+    named `container_name`, joined to `network` under `alias` -- plus any extra
+    `interface.aliases` the definition declares -- as `--network-alias` flags (only
+    for network-facing tongs; `volume`/`none` tongs need no DNS name), and stamped
+    with the tong-name and config-hash labels so a later launch can detect a stale
+    `shared` container. `env` (the tong's plain,
     non-secret values from `plan_tong_secrets`) is passed as `-e` in sorted order;
     resolved secret values never appear here -- they arrive over the FIFO instead.
     A socket-holding (broker) `session` tong additionally receives
@@ -1431,7 +1435,8 @@ def tong_run_argv(
     if network:
         argv += ["--network", network]
     if alias and _is_network_facing(defn):
-        argv += ["--network-alias", alias]
+        for dns_name in _ordered_aliases(alias, defn):
+            argv += ["--network-alias", dns_name]
     if entrypoint:
         argv += ["--entrypoint", entrypoint]
     argv += ["--label", "%s=%s" % (LABEL_TONG_NAME, name)]
