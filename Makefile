@@ -12,6 +12,8 @@ OPENCODE_CTR ?= opencode-$(PROJECT_NAME)
 CLAUDE_IMG  ?= claude-code:local
 CLAUDE_CTR  ?= claude-$(PROJECT_NAME)
 
+BROKER_IMG  ?= swarmforge-docker-broker:latest
+
 PROFILE      ?=
 DATA_DIR     ?= $(HOME)/.local/share/opencode
 OPENCODE_ARGS ?=
@@ -59,8 +61,11 @@ SWARMFORGE_USER_ASSETS_DIR ?= $(HOME)/.swarmforge
 SWARMFORGE_ORG_ASSETS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge,)
 SWARMFORGE_REPO_AGENTS_DIR ?= $(SWARMFORGE_DIR)/agents
 # Repo-layer tong definitions, pointed at directly (like SWARMFORGE_REPO_AGENTS_DIR)
-# so the rest of the checkout is never read. This repo ships no tongs/ dir, so the
-# wildcard guard below leaves the layer absent until one is added.
+# so the rest of the checkout is never read. The tongs/ dir ships only the
+# reference broker's source under a subdirectory, not a top-level *.yaml, so
+# discovery (which reads top-level *.yaml only) finds nothing here until a
+# definition is added; the wildcard guard below still skips the layer entirely if
+# the dir is ever absent.
 SWARMFORGE_REPO_TONGS_DIR ?= $(SWARMFORGE_DIR)/tongs
 
 # Portable skills/commands overlay layers. These follow the harness-neutral
@@ -138,7 +143,7 @@ CLAUDE_RUN_MOUNTS = \
 	--tmpfs /home/opencode/.claude/agents \
 	$(SWARMFORGE_LAYER_MOUNTS)
 
-.PHONY: opencode_network build_opencode update_opencode build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
+.PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test
 
 define run_agent_container
@@ -243,6 +248,11 @@ build_opencode:
 # Rebuild only from the OpenCode install step onward.
 update_opencode:
 	$(MAKE) build_opencode OPENCODE_INSTALL_BUST=$(shell date +%s)
+
+# Build the reference docker-task broker image. It is not used until a broker tong
+# definition is enabled in a layer (see tongs/docker-broker/docker-broker.tong.yaml).
+build_broker:
+	docker build -t $(BROKER_IMG) "$(SWARMFORGE_DIR)/tongs/docker-broker"
 
 build_claude:
 	docker build \

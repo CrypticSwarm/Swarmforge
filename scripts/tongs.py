@@ -73,6 +73,14 @@ ENV_PREFIX = "SWARMFORGE_TONG"
 # and the broker agree on one spelling.
 SOCKET_MOUNT = "docker-socket"
 
+# A broker tong holds the docker socket and spawns its own worker containers. A
+# container cannot re-share the bind mounts it received, so a broker that wants
+# to mount the session workspace into a worker needs the workspace's *host* path
+# (the path the daemon understands), not the in-container mount point. The
+# launcher injects it here for socket-holding tongs; non-broker tongs never see
+# it, so the passthrough behavior for ordinary tongs is unchanged.
+WORKSPACE_HOST_ENV = "SWARMFORGE_WORKSPACE_HOST_PATH"
+
 
 def warn(message):
     print("tongs: %s" % message, file=sys.stderr)
@@ -296,9 +304,19 @@ def validate_tong(name, defn):
         for mount in mounts:
             if not isinstance(mount, str):
                 err("mount entries must be strings, got %r" % (mount,))
-            elif mount.split(":", 1)[0] not in (WORKSPACE_MOUNT, SOCKET_MOUNT):
+                continue
+            word, sep, mode = mount.partition(":")
+            if word not in (WORKSPACE_MOUNT, SOCKET_MOUNT):
                 err("unknown mount %r (expected '%s' or '%s')"
                     % (mount, WORKSPACE_MOUNT, SOCKET_MOUNT))
+                continue
+            # `tong_mount_specs` forwards everything after the first colon verbatim
+            # as the docker mount mode; the `workspace:/target` form is broker-config
+            # only, not valid in a tong definition.
+            if sep and mode not in ("ro", "rw"):
+                err("mount %r has an invalid mode %r (expected 'ro' or 'rw'; the "
+                    "'workspace:/target' form is broker-config only, not a tong mount)"
+                    % (mount, mode))
 
     networks = defn.get("networks")
     if isinstance(networks, list):
@@ -1332,6 +1350,11 @@ def tong_run_argv(
     launch can detect a stale `shared` container. `env` (the tong's plain,
     non-secret values from `plan_tong_secrets`) is passed as `-e` in sorted order;
     resolved secret values never appear here -- they arrive over the FIFO instead.
+    A socket-holding (broker) `session` tong additionally receives
+    `SWARMFORGE_WORKSPACE_HOST_PATH` so it can bind-mount the session workspace into
+    the workers it spawns; a tong that sets that name itself keeps its own value. A
+    `shared` socket tong does not get it -- its container is reused across sessions,
+    so a per-session workspace path would be stale (and a leak) for later ones.
 
     When the tong has secret env, the launcher passes `fifo_host_path` (bind-mounted
     read-only as the secret channel), `entrypoint` (`/bin/sh`), and `command` (the
@@ -1357,8 +1380,13 @@ def tong_run_argv(
         argv += ["--label", "%s=%s" % (LABEL_CONFIG_HASH, label_hash)]
     if fifo_host_path:
         argv += ["-v", "%s:%s:ro" % (fifo_host_path, SECRET_FIFO_TARGET)]
-    for key in sorted(env or {}):
-        argv += ["-e", "%s=%s" % (key, env[key])]
+    effective_env = dict(env or {})
+    # A `shared` container is reused across sessions, so a per-session workspace
+    # path baked into it would be stale for later ones; only `session` tongs get it.
+    if workspace and _has_socket_mount(defn) and defn.get("lifecycle") == "session":
+        effective_env.setdefault(WORKSPACE_HOST_ENV, workspace)
+    for key in sorted(effective_env):
+        argv += ["-e", "%s=%s" % (key, effective_env[key])]
     for spec in tong_mount_specs(defn, workspace, socket_path=socket_path):
         argv += ["-v", spec]
     argv += tong_resource_flags(defn)
