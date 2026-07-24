@@ -197,6 +197,21 @@ def _is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+# Dot-separated labels of letters, digits and inner hyphens -- what docker's
+# embedded DNS resolves a `--network-alias` as. Anchored per label so a leading
+# or trailing hyphen (or an empty label from a doubled dot) is rejected here
+# rather than by `docker run` mid-launch.
+_DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+DNS_NAME_MAX_LEN = 253
+
+
+def _is_dns_name(value):
+    """True if `value` is a hostname docker will accept as a network alias."""
+    if not isinstance(value, str) or not value or len(value) > DNS_NAME_MAX_LEN:
+        return False
+    return all(_DNS_LABEL_RE.match(label) for label in value.split("."))
+
+
 def validate_tong(name, defn):
     """Validate one tong definition against the v1 schema.
 
@@ -244,6 +259,23 @@ def validate_tong(name, defn):
                 err("interface.kind=volume requires 'volume' (named volume)")
             if not interface.get("mountpoint"):
                 err("interface.kind=volume requires 'mountpoint' (where the anvil sees it)")
+
+        # Extra DNS names the tong answers to, beyond its canonical alias, for
+        # consumers that hardcode a hostname (vhosts, certificate CNs). They
+        # become `--network-alias` flags, so only a tong with a listener can
+        # carry them and each must be a name docker's embedded DNS accepts.
+        aliases = interface.get("aliases")
+        if aliases is not None:
+            if kind in ("volume", "none"):
+                err("interface.aliases needs a network-facing tong; "
+                    "interface.kind=%s has no listener" % kind)
+            if not isinstance(aliases, list):
+                err("interface.aliases must be a list of DNS names")
+            else:
+                for alias in aliases:
+                    if not _is_dns_name(alias):
+                        err("invalid interface.aliases entry %r (must be a DNS name: "
+                            "letters, digits, hyphens and dots)" % (alias,))
 
     # Readiness: tcp is the implicit default for mcp/port; volume/none must
     # declare a mode (the launcher refuses to silently fire-and-forget).
@@ -757,6 +789,33 @@ def canonical_alias(name, defn):
     if interface.get("kind") == "mcp" and interface.get("name"):
         return interface["name"]
     return name
+
+
+def _ordered_aliases(canonical, defn):
+    """`canonical` followed by the tong's declared extra aliases, de-duplicated.
+
+    Order is stable and canonical-first so the primary DNS name is always the one
+    a reader (and `docker inspect`) sees first.
+    """
+    aliases = [canonical]
+    for extra in (defn.get("interface") or {}).get("aliases") or []:
+        if extra not in aliases:
+            aliases.append(extra)
+    return aliases
+
+
+def tong_aliases(name, defn):
+    """Every DNS name this tong answers to on the network, canonical alias first.
+
+    The canonical alias is the one the anvil is told to dial (injected env, MCP
+    URL); `interface.aliases` adds further names for consumers that hardcode a
+    hostname of their own -- a vhost, or a certificate CN a client must match.
+    Empty for a tong with no listener (`volume`/`none`), which registers no DNS
+    name at all.
+    """
+    if not _is_network_facing(defn):
+        return []
+    return _ordered_aliases(canonical_alias(name, defn), defn)
 
 
 def mcp_url(defn, alias):

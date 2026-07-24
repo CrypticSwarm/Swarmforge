@@ -225,6 +225,43 @@ class ValidationTests(unittest.TestCase):
         errors = tongs.validate_tong("t", self._base(mounts=["workspace:/work:ro"]))
         self.assertTrue(any("invalid mode" in e for e in errors))
 
+    def test_extra_aliases_accepted_on_network_facing_kinds(self):
+        # Dotted names are the point: a client that must match a certificate CN
+        # dials the tong by that name, not by the canonical alias.
+        defn = self._base(interface={
+            "kind": "port", "port": 3000,
+            "aliases": ["api", "console", "local.example.test"],
+        })
+        self.assertEqual(tongs.validate_tong("t", defn), [])
+
+    def test_extra_aliases_rejected_without_a_listener(self):
+        # volume/none tongs register no DNS name at all, so extra aliases there
+        # would silently do nothing.
+        errors = tongs.validate_tong("t", self._base(
+            interface={"kind": "none", "aliases": ["api"]}))
+        self.assertTrue(any("aliases" in e for e in errors))
+
+    def test_non_list_aliases_rejected(self):
+        errors = tongs.validate_tong("t", self._base(
+            interface={"kind": "port", "port": 3000, "aliases": "api"}))
+        self.assertTrue(any("aliases" in e for e in errors))
+
+    def test_malformed_alias_rejected(self):
+        for bad in ["-api", "api-", "ap i", "api..b", "under_score", "", 7, None]:
+            errors = tongs.validate_tong("t", self._base(
+                interface={"kind": "port", "port": 3000, "aliases": [bad]}))
+            self.assertTrue(any("aliases" in e for e in errors), bad)
+
+    def test_over_long_alias_rejected(self):
+        # Per-label and total length are both bounded by what DNS accepts.
+        errors = tongs.validate_tong("t", self._base(
+            interface={"kind": "port", "port": 3000, "aliases": ["a" * 64]}))
+        self.assertTrue(any("aliases" in e for e in errors))
+        errors = tongs.validate_tong("t", self._base(
+            interface={"kind": "port", "port": 3000,
+                       "aliases": [".".join(["abcdefghij"] * 26)]}))
+        self.assertTrue(any("aliases" in e for e in errors))
+
     def test_non_string_network_rejected(self):
         errors = tongs.validate_tong("t", self._base(networks=[{"name": "x"}]))
         self.assertTrue(any("network" in e for e in errors))
@@ -753,6 +790,28 @@ class InterfaceWiringTests(unittest.TestCase):
         self.assertEqual(tongs.canonical_alias("pg", def_of(PORT_TONG)), "pg")
         self.assertEqual(tongs.canonical_alias("cache", def_of(VOLUME_TONG)), "cache")
         self.assertEqual(tongs.canonical_alias("watcher", def_of(NONE_TONG)), "watcher")
+
+    def test_tong_aliases_is_canonical_only_by_default(self):
+        # A tong that declares no extras keeps exactly the one DNS name it has
+        # today, so the flag it produces is unchanged.
+        self.assertEqual(tongs.tong_aliases("github-creds", def_of(GITHUB_TONG)), ["github"])
+        self.assertEqual(tongs.tong_aliases("pg", def_of(PORT_TONG)), ["pg"])
+
+    def test_tong_aliases_appends_extras_canonical_first(self):
+        defn = def_of(PORT_TONG)
+        defn["interface"]["aliases"] = ["api", "local.example.test"]
+        self.assertEqual(
+            tongs.tong_aliases("pg", defn), ["pg", "api", "local.example.test"]
+        )
+
+    def test_tong_aliases_dedups_extras(self):
+        defn = def_of(GITHUB_TONG)
+        defn["interface"]["aliases"] = ["github", "api", "api"]
+        self.assertEqual(tongs.tong_aliases("github-creds", defn), ["github", "api"])
+
+    def test_tong_aliases_empty_without_a_listener(self):
+        for text, name in ((VOLUME_TONG, "cache"), (NONE_TONG, "watcher")):
+            self.assertEqual(tongs.tong_aliases(name, def_of(text)), [])
 
     def test_mcp_url_default_and_custom_path(self):
         defn = def_of(GITHUB_TONG)
