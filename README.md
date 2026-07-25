@@ -248,6 +248,7 @@ interface:                    # required; how (or whether) the anvil reaches the
   transport: http             # http only in v1
   port: 8080                  # the port the server listens on inside the container
   name: github                # canonical MCP server name the agent sees
+# aliases: [gh, git.example]  # optional extra DNS names the tong also answers to
 mounts:                       # opt-in magic words only, never raw host paths
   - workspace:ro
 resources:
@@ -271,6 +272,19 @@ The `interface:` block drives what gets injected into the anvil, how readiness i
 
 `<NAME>` is the filename uppercased with hyphens turned into underscores (`github-creds` → `SWARMFORGE_TONG_GITHUB_CREDS_*`).
 The MCP server name and the `port` alias are docker network aliases (not container names), so generated config is identical regardless of where the workspace is mounted.
+
+#### Extra aliases
+
+A network-facing tong (`mcp` or `port`) may declare additional DNS names it answers to on the session network:
+
+```yaml
+interface:
+  kind: port
+  port: 3000
+  aliases: [api, console, local.example.test]
+```
+
+Use this when something dialing the tong hardcodes a hostname of its own — a vhost another container expects, or the CN on a TLS certificate a client must match. Each entry must be a valid DNS name (letters, digits, hyphens and dots) and is registered as a further `--network-alias`; the canonical alias is unaffected and stays the name injected into the anvil (`SWARMFORGE_TONG_<NAME>_HOST`, the MCP URL). Extra aliases participate in the same collision check as canonical ones — two tongs on the session network may not claim the same name, whether canonical or extra. `volume` and `none` tongs have no listener and reject the field.
 
 #### Readiness
 

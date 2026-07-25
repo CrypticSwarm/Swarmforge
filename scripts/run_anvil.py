@@ -656,15 +656,15 @@ class DockerCLI:
             return
         self._checked(["docker", "network", "create", name])
 
-    def network_connect(self, network, container, alias=None):
-        """Attach a running container to `network`, optionally under `alias`.
+    def network_connect(self, network, container, aliases=()):
+        """Attach a running container to `network` under each of `aliases`.
 
-        Used to connect a long-lived `shared` tong to a session network under its
-        canonical alias, so the session reaches it without the tong having to live
-        on the session network permanently.
+        Used to connect a long-lived `shared` tong to a session network under the
+        DNS names it answers to, so the session reaches it without the tong having
+        to live on the session network permanently.
         """
         argv = ["docker", "network", "connect"]
-        if alias:
+        for alias in aliases:
             argv += ["--alias", alias]
         self._checked(argv + [network, container])
 
@@ -1101,12 +1101,13 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             ready_checks.append((name, defn, alias, container, probe_network))
 
         # Attach each network-facing `shared` tong to the per-session network under
-        # its canonical alias, so the anvil reaches it there without the long-lived
-        # tong having to live on the session network permanently. (The session-tong
-        # start loop above iterates the whole merged set, not plan["session_aliases"],
-        # because a `none` session tong with no alias must still be started; only the
-        # network-facing `shared` tongs in plan["shared_connect"] are connected here.)
-        for name, alias in plan["shared_connect"]:
+        # every DNS name it answers to, so the anvil reaches it there without the
+        # long-lived tong having to live on the session network permanently. (The
+        # session-tong start loop above iterates the whole merged set, not
+        # plan["session_aliases"], because a `none` session tong with no alias must
+        # still be started; only the network-facing `shared` tongs in
+        # plan["shared_connect"] are connected here.)
+        for name, aliases in plan["shared_connect"]:
             if org_token and merged[name]["source"] == tongs.ORG:
                 # An org-scoped shared tong is isolated on its own network, which
                 # the anvil joins directly -- it is deliberately never attached to
@@ -1119,7 +1120,7 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             # a stale endpoint would make connect fail. Clear it first -- best-effort,
             # a no-op when the tong is not attached -- so the connect is idempotent.
             docker.network_disconnect(plan["network"], container)
-            docker.network_connect(plan["network"], container, alias=alias)
+            docker.network_connect(plan["network"], container, aliases=aliases)
             connected_shared.append((plan["network"], container))
 
         # Probe readiness on the network the anvil will reach each tong over: the

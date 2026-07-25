@@ -783,8 +783,8 @@ class FakeDocker:
     def ensure_network(self, name):
         self.calls.append(("ensure_network", name))
 
-    def network_connect(self, network, container, alias=None):
-        self.calls.append(("network_connect", network, container, alias))
+    def network_connect(self, network, container, aliases=()):
+        self.calls.append(("network_connect", network, container, tuple(aliases)))
 
     def network_disconnect(self, network, container):
         self.calls.append(("network_disconnect", network, container))
@@ -968,9 +968,18 @@ class DockerCLITests(unittest.TestCase):
 
     def test_network_connect_passes_alias(self):
         rec = _RecordingRun()
-        run_anvil.DockerCLI(run=rec).network_connect("net", "ctr", alias="gh")
+        run_anvil.DockerCLI(run=rec).network_connect("net", "ctr", aliases=["gh"])
         self.assertEqual(
             rec.argvs[-1], ["docker", "network", "connect", "--alias", "gh", "net", "ctr"]
+        )
+
+    def test_network_connect_passes_every_alias(self):
+        rec = _RecordingRun()
+        run_anvil.DockerCLI(run=rec).network_connect("net", "ctr", aliases=["gh", "api"])
+        self.assertEqual(
+            rec.argvs[-1],
+            ["docker", "network", "connect", "--alias", "gh", "--alias", "api",
+             "net", "ctr"],
         )
 
     def test_network_connect_without_alias(self):
@@ -1515,6 +1524,34 @@ class RunWithTongsTests(unittest.TestCase):
             docker.calls.index(("network_rm", net)),
         )
 
+    def test_declared_aliases_reach_the_session_and_shared_tongs(self):
+        # Each tong answers on the per-session network under every DNS name it
+        # declares: a session tong registers them at start, a shared tong when it
+        # is connected to the session network.
+        docker = FakeDocker()
+        session = dict(SESSION_PORT)
+        session["interface"] = dict(SESSION_PORT["interface"],
+                                    aliases=["db", "local.example.test"])
+        shared = dict(SHARED_OLLAMA)
+        shared["interface"] = dict(SHARED_OLLAMA["interface"], aliases=["models"])
+        merged = {
+            "pg": {"source": tongs.REPO, "definition": session},
+            "ollama": {"source": tongs.REPO, "definition": shared},
+        }
+        self._run(docker, merged)
+        net = tongs.session_network_name("claude-myproject")
+        started = next(argv for argv in docker.run_argvs
+                       if "claude-myproject-tong-pg" in argv)
+        flagged = [started[i + 1] for i, part in enumerate(started)
+                   if part == "--network-alias"]
+        self.assertEqual(flagged, ["pg", "db", "local.example.test"])
+        self.assertIn(
+            ("network_connect", net, "swarmforge-shared-ollama", ("ollama", "models")),
+            docker.calls,
+        )
+        # The anvil is still pointed at the canonical alias, not an extra.
+        self.assertIn("SWARMFORGE_TONG_PG_HOST=pg", docker.anvil_argv)
+
     def test_shared_tong_connected_to_session_network_and_left_running(self):
         # A `shared` tong alongside a `session` tong is ensured on the base network,
         # then connected to the per-session network for the anvil to reach; on
@@ -1527,7 +1564,7 @@ class RunWithTongsTests(unittest.TestCase):
         self._run(docker, merged)
         net = tongs.session_network_name("claude-myproject")
         self.assertIn(
-            ("network_connect", net, "swarmforge-shared-ollama", "ollama"), docker.calls
+            ("network_connect", net, "swarmforge-shared-ollama", ("ollama",)), docker.calls
         )
         self.assertIn(
             ("network_disconnect", net, "swarmforge-shared-ollama"), docker.calls
@@ -1536,7 +1573,7 @@ class RunWithTongsTests(unittest.TestCase):
         # disconnect precedes it (a no-op when the tong is not already attached).
         self.assertLess(
             docker.calls.index(("network_disconnect", net, "swarmforge-shared-ollama")),
-            docker.calls.index(("network_connect", net, "swarmforge-shared-ollama", "ollama")),
+            docker.calls.index(("network_connect", net, "swarmforge-shared-ollama", ("ollama",))),
         )
         # The shared tong is rm_force'd only once -- when (re)started to clear a
         # leftover -- never as part of teardown, so it is left running.
