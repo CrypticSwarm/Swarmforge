@@ -108,12 +108,56 @@ def parse_scalar(text):
     return text
 
 
+def strip_inline_comment(text):
+    """Drop a trailing `#` comment from a value.
+
+    A `#` opens a comment only at the start of the value or after whitespace, so
+    an image digest or a URL fragment keeps its own. Quoted runs are skipped, and
+    only a quote that *opens* a value starts one -- an apostrophe in prose is
+    ordinary text. Both YAML escapes are honored inside a run, since reading one
+    as the closing quote would truncate the value at a `#` that is really data.
+    """
+    i = 0
+    at_value_start = True
+    while i < len(text):
+        char = text[i]
+        if at_value_start and char in "\"'":
+            quote = char
+            i += 1
+            while i < len(text):
+                if quote == '"' and text[i] == "\\":
+                    i += 2  # a backslash escapes the next character
+                    continue
+                if text[i] == quote:
+                    if quote == "'" and text[i + 1:i + 2] == "'":
+                        i += 2  # a doubled quote is an escape, not the end
+                        continue
+                    i += 1
+                    break
+                i += 1
+            at_value_start = False
+            continue
+        if char == "#" and (i == 0 or text[i - 1] in " \t"):
+            return text[:i]
+        if char not in " \t":
+            # A flow list opens a fresh value after `[` and after each `,`.
+            at_value_start = char in "[,"
+        i += 1
+    return text
+
+
+def is_comment_or_blank(line):
+    """True for a line carrying no structure, which layout decisions must ignore."""
+    stripped = line.strip()
+    return not stripped or stripped.startswith("#")
+
+
 def parse_map(lines, index, indent):
     out = {}
     while index < len(lines):
         line = lines[index]
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if is_comment_or_blank(line):
             index += 1
             continue
         current = len(line) - len(line.lstrip(" "))
@@ -125,13 +169,15 @@ def parse_map(lines, index, indent):
         if not sep:
             raise ValueError("expected 'key: value' at line: %r" % line)
         key = key.strip()
-        rest = rest.strip()
+        rest = strip_inline_comment(rest).strip()
         index += 1
         if rest:
             out[key] = parse_scalar(rest)
             continue
+        # The first line carrying structure decides whether the block below is a
+        # list or a map, and at what indent; a comment must decide neither.
         peek = index
-        while peek < len(lines) and not lines[peek].strip():
+        while peek < len(lines) and is_comment_or_blank(lines[peek]):
             peek += 1
         if peek < len(lines):
             next_indent = len(lines[peek]) - len(lines[peek].lstrip(" "))
@@ -149,13 +195,14 @@ def parse_list(lines, index, indent):
     out = []
     while index < len(lines):
         line = lines[index]
-        if not line.strip():
+        # A comment between two items does not end the list.
+        if is_comment_or_blank(line):
             index += 1
             continue
         current = len(line) - len(line.lstrip(" "))
         if current != indent or not line.strip().startswith("- "):
             break
-        out.append(parse_scalar(line.strip()[2:]))
+        out.append(parse_scalar(strip_inline_comment(line.strip()[2:])))
         index += 1
     return out, index
 
