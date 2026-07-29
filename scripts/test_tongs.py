@@ -275,7 +275,13 @@ class ValidationTests(unittest.TestCase):
 
     def test_unknown_mount_word_rejected(self):
         errors = tongs.validate_tong("t", self._base(mounts=["/etc/passwd:/etc/passwd"]))
-        self.assertTrue(any("mount" in e for e in errors))
+        self.assertTrue(any("unknown mount" in e for e in errors))
+
+    def test_unknown_mount_word_reported_whatever_it_carries(self):
+        # The word is what is wrong, so say so rather than complaining about the
+        # suffix -- a mount nobody recognizes has no meaningful target or mode.
+        errors = tongs.validate_tong("t", self._base(mounts=["gpu:all"]))
+        self.assertTrue(any("unknown mount" in e for e in errors))
 
     def test_non_string_mount_rejected(self):
         errors = tongs.validate_tong("t", self._base(mounts=[123]))
@@ -287,11 +293,97 @@ class ValidationTests(unittest.TestCase):
     def test_rw_mount_mode_accepted(self):
         self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:rw"])), [])
 
-    def test_target_path_mount_rejected(self):
-        # `workspace:/target` is broker-config only; as a tong mount the launcher
-        # would forward it as a bogus docker mode.
-        errors = tongs.validate_tong("t", self._base(mounts=["workspace:/work:ro"]))
-        self.assertTrue(any("invalid mode" in e for e in errors))
+    def test_workspace_target_path_accepted(self):
+        # A custom mountpoint lets an image that expects its sources elsewhere be
+        # used unmodified, with or without a trailing access mode.
+        self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:/work"])), [])
+        self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:/work:ro"])), [])
+
+    def test_relative_target_path_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["workspace:work"]))
+        self.assertTrue(any("neither an absolute target path" in e for e in errors))
+
+    def test_root_target_path_rejected(self):
+        # Including the spellings that only normalize to root: docker collapses
+        # them the same way, so accepting one would bury the image's own rootfs.
+        for target in ("/", "//", "/.", "/..", "/opt/.."):
+            errors = tongs.validate_tong("t", self._base(mounts=["workspace:" + target]))
+            self.assertTrue(
+                any("not a usable target path" in e for e in errors), target
+            )
+
+    def test_target_path_with_whitespace_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["workspace:/work "]))
+        self.assertTrue(any("whitespace" in e for e in errors))
+
+    def test_invalid_mount_mode_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["workspace:z"]))
+        self.assertTrue(any("neither an absolute target path" in e for e in errors))
+
+    def test_target_overlapping_the_secret_fifo_rejected(self):
+        # A secret-bearing tong gets the FIFO bind-mounted in and its wrapper execs
+        # /bin/sh; a target over either shadows it or has docker create the
+        # launcher's mountpoint inside the user's workspace. `//run` is the same
+        # destination as `/run`, so it goes the same way.
+        for target in ("/run/swarmforge/secret-env", "/run", "//run", "/bin", "/bin/sh/x"):
+            defn = self._base(mounts=["workspace:" + target])
+            defn["env"] = {"TOKEN": "${secret:op:op://Work/t}"}
+            errors = tongs.validate_tong("t", defn)
+            self.assertTrue(any("overlaps" in e for e in errors), target)
+
+    def test_target_overlapping_the_socket_mount_rejected(self):
+        defn = self._base(mounts=["workspace:/var/run", "docker-socket"])
+        errors = tongs.validate_tong("t", defn)
+        self.assertTrue(any("overlaps" in e for e in errors))
+
+    def test_target_only_reserved_for_the_tongs_that_use_it(self):
+        # A tong with no secrets and no socket mount has none of that wiring, so
+        # nothing is reserved and those paths are ordinary targets.
+        for target in ("/run", "/bin", "/var/run"):
+            self.assertEqual(
+                tongs.validate_tong("t", self._base(mounts=["workspace:" + target])), [], target
+            )
+
+    def test_target_beside_a_launcher_path_accepted(self):
+        # Only overlap is refused: a sibling of a reserved path is left alone.
+        defn = self._base(mounts=["workspace:/run/swarmforge/other"])
+        defn["env"] = {"TOKEN": "${secret:op:op://Work/t}"}
+        self.assertEqual(tongs.validate_tong("t", defn), [])
+        self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:/runner"])), [])
+
+    def test_two_mounts_on_the_same_destination_rejected(self):
+        # Docker refuses a duplicate destination outright and creates a nested one's
+        # mountpoint inside the outer bind; both are caught before the launch.
+        for mounts in (
+            ["workspace", "workspace:/workspace"],
+            ["workspace:/code", "workspace:/code:ro"],
+            ["workspace:/code", "workspace:/code/sub"],
+            ["docker-socket", "workspace:/var/run"],
+        ):
+            errors = tongs.validate_tong("t", self._base(mounts=mounts))
+            self.assertTrue(any("overlaps" in e for e in errors), mounts)
+
+    def test_two_mounts_on_separate_destinations_accepted(self):
+        self.assertEqual(
+            tongs.validate_tong(
+                "t", self._base(mounts=["workspace:/code", "docker-socket"])
+            ),
+            [],
+        )
+
+    def test_mode_before_target_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["workspace:ro:/work"]))
+        self.assertTrue(any("must be the last field" in e for e in errors))
+
+    def test_two_target_paths_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["workspace:/a:/b"]))
+        self.assertTrue(any("more than one target path" in e for e in errors))
+
+    def test_socket_mount_target_rejected(self):
+        # The socket has to keep its host path inside the container -- that is
+        # where a docker client looks for it -- so only `workspace` takes a target.
+        errors = tongs.validate_tong("t", self._base(mounts=["docker-socket:/run/d.sock"]))
+        self.assertTrue(any("only the 'workspace' mount takes a target path" in e for e in errors))
 
     def test_extra_aliases_accepted_on_network_facing_kinds(self):
         # Dotted names are the point: a client that must match a certificate CN
@@ -1139,6 +1231,113 @@ ANVIL_ARGV = [
 ]
 
 
+class MountGrammarTests(unittest.TestCase):
+    """The mount grammar and target policy, exercised directly -- `validate_tong`
+    and `tong_mount_specs` both delegate here."""
+
+    def test_parse_mount_splits_the_optional_fields(self):
+        self.assertEqual(tongs.parse_mount("workspace"), ("workspace", None, None))
+        self.assertEqual(tongs.parse_mount("workspace:ro"), ("workspace", None, "ro"))
+        self.assertEqual(tongs.parse_mount("workspace:/code"), ("workspace", "/code", None))
+        self.assertEqual(
+            tongs.parse_mount("workspace:/code:rw"), ("workspace", "/code", "rw")
+        )
+        self.assertEqual(
+            tongs.parse_mount("docker-socket:ro"), ("docker-socket", None, "ro")
+        )
+
+    def test_parse_mount_rejects_an_unrecognized_word(self):
+        # The default word set is the point of the opt-in mount vocabulary: a raw
+        # host path is not a magic word, whatever it carries.
+        with self.assertRaisesRegex(ValueError, "unknown mount"):
+            tongs.parse_mount("/etc/passwd:/etc/passwd")
+
+    def test_parse_mount_word_set_can_be_narrowed(self):
+        # A real magic word refused by a narrowed set is a policy refusal, so the
+        # message must not read like a spelling mistake.
+        narrowed = (tongs.WORKSPACE_MOUNT,)
+        self.assertEqual(
+            tongs.parse_mount("workspace:/code", words=narrowed), ("workspace", "/code", None)
+        )
+        with self.assertRaisesRegex(ValueError, "not allowed here"):
+            tongs.parse_mount("docker-socket", words=narrowed)
+
+    def test_mount_destination_refuses_a_word_with_no_default(self):
+        # Guards the next magic word: without its own default it must not silently
+        # inherit the socket's destination.
+        with self.assertRaisesRegex(ValueError, "no destination"):
+            tongs.mount_destination("cache", None)
+
+    def test_normalize_mount_target_matches_dockers_cleanup(self):
+        for spelling in ("/code", "//code", "/code/", "/opt/../code", "/./code"):
+            self.assertEqual(tongs.normalize_mount_target(spelling), "/code", spelling)
+        self.assertEqual(tongs.normalize_mount_target("/"), "/")
+        self.assertEqual(tongs.normalize_mount_target("//"), "/")
+
+    def test_reserved_targets_follow_the_definitions_wiring(self):
+        self.assertEqual(tongs.reserved_mount_targets({}), {})
+        secret_bearing = tongs.reserved_mount_targets({"env": {"T": "${secret:op:r}"}})
+        self.assertEqual(
+            sorted(secret_bearing), [tongs.SECRET_INJECT_SHELL, tongs.SECRET_FIFO_TARGET]
+        )
+        self.assertEqual(
+            list(tongs.reserved_mount_targets({"mounts": ["docker-socket"]})),
+            [tongs.DEFAULT_DOCKER_SOCKET],
+        )
+        self.assertEqual(
+            list(tongs.reserved_mount_targets({"mounts": ["docker-socket"]}, "/run/d.sock")),
+            ["/run/d.sock"],
+        )
+
+    def test_mount_destination_defaults_per_word(self):
+        self.assertEqual(tongs.mount_destination("workspace", None), "/workspace")
+        self.assertEqual(tongs.mount_destination("workspace", "//code/"), "/code")
+        self.assertEqual(
+            tongs.mount_destination("docker-socket", None), tongs.DEFAULT_DOCKER_SOCKET
+        )
+        self.assertEqual(
+            tongs.mount_destination("docker-socket", None, "/run/d.sock"), "/run/d.sock"
+        )
+
+    def test_mount_target_error_names_the_mount_and_the_reason(self):
+        reserved = {"/run/x": "where the launcher delivers this tong's secrets"}
+
+        def error(mount, word, target):
+            return tongs.mount_target_error(
+                mount, word, target, tongs.mount_destination(word, target), reserved
+            )
+
+        self.assertIsNone(error("workspace", "workspace", None))
+        self.assertIsNone(error("workspace:/code", "workspace", "/code"))
+        self.assertIsNone(error("docker-socket", "docker-socket", None))
+        self.assertIn(
+            "only the 'workspace' mount takes a target path",
+            error("docker-socket:/s", "docker-socket", "/s"),
+        )
+        # Overlap in both directions: the target above the reserved path and under it.
+        for target in ("/run", "/run/x/deeper"):
+            self.assertIn("overlaps /run/x", error("workspace:" + target, "workspace", target))
+
+    def test_mount_target_error_judges_the_default_destination_too(self):
+        # A mount that names no target still lands somewhere, so a reserved path
+        # under /workspace is caught even though the definition declares no target.
+        self.assertIn(
+            "overlaps /workspace/x",
+            tongs.mount_target_error(
+                "workspace", "workspace", None, "/workspace", {"/workspace/x": "why"}
+            ),
+        )
+
+    def test_overlapping_mount_error_catches_duplicates_and_nesting(self):
+        placed = [("workspace:/code", "/code")]
+        self.assertIsNone(tongs.overlapping_mount_error("workspace:/src", "/src", placed))
+        for destination in ("/code", "/code/sub", "/"):
+            self.assertIn(
+                "overlaps mount 'workspace:/code'",
+                tongs.overlapping_mount_error("m", destination, placed),
+            )
+
+
 class DockerArgvTests(unittest.TestCase):
     def test_shared_container_name_sanitizes_and_prefixes(self):
         self.assertEqual(tongs.shared_container_name("ollama"), "swarmforge-shared-ollama")
@@ -1200,6 +1399,40 @@ class DockerArgvTests(unittest.TestCase):
 
     def test_mount_specs_workspace_without_mode(self):
         self.assertEqual(tongs.tong_mount_specs({"mounts": ["workspace"]}, "/ws"), ["/ws:/workspace"])
+
+    def test_mount_specs_workspace_custom_target(self):
+        self.assertEqual(
+            tongs.tong_mount_specs({"mounts": ["workspace:/work"]}, "/ws"), ["/ws:/work"]
+        )
+        self.assertEqual(
+            tongs.tong_mount_specs({"mounts": ["workspace:/work:ro"]}, "/ws"), ["/ws:/work:ro"]
+        )
+
+    def test_mount_specs_socket_target_raises(self):
+        with self.assertRaises(ValueError) as caught:
+            tongs.tong_mount_specs({"mounts": ["docker-socket:/run/d.sock"]}, "/ws")
+        self.assertIn("only the 'workspace' mount takes a target path", str(caught.exception))
+
+    def test_mount_specs_normalize_the_target(self):
+        # docker cleans a bind destination, so the launcher hands it the spelling
+        # its own overlap checks judged -- `//code` is not an empty first field.
+        self.assertEqual(
+            tongs.tong_mount_specs({"mounts": ["workspace://code"]}, "/ws"), ["/ws:/code"]
+        )
+        self.assertEqual(
+            tongs.tong_mount_specs({"mounts": ["workspace:/opt/../code:ro"]}, "/ws"),
+            ["/ws:/code:ro"],
+        )
+
+    def test_mount_specs_target_overlapping_the_socket_raises(self):
+        # Checked against the socket path actually in use, not just the default.
+        with self.assertRaises(ValueError) as caught:
+            tongs.tong_mount_specs(
+                {"mounts": ["workspace:/opt/sock", "docker-socket"]},
+                "/ws",
+                socket_path="/opt/sock/d.sock",
+            )
+        self.assertIn("overlaps", str(caught.exception))
 
     def test_mount_specs_socket_honors_custom_path(self):
         specs = tongs.tong_mount_specs({"mounts": ["docker-socket:ro"]}, "/ws", socket_path="/run/d.sock")
@@ -1295,6 +1528,26 @@ class DockerArgvTests(unittest.TestCase):
         self.assertIn("/ws:/workspace:ro", argv)
         self.assertIn("--memory", argv)
         self.assertEqual(argv[argv.index("--memory") + 1], "256m")
+
+    def test_run_argv_mount_target_is_workspace_unless_declared(self):
+        # The inert case beside its opt-in: an undeclared target still lands on
+        # /workspace, and declaring one changes nothing but the `-v` value.
+        def argv_for(mounts):
+            defn = def_of(NONE_TONG)
+            defn["mounts"] = mounts
+            return tongs.tong_run_argv(
+                "w", defn, container_name="c", network="n", alias="w", workspace="/ws",
+            )
+
+        default = argv_for(["workspace"])
+        self.assertEqual(default[default.index("-v") + 1], "/ws:/workspace")
+
+        declared = argv_for(["workspace:/work:rw"])
+        self.assertEqual(declared[declared.index("-v") + 1], "/ws:/work:rw")
+        self.assertEqual(
+            [part for part in declared if part != "/ws:/work:rw"],
+            [part for part in default if part != "/ws:/workspace"],
+        )
 
     def test_run_argv_secret_injection_mounts_fifo_wraps_entrypoint(self):
         # A secret-bearing tong gets the FIFO bind (read-only), the /bin/sh

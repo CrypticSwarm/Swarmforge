@@ -739,6 +739,16 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
             [],
         )
 
+    def test_shared_workspace_refusal_sees_a_custom_target(self):
+        # The leak is the same wherever the workspace lands inside the container,
+        # so the refusal keys on the magic word, not on the whole mount string.
+        self.assertTrue(any(
+            "workspace" in r for r in self._reasons({
+                "lifecycle": "shared", "image": "x", "mounts": ["workspace:/code:ro"],
+                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+            })
+        ))
+
     def test_workspace_refusal_is_shared_scoped(self):
         # The workspace-mount leak is a `shared`-reuse hazard, so a `session` tong
         # that mounts the workspace is legitimate (it is torn down with the anvil)
@@ -1193,6 +1203,17 @@ class RunWithTongsTests(unittest.TestCase):
         self._run(docker, _merged("ollama", defn, source=tongs.REPO))
         self.assertEqual(docker.run_argvs, [])  # reused, not restarted
 
+    def test_unusable_mount_reported_as_a_config_error_naming_the_tong(self):
+        # A mount the argv builder refuses ends the launch as a named config error
+        # rather than a traceback, and nothing is started or removed.
+        defn = dict(SHARED_OLLAMA, mounts=["docker-socket", "docker-socket"])
+        docker = FakeDocker()
+        with self.assertRaisesRegex(run_anvil.OrchestrationError, "tong 'ollama'.*overlaps"):
+            self._run(docker, _merged("ollama", defn, source=tongs.REPO))
+        self.assertEqual(docker.run_argvs, [])
+        self.assertNotIn(("rm_force", "swarmforge-shared-ollama"), docker.calls)
+        self.assertIsNone(docker.anvil_argv)
+
     def test_shared_tong_recreated_when_hash_differs(self):
         states = {"swarmforge-shared-ollama": {"running": True, "label": "stale"}}
         docker = FakeDocker(states=states)
@@ -1414,6 +1435,22 @@ class RunWithTongsTests(unittest.TestCase):
         # rm_force fires twice: clearing any leftover before start, then removing
         # the half-configured container after the failed delivery.
         self.assertEqual(docker.calls.count(("rm_force", "swarmforge-shared-gh")), 2)
+        self.assertEqual(channels.cleanups, 1)  # FIFO still cleaned up
+        self.assertIsNone(docker.anvil_argv)
+
+    def test_unusable_mount_target_reported_and_starts_nothing(self):
+        # The secret-bearing path: a refused mount is reported as the config error
+        # it is, and having started nothing it removes nothing.
+        defn = dict(SHARED_SECRET, mounts=["workspace:/run"])
+        docker = FakeDocker()
+        channels = FakeChannels()
+        with self.assertRaisesRegex(run_anvil.OrchestrationError, "tong 'gh'.*overlaps"):
+            self._run_secret(
+                docker, _merged("gh", defn, source=tongs.REPO), ECHO_PROVIDERS,
+                channels=channels,
+            )
+        self.assertEqual(docker.run_argvs, [])
+        self.assertNotIn(("rm_force", "swarmforge-shared-gh"), docker.calls)
         self.assertEqual(channels.cleanups, 1)  # FIFO still cleaned up
         self.assertIsNone(docker.anvil_argv)
 
