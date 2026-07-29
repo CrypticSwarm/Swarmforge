@@ -32,6 +32,26 @@ networks:
 """
 
 
+# A comment in every position a definition puts one: whole lines above a key and
+# above/between list items, and trailing a key and a value.
+COMMENTED_TONG = """\
+description: Exposes the project's build steps as MCP tools
+# `session`, not `shared`: each tool needs this session's workspace host path.
+lifecycle: session
+image: ghcr.io/example/build-tong@sha256:ab#cd  # the `#` here is part of the digest
+mounts:                       # opt-in magic words only
+  # each tool drives the host docker daemon
+  - docker-socket
+  # the checkout the tools build from
+  - workspace:ro              # read-only: the tools build, they do not edit
+interface:
+  kind: mcp
+  transport: http
+  port: 8080                  # the port inside the container
+  name: build-tools
+"""
+
+
 def def_of(text):
     return tongs.load_yaml(text)
 
@@ -54,6 +74,44 @@ class YamlLoadTests(unittest.TestCase):
         defn = def_of('readiness:\n  mode: healthcheck\n  command: ["test", "-S", "/run/agent.sock"]\n')
         self.assertEqual(defn["readiness"]["command"], ["test", "-S", "/run/agent.sock"])
 
+    def test_comments_do_not_change_the_definition(self):
+        defn = def_of(COMMENTED_TONG)
+        self.assertEqual(defn["lifecycle"], "session")
+        self.assertEqual(defn["mounts"], ["docker-socket", "workspace:ro"])
+        self.assertEqual(
+            defn["interface"],
+            {"kind": "mcp", "transport": "http", "port": 8080, "name": "build-tools"},
+        )
+        # The digest keeps its `#`; the comment beside it goes.
+        self.assertEqual(defn["image"], "ghcr.io/example/build-tong@sha256:ab#cd")
+        # Every commented value still lands on the type the schema expects.
+        self.assertEqual(tongs.validate_tong("build-tools", defn), [])
+
+    def test_commented_secret_ref_still_resolves(self):
+        # Unquoted and dense with punctuation -- the value most easily mis-cut.
+        defn = def_of("env:\n  TOKEN: ${secret:op:op://Work/gh/token}  # rotated monthly\n")
+        self.assertEqual(defn["env"]["TOKEN"], "${secret:op:op://Work/gh/token}")
+        plain, secret = tongs.partition_secret_env(defn["env"])
+        self.assertEqual(plain, {})
+        self.assertEqual(sorted(secret), ["TOKEN"])
+
+    def test_comments_leave_no_residue_in_values_handed_to_docker(self):
+        # The schema constrains none of these by shape, so a comment left in one
+        # reaches the container instead of being caught by validation.
+        defn = def_of(
+            "entrypoint:\n"
+            "  - /bin/sh                # the secret wrapper needs a shell\n"
+            "  - -c\n"
+            "command:\n"
+            "  - exec build-tong --port 8080  # don't background it\n"
+            "env:\n"
+            "  LOG_LEVEL: info          # plain value, passes through as -e\n"
+            "  GREETING: don't panic    # an apostrophe is not a quote\n"
+        )
+        self.assertEqual(defn["entrypoint"], ["/bin/sh", "-c"])
+        self.assertEqual(defn["command"], ["exec build-tong --port 8080"])
+        self.assertEqual(defn["env"], {"LOG_LEVEL": "info", "GREETING": "don't panic"})
+
 
 class DiscoveryTests(unittest.TestCase):
     def test_missing_dir_is_empty(self):
@@ -71,6 +129,16 @@ class DiscoveryTests(unittest.TestCase):
             loaded = tongs.load_tong_dir(tmp)
             self.assertEqual(sorted(loaded), ["github", "ollama"])
             self.assertEqual(loaded["ollama"]["lifecycle"], "shared")
+
+    def test_commented_definition_is_discovered_not_skipped(self):
+        # A parse error here is only warned about and the tong vanishes, so the
+        # failure this guards against is silent.
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "build-tools.yaml"), "w") as f:
+                f.write(COMMENTED_TONG)
+            loaded = tongs.load_tong_dir(tmp)
+            self.assertEqual(sorted(loaded), ["build-tools"])
+            self.assertEqual(loaded["build-tools"]["mounts"], ["docker-socket", "workspace:ro"])
 
     def test_discover_returns_layer_mappings_in_order(self):
         with tempfile.TemporaryDirectory() as tmp:
