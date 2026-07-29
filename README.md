@@ -250,7 +250,7 @@ interface:                    # required; how (or whether) the anvil reaches the
   name: github                # canonical MCP server name the agent sees
 # aliases: [gh, git.example]  # optional extra DNS names the tong also answers to
 mounts:                       # opt-in magic words only, never raw host paths
-  - workspace:ro
+  - workspace:ro              # or workspace:/code:ro to bind it somewhere else
 resources:
   memory: 512m                # string or number
 networks:                     # optional extra pre-existing networks to also join
@@ -299,10 +299,10 @@ readiness:
 
 #### Mounts
 
-Mounts are opt-in **magic words**, never raw host paths. Only two are recognized, each with an optional `:mode` suffix forwarded to docker verbatim:
+Mounts are opt-in **magic words**, never raw host paths. Only two are recognized, spelled `<word>[:/target][:mode]` with the access mode (`ro`/`rw`) last:
 
-- `workspace[:mode]` — bind-mounts the session workspace at `/workspace` (e.g. `workspace:ro`).
-- `docker-socket[:mode]` — bind-mounts the host docker socket. This is full host docker control and is always called out explicitly in the workspace approval prompt; it is the grant a broker tong needs.
+- `workspace[:/target][:mode]` — bind-mounts the session workspace, at `/workspace` unless an absolute `target` says otherwise (e.g. `workspace:ro`, `workspace:/code`, `workspace:/code:ro`). A custom target lets an image that expects its sources elsewhere be used unmodified (it does not set the working directory — the process still starts in the image's own `WORKDIR`). A target is refused unless it is an absolute path free of whitespace, and refused if it resolves to `/`, overlaps another of the tong's mounts, or overlaps a path the tong's own wiring occupies — the secret FIFO at `/run/swarmforge/secret-env` and the `/bin/sh` its wrapper execs (for a tong with secret references), or the docker socket (for a tong that mounts it).
+- `docker-socket[:mode]` — bind-mounts the host docker socket onto the same path inside the container (so it takes no target). This is full host docker control and is always called out explicitly in the workspace approval prompt; it is the grant a broker tong needs.
 
 ### Lifecycle
 

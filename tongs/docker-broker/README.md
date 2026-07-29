@@ -65,10 +65,16 @@ Notes:
 - There is deliberately **no free-form `string` parameter** in v1: an
   unconstrained value is exactly the injection surface the broker exists to
   avoid. Enumerate the values you want to allow with an `enum` param instead.
-- The `workspace:<target>` mount form (a custom mountpoint) is **broker-config
-  only** — it describes where a *worker* sees the workspace. A Swarmforge tong
-  definition's own `mounts:` accepts only `workspace[:mode]` and always mounts at
-  `/workspace`.
+- The `workspace:<target>` mount form (a custom mountpoint) describes where a
+  *worker* sees the workspace. A Swarmforge tong definition's own `mounts:`
+  accepts the same form, defaulting to `/workspace` when no target is named. It
+  checks the target more strictly than this config does: it normalizes the
+  destination, and refuses a target that contains whitespace, resolves to `/`,
+  overlaps another of the tong's own mounts, or overlaps a path the tong's own
+  wiring occupies (its secret FIFO and the shell that reads it, the docker
+  socket) — up front, rather than at `docker run`. A tong may also mount the
+  socket, which a worker never may; a worker's `workdir` has no tong equivalent,
+  so a tong process starts in the image's own `WORKDIR`.
 
 ## Develop
 
