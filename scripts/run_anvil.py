@@ -788,8 +788,8 @@ class OrchestrationError(Exception):
 def _mounts_workspace(defn):
     """True if a tong's `mounts:` request the session workspace.
 
-    The magic word may carry a `:mode` suffix (e.g. `workspace:ro`), so compare
-    only the word before the colon.
+    The magic word may carry a target and/or a mode (e.g. `workspace:/code:ro`),
+    so compare only the word before the first colon.
     """
     for mount in defn.get("mounts") or []:
         if isinstance(mount, str) and mount.split(":", 1)[0] == tongs.WORKSPACE_MOUNT:
@@ -864,23 +864,29 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     real process starts, while the bytes live only in the kernel pipe buffer --
     never `-e`, argv, or disk.
 
-    Any existing container of the same name is removed first so a stale or stopped
-    one is replaced cleanly. If anything fails after the container starts -- a
-    docker error, a delivery timeout, or a Ctrl-C -- the container is removed
-    before re-raising, so a half-configured `shared` tong (stamped with its
-    config-hash label) is not reused on the next session despite missing its
-    secret. The FIFO is always cleaned up.
+    Once the argv is assembled, any existing container of the same name is removed
+    so a stale or stopped one is replaced cleanly -- but a definition the argv
+    builder refuses removes nothing, since it started nothing. If anything fails
+    after the container starts -- a docker error, a delivery timeout, or a Ctrl-C --
+    the container is removed before re-raising, so a half-configured `shared` tong
+    (stamped with its config-hash label) is not reused on the next session despite
+    missing its secret. The FIFO is always cleaned up.
     """
     plan = tongs.plan_tong_secrets(defn.get("env"), resolver)
     plain_env = plan["env"]
     secrets = plan["secrets"]
 
     if not secrets:
-        argv = tongs.tong_run_argv(
-            name, defn,
-            container_name=container, network=network, alias=alias,
-            env=plain_env, label_hash=label_hash, workspace=workspace,
-        )
+        # A definition that got past validation should never fail argv assembly,
+        # but if it does it is still a config problem, not a crash.
+        try:
+            argv = tongs.tong_run_argv(
+                name, defn,
+                container_name=container, network=network, alias=alias,
+                env=plain_env, label_hash=label_hash, workspace=workspace,
+            )
+        except ValueError as exc:
+            raise OrchestrationError("tong '%s': %s" % (name, exc))
         docker.rm_force(container)
         docker.run_detached(argv)
         return
@@ -895,18 +901,25 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
 
     channel = make_channel(_uid_of(image_user))
     try:
-        argv = tongs.tong_run_argv(
-            name, defn,
-            container_name=container, network=network, alias=alias,
-            env=plain_env, label_hash=label_hash, workspace=workspace,
-            fifo_host_path=channel.host_path, entrypoint=entrypoint, command=command,
-        )
-        docker.rm_force(container)
-        docker.run_detached(argv)
-        channel.deliver(payload)
-    except BaseException:
-        docker.rm_force(container)
-        raise
+        # Assembled before the teardown guard below: a refused definition starts
+        # nothing, so it must remove nothing (for a `shared` tong, that would be
+        # another session's running container).
+        try:
+            argv = tongs.tong_run_argv(
+                name, defn,
+                container_name=container, network=network, alias=alias,
+                env=plain_env, label_hash=label_hash, workspace=workspace,
+                fifo_host_path=channel.host_path, entrypoint=entrypoint, command=command,
+            )
+        except ValueError as exc:
+            raise OrchestrationError("tong '%s': %s" % (name, exc))
+        try:
+            docker.rm_force(container)
+            docker.run_detached(argv)
+            channel.deliver(payload)
+        except BaseException:
+            docker.rm_force(container)
+            raise
     finally:
         channel.cleanup()
 
