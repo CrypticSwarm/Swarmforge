@@ -50,6 +50,11 @@ GID          := $(shell id -g)
 SWARMFORGE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 PROJECT_DIR  := $(CURDIR)
 PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
+# Container path the working repo is mounted at. The entrypoint, the config
+# layer env, and the docs all name it, so it is not meant to be overridden --
+# it is a variable so the workspace mount and the git-dir guard that overlays
+# paths inside it cannot drift apart.
+WORKSPACE_MOUNT := /workspace
 OPENCODE_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode
 SHARED_SKILLS_DIR ?= $(SWARMFORGE_DIR)/skills
 SHARED_COMMAND_DIR ?= $(SWARMFORGE_DIR)/commands
@@ -146,17 +151,17 @@ CLAUDE_RUN_MOUNTS = \
 .PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test
 
+# The workspace is mounted read-write, but the paths inside its git dir that
+# the *host's* git later obeys -- `config`, `hooks/`, and the pointers naming
+# where those two live -- are not the agent's to write. scripts/git_guard.py
+# works out which git dirs are reachable from the workspace and prints the
+# read-only mounts that cover them, one docker `-v` value per line, for each
+# container path the workspace is mounted at. Its module docstring has the
+# reasoning; git_dir_mounts below is just the plumbing.
 define run_agent_container
 	@docker rm -f "$(1)" >/dev/null 2>&1 || true
 	@set -euo pipefail; \
 	workspace_dir="$$(git -C "$(PROJECT_DIR)" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$(PROJECT_DIR)")"; \
-	git_common_dir="$$(git -C "$$workspace_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"; \
-	if [ -n "$$git_common_dir" ] && [ "$$git_common_dir" != "$$workspace_dir/.git" ]; then \
-		printf '%s\n' "Detected git worktree; mounting common git dir: $$git_common_dir"; \
-		git_common_mount=(-v "$$git_common_dir":"$$git_common_dir"); \
-	else \
-		git_common_mount=(); \
-	fi; \
 	if [ -f "$(GITCONFIG_FILE)" ]; then \
 		gitconfig_mount=(-v "$(GITCONFIG_FILE)":/home/opencode/.gitconfig:ro); \
 	else \
@@ -205,6 +210,15 @@ define run_agent_container
 		printf '%s\n' "Unsupported workdir mode: $(6)" >&2; \
 		exit 2; \
 	fi; \
+	git_guard_flags=(--workspace "$$workspace_dir" --target "$(WORKSPACE_MOUNT)"); \
+	if [ -n "$${repo_mount_path:-}" ]; then git_guard_flags+=(--target "$$repo_mount_path"); fi; \
+	git_dir_mounts=(); \
+	git_guard_specs="$$($(PYTHON) "$(SWARMFORGE_DIR)/scripts/git_guard.py" "$${git_guard_flags[@]}")"; \
+	if [ -n "$$git_guard_specs" ]; then \
+		while IFS= read -r git_guard_spec; do \
+			git_dir_mounts+=(-v "$$git_guard_spec"); \
+		done <<< "$$git_guard_specs"; \
+	fi; \
 	set -x; \
 	$(PYTHON) "$(SWARMFORGE_DIR)/scripts/run_anvil.py" \
 	  $(TONGS_LAYER_ARGS) \
@@ -221,10 +235,10 @@ define run_agent_container
 	  -e OPENCODE_GID="$(GID)" \
 	  -e TZ="$(TIMEZONE)" \
 	  $(2) \
-	  -v "$$workspace_dir":/workspace \
+	  -v "$$workspace_dir":"$(WORKSPACE_MOUNT)" \
 	  $${workspace_path_mount[@]+"$${workspace_path_mount[@]}"} \
 	  $(3) \
-	  $${git_common_mount[@]+"$${git_common_mount[@]}"} \
+	  $${git_dir_mounts[@]+"$${git_dir_mounts[@]}"} \
 	  $${gitconfig_mount[@]+"$${gitconfig_mount[@]}"} \
 	  $${env_file_flag[@]+"$${env_file_flag[@]}"} \
 	  $${workdir_flag[@]+"$${workdir_flag[@]}"} \

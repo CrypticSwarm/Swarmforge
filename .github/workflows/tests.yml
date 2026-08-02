@@ -16,6 +16,10 @@ jobs:
         run: python3 scripts/test_tongs.py
       - name: Run anvil launcher tests
         run: python3 scripts/test_run_anvil.py
+      - name: Run git guard tests
+        run: python3 scripts/test_git_guard.py
+      - name: Run container recipe tests
+        run: python3 scripts/test_run_agent_container.py
       - name: Check entrypoint syntax
         run: sh -n anvil/entrypoint.sh
 
