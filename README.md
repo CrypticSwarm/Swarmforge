@@ -70,6 +70,15 @@ Project-local config in the working repo (for example `.opencode/`) is still han
 For a linked git worktree they also mount the shared git common directory so git operations keep working inside the container.
 This means `oc` works from repo roots, subdirectories, and linked worktrees without extra flags.
 
+`.git/config` and `.git/hooks` are mounted read-only wherever the git dir is visible in the container.
+Both execute on the *host* — hooks run on your next commit or checkout, and config carries `core.hooksPath`, `core.pager`, `core.sshCommand` and aliases — so the agent gets no write access to them.
+`scripts/git_guard.py` builds those mounts, covering every git dir reachable from the workspace: the repo's own, a linked worktree's shared common dir, and the git dirs of initialized submodules.
+It also guards the pointers that say where config and hooks live (`commondir`, a `.git` that is a `gitdir:` file, and `config.worktree` where `extensions.worktreeConfig` is on), creating a missing `hooks/` or `commondir` on the host first so there is no gap to slip through; both are inert (`.` names the git dir that holds it, which is where git looks anyway).
+
+The rest of the git dir stays writable, so committing, branching, and fetching work as usual.
+Commands that write config fail inside the container by design — `git config --local`, `git remote add`, `git push -u`, and the tracking setup in `git switch <remote-branch>` (use `git switch -c <name> --no-track` or set the branch up on the host).
+This narrows the git-specific surface; it does not make the workspace a trust boundary. Hooks that config already points *outside* the git dir (`core.hooksPath = .githooks`, husky) and attribute-driven filter commands live in the workspace, as do `package.json` scripts and `Makefile`s — anything you run on the host from a directory an agent could write is still yours to trust.
+
 ## Ollama
 
 Run LLMs locally. `make run_ollama` starts an Ollama container on the shared network (`make stop_ollama` / `make clean` to tear down).

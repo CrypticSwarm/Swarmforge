@@ -30,3 +30,4 @@
 - Keep secrets, API keys, and downloaded models out of version control; anything mounted into containers should be reproducible from repo contents.
 - If you add new tooling, document the invocation in `README.md` so contributors understand how it integrates with `make`.
 - Prefer small, surgical edits—do not reformat or restructure unrelated files when touching scripts or skills.
+- Inside a container the workspace's `.git/config` and `.git/hooks` are mounted read-only, because both run commands on the host later. Committing, branching, and fetching work; `git config --local`, `git remote add`, `git push -u`, and the tracking setup in `git switch <remote-branch>` fail with a config lock error. Use `git push origin HEAD:<branch>` and `git switch -c <name> --no-track`, or configure the repo on the host.
