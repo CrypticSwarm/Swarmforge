@@ -122,8 +122,13 @@ class PlainCheckout(GuardCase):
         mounts = git_guard.build_mounts(repo, ["/workspace"],
                                         warn=warnings.append)
         self.assertEqual([m for m in mounts if "\n" in m], [])
-        self.assertTrue(any("colon or newline" in text for text in warnings),
-                        warnings)
+        self.assertEqual([t for t in warnings if "colon or newline" in t],
+                         ["%s cannot be expressed as a docker mount (it "
+                          "contains a colon or newline); leaving it writable "
+                          "in the container" % planted])
+        # Nothing was created in a git dir that ends up unguarded either.
+        self.assertFalse(os.path.exists(os.path.join(planted, "commondir")))
+        self.assertFalse(os.path.exists(os.path.join(planted, "hooks")))
 
     def test_a_symlinked_git_dir_pointer_is_reported(self):
         # The resolved git dir is still guarded, but the symlink itself is not
@@ -455,6 +460,30 @@ class WorktreeConfig(GuardCase):
         self.assertIn(expected, self.mounts(repo))
         self.assertIn(expected.replace("/workspace/.git", "%s/.git" % repo),
                       self.mounts(worktree))
+
+    def test_every_value_git_calls_true_enables_the_guard(self):
+        # git reads a boolean as the bool words or an integer, so `2` is on --
+        # and a value the guard read as off would leave config.worktree
+        # writable while git still obeyed it.
+        repo = self.repo()
+        config = os.path.join(repo, ".git", "config")
+        for value, enabled in (("true", True), ("yes", True), ("on", True),
+                               ("1", True), ("2", True), ("-1", True),
+                               ("false", False), ("no", False), ("off", False),
+                               ("0", False), ("", False), ("garbage", False)):
+            git(repo, "config", "--file", config,
+                "extensions.worktreeConfig", value)
+            self.assertEqual(
+                bool([m for m in self.mounts(repo) if "config.worktree" in m]),
+                enabled, "%r should be %s" % (value, enabled))
+
+    def test_a_valueless_key_counts_as_on(self):
+        # `[extensions]\n\tworktreeConfig` with no `=` is true to git.
+        repo = self.repo()
+        with open(os.path.join(repo, ".git", "config"), "a") as handle:
+            handle.write("[extensions]\n\tworktreeConfig\n")
+        self.assertTrue(
+            [m for m in self.mounts(repo) if "config.worktree" in m])
 
     def test_read_from_each_git_dir_rather_than_inherited(self):
         # The extension is per-repository: a submodule someone has run

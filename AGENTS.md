@@ -32,6 +32,6 @@
 - Prefer small, surgical edits—do not reformat or restructure unrelated files when touching scripts or skills.
 - Inside a container the workspace's `.git/config` and `.git/hooks` are mounted read-only, because both run commands on the host later. Committing, branching, fetching, stashing, and `git worktree add` work. Anything that writes config reports `error: could not write config file <path>: Device or resource busy`:
   - `git config --local`, `git remote add`, `git submodule update --init`, and `git sparse-checkout` fail outright.
-  - `git push -u` and `git switch <remote-branch>` **exit 0 and still print "set up to track"**, but the tracking config is not written — check with `git config --get branch.<name>.remote` rather than trusting the message. Use `git push origin HEAD:<branch>` and `git switch -c <name> --no-track origin/<branch>`.
+  - `git push -u` **exits 0** — the push lands, but no tracking is recorded; check `git config --get branch.<name>.remote` rather than assuming. `git switch <remote-branch>` reports `error: unable to write upstream branch configuration` and does not switch. Use `git push origin HEAD:<branch>` and `git switch -c <name> --no-track origin/<branch>`.
   - Hook installers (`pre-commit install`, husky, lefthook) fail: `.git/hooks` is read-only.
   - Configure the repo on the host when you need any of this to stick.

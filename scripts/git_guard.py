@@ -57,9 +57,8 @@ would have the next session mount that file in for it to read.
 Everything else in a git dir stays writable -- objects, refs, index, logs -- so
 commits, branches and fetches work as usual. Writes that do land in config
 report `could not write config file ...: Device or resource busy`, which is the
-point; note that `git push -u` and `git switch <remote-branch>` treat failing to
-record branch tracking as non-fatal and still exit 0, so the tracking is missing
-rather than the command failing.
+point; note that `git push -u` treats failing to record branch tracking as
+non-fatal, so the push lands and the tracking quietly does not.
 
 Where this stops:
 
@@ -68,6 +67,9 @@ Where this stops:
     it adds mid-session, has an ordinary writable config and hooks -- as does an
     unrelated checkout already vendored inside the workspace, which is not
     reachable from the workspace's own git dir and is not searched for.
+  * A path carrying a colon or a newline cannot be spelled as a docker `-v`
+    value, so it is reported and left unguarded rather than turned into some
+    other mount. Nothing is created on the host for such a path either.
   * Hooks and commands that config already points *outside* the git dir
     (`core.hooksPath = .githooks`, husky's `.husky/`, an `include.path` into the
     worktree) live in the workspace, as do attribute-driven filter and diff
@@ -184,9 +186,29 @@ def read_config(git_dir):
     for record in listed.split("\0"):
         if not record:
             continue
-        key, _, value = record.partition("\n")
-        values[key] = value
+        key, newline, value = record.partition("\n")
+        # A key written with no `=` at all has no value part, which git reads
+        # as true; one written with an empty value reads as false.
+        values[key] = value if newline else None
     return values
+
+
+def is_true(config, key):
+    """Read `key` the way git reads a boolean: bool words, or a nonzero int."""
+    if key not in config:
+        return False
+    raw = config[key]
+    if raw is None:
+        return True
+    value = raw.strip().lower()
+    if value in ("true", "yes", "on"):
+        return True
+    if value in ("false", "no", "off", ""):
+        return False
+    try:
+        return int(value, 0) != 0
+    except ValueError:
+        return False
 
 
 def worktree_config_enabled(config):
@@ -198,8 +220,7 @@ def worktree_config_enabled(config):
     does not. A worktree git dir has no config of its own, so asking it
     directly would always answer no.
     """
-    raw = config.get("extensions.worktreeconfig")
-    return raw is not None and raw.strip().lower() in ("", "true", "yes", "on", "1")
+    return is_true(config, "extensions.worktreeconfig")
 
 
 def _child_dirs(parent):
@@ -322,20 +343,20 @@ def guarded_paths(git_dir, files, dirs, worktree_config, warn):
     return paths
 
 
-def usable(host, container, warn):
-    """True if a mount of `host` at `container` survives the trip to docker.
+def mountable(path, warn):
+    """True if `path` survives the trip to docker as part of a `-v` value.
 
     A `-v` value is colon-separated and the caller reads one mount per line, so
-    a path carrying either would be split into something else -- and directories
-    inside a git dir are the container's to name. Such a path is reported and
-    left unguarded rather than turned into a mount nobody asked for.
+    a path carrying either would be split into something that means a different
+    mount -- and directories inside a git dir are the container's to name. Such
+    a path is reported and left unguarded rather than turned into a mount
+    nobody asked for; it is checked before anything is created on the host, so
+    a path that cannot be guarded is also not modified.
     """
-    for path in (host, container):
-        if ":" in path or "\n" in path:
-            warn("%s cannot be expressed as a docker mount (it contains a "
-                 "colon or newline); leaving it writable in the container"
-                 % path)
-            return False
+    if ":" in path or "\n" in path:
+        warn("%s cannot be expressed as a docker mount (it contains a colon or "
+             "newline); leaving it writable in the container" % path)
+        return False
     return True
 
 
@@ -357,7 +378,16 @@ def build_mounts(workspace, targets, warn=None):
     look. Two paths landing on the same container path keep the first, since
     docker refuses a repeated mount destination.
     """
-    warn = warn or (lambda message: None)
+    report = warn or (lambda message: None)
+    reported = set()
+
+    def warn(message):
+        # An unguardable directory is reached once per path below it; the
+        # reason is the same each time and only needs saying once.
+        if message not in reported:
+            reported.add(message)
+            report(message)
+
     workspace = os.path.realpath(workspace)
     common = common_git_dir(workspace, warn)
     if common is None:
@@ -406,6 +436,8 @@ def build_mounts(workspace, targets, warn=None):
     # and hooks the host runs when the user works in it, and it can have linked
     # worktrees of its own.
     for repository in [common] + submodule_git_dirs(common):
+        if not mountable(repository, warn):
+            continue
         config = read_config(repository)
         worktree_config = worktree_config_enabled(config)
         if repository != workspace:
@@ -419,6 +451,8 @@ def build_mounts(workspace, targets, warn=None):
             if checkout:
                 pointers.append(os.path.join(checkout, ".git"))
         for worktree in worktree_git_dirs(repository):
+            if not mountable(worktree, warn):
+                continue
             guard(worktree, False)
             # The extension is the repository's, and a worktree git dir has no
             # config of its own to read it from.
@@ -428,13 +462,14 @@ def build_mounts(workspace, targets, warn=None):
             pointers.append(worktree_checkout_pointer(worktree))
 
     for pointer in pointers:
-        if pointer and os.path.isfile(pointer) and not os.path.islink(pointer):
+        if pointer and os.path.isfile(pointer) and not os.path.islink(pointer) \
+                and mountable(pointer, warn):
             guard(pointer, True)
 
     specs = {}
     for host, read_only in plan:
         for container in container_paths(host):
-            if not usable(host, container, warn):
+            if not mountable(container, warn):
                 continue
             spec = "%s:%s:ro" % (host, container) if read_only \
                 else "%s:%s" % (host, container)
