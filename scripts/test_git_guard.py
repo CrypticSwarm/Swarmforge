@@ -110,6 +110,33 @@ class PlainCheckout(GuardCase):
         self.assertEqual(
             [m for m in self.mounts(repo) if m.endswith("/config:ro")], [])
 
+    def test_a_path_docker_cannot_express_is_reported_not_mangled(self):
+        # Directories inside a git dir are the container's to name, and a `-v`
+        # value is colon-separated and read one per line.
+        repo = self.repo()
+        planted = os.path.join(repo, ".git", "modules", "a\nb")
+        os.makedirs(planted)
+        with open(os.path.join(planted, "HEAD"), "w") as handle:
+            handle.write("ref: refs/heads/main\n")
+        warnings = []
+        mounts = git_guard.build_mounts(repo, ["/workspace"],
+                                        warn=warnings.append)
+        self.assertEqual([m for m in mounts if "\n" in m], [])
+        self.assertTrue(any("colon or newline" in text for text in warnings),
+                        warnings)
+
+    def test_a_symlinked_git_dir_pointer_is_reported(self):
+        # The resolved git dir is still guarded, but the symlink itself is not
+        # something a mount can hold in place.
+        repo = self.repo()
+        moved = os.path.join(self.tmp, "elsewhere.git")
+        shutil.move(os.path.join(repo, ".git"), moved)
+        os.symlink(moved, os.path.join(repo, ".git"))
+        warnings = []
+        git_guard.build_mounts(repo, ["/workspace"], warn=warnings.append)
+        self.assertTrue(any("symlink" in text for text in warnings), warnings)
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores the permission bits")
     def test_unwritable_git_dir_warns_instead_of_failing_the_launch(self):
         repo = self.repo()
         git_dir = os.path.join(repo, ".git")
@@ -148,29 +175,109 @@ class SeparateGitDir(GuardCase):
         self.assertIn("%s/.git:/workspace/.git:ro" % repo, mounts)
 
 
-class Destinations(GuardCase):
-    """Docker refuses a repeated mount destination, so nothing may collide."""
+class Anchoring(GuardCase):
+    """Every read-only path is reached only through mount points.
 
-    def _assert_unique(self, mounts):
-        destinations = [spec.split(":")[1] for spec in mounts]
-        self.assertEqual(sorted(destinations), sorted(set(destinations)),
-                         mounts)
+    A plain directory containing a mount point can be renamed aside and the
+    path recreated writable, so a single unmounted directory anywhere on the
+    way down undoes the guard below it. This checks the whole chain for each
+    repo shape instead of naming paths one shape at a time.
+    """
 
-    def test_a_target_that_holds_the_main_checkout_does_not_collide(self):
-        # run_claude mounts the workspace at /repos/<slug>. Run from a linked
-        # worktree whose main checkout lives at that same host path, the git
-        # dir's own mount and the worktree pointer both land there.
-        main = self.repo("proj")
-        worktree = os.path.join(self.tmp, "proj-feature")
-        git(main, "worktree", "add", "-q", "-b", "feature", worktree)
-        self._assert_unique(self.mounts(worktree, ("/workspace", main)))
+    TARGETS = ("/workspace", "/repos/me/proj")
 
-    def test_plain_repo_and_submodules_do_not_collide(self):
-        inner = self.repo("inner")
-        super_repo = self.repo("super")
-        git(super_repo, "-c", "protocol.file.allow=always", "submodule",
-            "add", "-q", inner, "sub")
-        self._assert_unique(self.mounts(super_repo, ("/workspace", "/repos/x")))
+    def assert_anchored(self, workspace):
+        mounts = self.mounts(workspace, self.TARGETS)
+        self.assertTrue(mounts, "no mounts emitted for %s" % workspace)
+        destinations = {spec.split(":")[1] for spec in mounts}
+        # Mount points that exist without the guard: the workspace mounts, and
+        # a git dir the guard binds at its own host path.
+        roots = set(self.TARGETS)
+        for spec in mounts:
+            source, destination = spec.split(":")[:2]
+            if source == destination:
+                roots.add(destination)
+        for destination in sorted(destinations - roots):
+            root = max((r for r in roots if destination.startswith(r + "/")),
+                       key=len, default=None)
+            self.assertIsNotNone(
+                root, "%s hangs off no mount point" % destination)
+            parts = os.path.relpath(destination, root).split(os.sep)
+            for depth in range(1, len(parts)):
+                ancestor = os.path.join(root, *parts[:depth])
+                self.assertIn(
+                    ancestor, destinations,
+                    "%s is reached through %s, which is not a mount point"
+                    % (destination, ancestor))
+
+    def test_plain_checkout(self):
+        self.assert_anchored(self.repo())
+
+    def test_bare_repo(self):
+        self.assert_anchored(self.repo("bare.git", bare=True))
+
+    def test_submodules_including_a_slashed_name_and_nesting(self):
+        leaf = self.repo("leaf")
+        middle = self.repo("middle")
+        git(middle, "-c", "protocol.file.allow=always", "submodule", "add",
+            "-q", leaf, "deep/leaf")
+        git(middle, "commit", "-q", "-m", "nest")
+        top = self.repo("top")
+        git(top, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+            middle, "libs/middle")
+        git(top, "-c", "protocol.file.allow=always", "submodule", "update",
+            "--init", "--recursive", "-q")
+        self.assert_anchored(top)
+
+    def test_worktree_inside_the_workspace(self):
+        repo = self.repo()
+        git(repo, "worktree", "add", "-q", "-b", "topic",
+            os.path.join(repo, "inside"))
+        self.assert_anchored(repo)
+
+    def test_workspace_is_a_linked_worktree(self):
+        repo = self.repo()
+        worktree = os.path.join(self.tmp, "wt")
+        git(repo, "worktree", "add", "-q", "-b", "topic", worktree)
+        self.assert_anchored(worktree)
+
+    def test_separate_git_dir_inside_and_outside_the_workspace(self):
+        for name, git_dir in (("inside", None), ("outside", "elsewhere")):
+            repo = os.path.join(self.tmp, name)
+            os.makedirs(repo)
+            location = os.path.join(self.tmp, git_dir) if git_dir \
+                else os.path.join(repo, ".realgit")
+            git(repo, "init", "-q", "--separate-git-dir", location)
+            self.assert_anchored(repo)
+
+
+class SubmoduleWorktrees(GuardCase):
+    def setUp(self):
+        super().setUp()
+        self.inner = self.repo("inner")
+        self.super_repo = self.repo("super")
+        git(self.super_repo, "-c", "protocol.file.allow=always", "submodule",
+            "add", "-q", self.inner, "sub")
+        git(self.super_repo, "commit", "-q", "-m", "add submodule")
+        self.checkout = os.path.join(self.super_repo, "sub-wt")
+        git(os.path.join(self.super_repo, "sub"), "worktree", "add", "-q",
+            "-b", "topic", self.checkout)
+        self.module_dir = os.path.join(
+            self.super_repo, ".git", "modules", "sub")
+
+    def test_a_submodules_own_worktrees_are_guarded(self):
+        # A submodule is a repository too, so its worktrees need the same
+        # treatment as the superproject's.
+        mounts = self.mounts(self.super_repo)
+        self.assertIn(
+            "%s/worktrees/sub-wt/commondir:"
+            "/workspace/.git/modules/sub/worktrees/sub-wt/commondir:ro"
+            % self.module_dir, mounts)
+
+    def test_the_checkout_pointer_of_a_submodule_worktree_is_guarded(self):
+        mounts = self.mounts(self.super_repo)
+        self.assertIn(
+            "%s/.git:/workspace/sub-wt/.git:ro" % self.checkout, mounts)
 
 
 class BareRepo(GuardCase):
@@ -334,6 +441,20 @@ class WorktreeConfig(GuardCase):
             "%s/.git/config.worktree:/workspace/.git/config.worktree:ro" % repo,
             self.mounts(repo),
         )
+
+    def test_a_linked_worktrees_config_is_guarded_from_the_repos_setting(self):
+        # `$GIT_DIR/config.worktree` for a linked worktree lives in its own git
+        # dir, which has no `config` to read the extension from -- the
+        # repository's says whether git reads it.
+        repo = self.repo()
+        git(repo, "config", "extensions.worktreeConfig", "true")
+        worktree = os.path.join(self.tmp, "wt")
+        git(repo, "worktree", "add", "-q", "-b", "topic", worktree)
+        expected = "%s/.git/worktrees/wt/config.worktree:" \
+            "/workspace/.git/worktrees/wt/config.worktree:ro" % repo
+        self.assertIn(expected, self.mounts(repo))
+        self.assertIn(expected.replace("/workspace/.git", "%s/.git" % repo),
+                      self.mounts(worktree))
 
     def test_read_from_each_git_dir_rather_than_inherited(self):
         # The extension is per-repository: a submodule someone has run
