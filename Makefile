@@ -157,7 +157,7 @@ CLAUDE_RUN_MOUNTS = \
 # works out which git dirs are reachable from the workspace and prints the
 # read-only mounts that cover them, one docker `-v` value per line, for each
 # container path the workspace is mounted at. Its module docstring has the
-# reasoning; git_dir_mounts below is just the plumbing.
+# reasoning.
 define run_agent_container
 	@docker rm -f "$(1)" >/dev/null 2>&1 || true
 	@set -euo pipefail; \

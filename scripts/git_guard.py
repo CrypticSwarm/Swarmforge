@@ -99,8 +99,7 @@ REPOSITORY_DIRS = ("hooks",)
 # A per-worktree git dir under `worktrees/` has no config or hooks of its own --
 # both come from the common dir -- but it carries the `commondir` pointer that
 # says which common dir that is. Never written: unlike a repository's, its
-# contents are a real relative path, and a worktree missing one is already
-# broken.
+# contents are a real relative path.
 WORKTREE_FILES = {"commondir": None}
 
 # Guarded in both kinds of git dir, but only where `extensions.worktreeConfig`
@@ -222,7 +221,6 @@ def is_true(config, key):
         return False
     raw = config[key]
     if raw is None:
-        # A key written with no value at all; git reads it as set.
         return True
     value = raw.strip().lower()
     if value in ("true", "yes", "on"):
@@ -369,11 +367,10 @@ def mountable(path, warn):
     """True if `path` survives the trip to docker as part of a `-v` value.
 
     A `-v` value is colon-separated and the caller reads one mount per line, so
-    a path carrying either would be split into something that means a different
-    mount -- and directories inside a git dir are the container's to name. Such
-    a path is reported and left unguarded rather than turned into a mount
-    nobody asked for; it is checked before anything is created on the host, so
-    a path that cannot be guarded is also not modified.
+    a path carrying either would be split into a different mount -- and
+    directories inside a git dir are the container's to name. Callers check
+    this before creating anything, so a path that cannot be guarded is also not
+    modified.
     """
     if ":" in path or "\n" in path:
         warn("%s cannot be expressed as a docker mount (it contains a colon or "
@@ -404,8 +401,7 @@ def build_mounts(workspace, targets, warn=None):
     reported = set()
 
     def warn(message):
-        # An unguardable directory is reached once per path below it; the
-        # reason is the same each time and only needs saying once.
+        # An unguardable directory is reached once per path below it.
         if message not in reported:
             reported.add(message)
             report(message)
@@ -437,8 +433,8 @@ def build_mounts(workspace, targets, warn=None):
     def root_of(host):
         return workspace if is_inside(host, workspace) else outside
 
-    # (host path, read-only) in the order they should be mounted: a directory
-    # before what hangs off it, so `set -x` output reads top down.
+    # Ordered so a directory precedes what hangs off it, which is how the
+    # launcher's `set -x` output then reads.
     plan = []
 
     def guard(host, read_only):
@@ -446,8 +442,8 @@ def build_mounts(workspace, targets, warn=None):
             plan.append((ancestor, False))
         plan.append((host, read_only))
 
-    # Pointer files: a `.git` that names a git dir elsewhere. Guarding a git dir
-    # is moot if the pointer naming it can be repointed at an unguarded one.
+    # Guarding a git dir is moot if the pointer file naming it can be repointed
+    # at an unguarded one.
     workspace_git = os.path.join(workspace, ".git")
     if os.path.islink(workspace_git):
         warn("%s is a symlink; the container can repoint it at a git dir none "
@@ -455,8 +451,7 @@ def build_mounts(workspace, targets, warn=None):
     pointers = [workspace_git]
 
     # A submodule is a repository in its own right: its git dir has the config
-    # and hooks the host runs when the user works in it, and it can have linked
-    # worktrees of its own.
+    # and hooks the host runs when the user works in it.
     for repository in [common] + submodule_git_dirs(common):
         if not mountable(repository, warn):
             continue

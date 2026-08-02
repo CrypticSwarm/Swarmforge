@@ -126,7 +126,6 @@ class PlainCheckout(GuardCase):
                          ["%s cannot be expressed as a docker mount (it "
                           "contains a colon or newline); leaving it writable "
                           "in the container" % planted])
-        # Nothing was created in a git dir that ends up unguarded either.
         self.assertFalse(os.path.exists(os.path.join(planted, "commondir")))
         self.assertFalse(os.path.exists(os.path.join(planted, "hooks")))
 
@@ -152,7 +151,6 @@ class PlainCheckout(GuardCase):
         self.assertTrue(any("commondir" in text for text in warnings), warnings)
         self.assertNotIn(
             "%s/commondir:/workspace/.git/commondir:ro" % git_dir, mounts)
-        # The rest of the guard still applies.
         self.assertIn("%s/config:/workspace/.git/config:ro" % git_dir, mounts)
 
     def test_non_git_directory_gets_nothing(self):
@@ -483,7 +481,6 @@ class WorktreeConfig(GuardCase):
                 enabled, "%r should be %s" % (value, enabled))
 
     def test_a_valueless_key_counts_as_on(self):
-        # `[extensions]\n\tworktreeConfig` with no `=` is true to git.
         repo = self.repo()
         with open(os.path.join(repo, ".git", "config"), "a") as handle:
             handle.write("[extensions]\n\tworktreeConfig\n")

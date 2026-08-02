@@ -186,9 +186,8 @@ class WorktreeGitDirMounts(MakeRecipeCase):
             "%s/hooks:%s/hooks:ro" % (self.common, self.common), mounts)
 
     def test_gitdir_pointer_file_is_readonly(self):
-        # In a linked worktree `.git` is a file holding `gitdir: <path>`.
-        # Read-only keeps the container from repointing itself at a git dir
-        # whose config and hooks are not covered by the overlays above.
+        # In a linked worktree `.git` is a file naming the git dir; read-only
+        # keeps the container from repointing it at one nothing here covers.
         self.assertTrue(os.path.isfile(os.path.join(self.worktree, ".git")))
         mounts = self.mounts(self.docker_argv("run_opencode", self.worktree))
         self.assertIn("%s/.git:/workspace/.git:ro" % self.worktree, mounts)
