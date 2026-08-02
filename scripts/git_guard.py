@@ -57,8 +57,9 @@ would have the next session mount that file in for it to read.
 Everything else in a git dir stays writable -- objects, refs, index, logs -- so
 commits, branches and fetches work as usual. Writes that do land in config
 report `could not write config file ...: Device or resource busy`, which is the
-point; note that `git push -u` treats failing to record branch tracking as
-non-fatal, so the push lands and the tracking quietly does not.
+point; note that git treats failing to record branch tracking as non-fatal, so
+`git push -u` and `git switch <remote-branch>` still exit 0 and still say they
+set up tracking that is not there.
 
 Where this stops:
 
@@ -193,22 +194,43 @@ def read_config(git_dir):
     return values
 
 
+def git_int(value):
+    """A config value as git reads an integer, or None if it is not one.
+
+    Git accepts what C's `strtoimax` with base 0 does -- decimal, `0x` hex, a
+    leading `0` for octal -- plus a `k`/`m`/`g` size suffix.
+    """
+    text = value
+    scale = 1
+    if text and text[-1] in "kKmMgG":
+        scale = 1024 ** ("kmg".index(text[-1].lower()) + 1)
+        text = text[:-1]
+    if "_" in text:
+        # Python reads these as digit separators; C stops at the underscore.
+        return None
+    for base in (0, 8):
+        try:
+            return int(text, base) * scale
+        except ValueError:
+            continue
+    return None
+
+
 def is_true(config, key):
-    """Read `key` the way git reads a boolean: bool words, or a nonzero int."""
+    """Read `key` the way git reads a boolean: a bool word or a nonzero int."""
     if key not in config:
         return False
     raw = config[key]
     if raw is None:
+        # A key written with no value at all; git reads it as set.
         return True
     value = raw.strip().lower()
     if value in ("true", "yes", "on"):
         return True
     if value in ("false", "no", "off", ""):
         return False
-    try:
-        return int(value, 0) != 0
-    except ValueError:
-        return False
+    number = git_int(value)
+    return number is not None and number != 0
 
 
 def worktree_config_enabled(config):
@@ -463,7 +485,7 @@ def build_mounts(workspace, targets, warn=None):
 
     for pointer in pointers:
         if pointer and os.path.isfile(pointer) and not os.path.islink(pointer) \
-                and mountable(pointer, warn):
+                and container_paths(pointer) and mountable(pointer, warn):
             guard(pointer, True)
 
     specs = {}

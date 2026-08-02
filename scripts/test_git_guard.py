@@ -469,8 +469,13 @@ class WorktreeConfig(GuardCase):
         config = os.path.join(repo, ".git", "config")
         for value, enabled in (("true", True), ("yes", True), ("on", True),
                                ("1", True), ("2", True), ("-1", True),
+                               # git's integers carry C's spellings: hex, a
+                               # leading zero for octal, and a size suffix.
+                               ("0x10", True), ("007", True), ("1k", True),
+                               ("-2K", True), ("1m", True),
                                ("false", False), ("no", False), ("off", False),
-                               ("0", False), ("", False), ("garbage", False)):
+                               ("0", False), ("0x0", False), ("000", False),
+                               ("0k", False), ("", False), ("garbage", False)):
             git(repo, "config", "--file", config,
                 "extensions.worktreeConfig", value)
             self.assertEqual(
