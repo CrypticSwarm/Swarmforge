@@ -91,7 +91,8 @@ class PlainCheckout(GuardCase):
         # The repo still behaves: git resolves the pointer back to the git dir.
         git(repo, "commit", "-q", "--allow-empty", "-m", "after")
         self.assertEqual(
-            git_guard.common_git_dir(repo), os.path.join(repo, ".git"))
+            git_guard.common_git_dir(repo, lambda m: None),
+            os.path.join(repo, ".git"))
 
     def test_missing_hooks_directory_is_created_rather_than_skipped(self):
         repo = self.repo()
@@ -130,6 +131,46 @@ class PlainCheckout(GuardCase):
     def test_repeated_runs_are_stable(self):
         repo = self.repo()
         self.assertEqual(self.mounts(repo), self.mounts(repo))
+
+
+class SeparateGitDir(GuardCase):
+    def test_a_git_dir_inside_the_workspace_is_guarded_under_each_target(self):
+        # `git init --separate-git-dir` puts the git dir somewhere else, which
+        # may still be inside the workspace -- and then the container reaches
+        # it through the workspace mount, not through its host path.
+        repo = os.path.join(self.tmp, "repo")
+        os.makedirs(repo)
+        git(repo, "init", "-q", "--separate-git-dir",
+            os.path.join(repo, ".realgit"))
+        mounts = self.mounts(repo)
+        self.assertIn(
+            "%s/.realgit/config:/workspace/.realgit/config:ro" % repo, mounts)
+        self.assertIn("%s/.git:/workspace/.git:ro" % repo, mounts)
+
+
+class Destinations(GuardCase):
+    """Docker refuses a repeated mount destination, so nothing may collide."""
+
+    def _assert_unique(self, mounts):
+        destinations = [spec.split(":")[1] for spec in mounts]
+        self.assertEqual(sorted(destinations), sorted(set(destinations)),
+                         mounts)
+
+    def test_a_target_that_holds_the_main_checkout_does_not_collide(self):
+        # run_claude mounts the workspace at /repos/<slug>. Run from a linked
+        # worktree whose main checkout lives at that same host path, the git
+        # dir's own mount and the worktree pointer both land there.
+        main = self.repo("proj")
+        worktree = os.path.join(self.tmp, "proj-feature")
+        git(main, "worktree", "add", "-q", "-b", "feature", worktree)
+        self._assert_unique(self.mounts(worktree, ("/workspace", main)))
+
+    def test_plain_repo_and_submodules_do_not_collide(self):
+        inner = self.repo("inner")
+        super_repo = self.repo("super")
+        git(super_repo, "-c", "protocol.file.allow=always", "submodule",
+            "add", "-q", inner, "sub")
+        self._assert_unique(self.mounts(super_repo, ("/workspace", "/repos/x")))
 
 
 class BareRepo(GuardCase):
@@ -174,6 +215,17 @@ class LinkedWorktree(GuardCase):
                     for spec in mounts),
                 mounts,
             )
+
+    def test_a_worktree_inside_the_workspace_has_its_pointer_guarded(self):
+        # `git worktree add wt` leaves a pointer at <workspace>/wt/.git, in a
+        # directory the user works in. Rewriting it sends the host's git to a
+        # git dir none of these mounts cover.
+        nested = os.path.join(self.repo_path, "inside")
+        git(self.repo_path, "worktree", "add", "-q", "-b", "other", nested)
+        mounts = self.mounts(self.repo_path)
+        self.assertIn("%s/.git:/workspace/inside/.git:ro" % nested, mounts)
+        self.assertIn(
+            "%s/inside:/workspace/inside" % self.repo_path, mounts)
 
     def test_per_worktree_commondir_is_never_rewritten(self):
         # Unlike a repository's, its contents are a real relative path.
@@ -223,6 +275,54 @@ class Submodules(GuardCase):
             "%s/config:/repos/x/.git/modules/libs/nested/config:ro"
             % self.module_dir, mounts)
 
+    def test_directories_on_the_way_down_are_mount_points_too(self):
+        # A plain directory containing a mount point can still be renamed --
+        # the mounts follow it and the vacated path comes back writable -- so
+        # every directory between the workspace and a guarded path is bound
+        # onto itself as well.
+        mounts = self.mounts(self.super_repo)
+        for relative in (".git/modules", ".git/modules/libs",
+                         ".git/modules/libs/nested", "libs", "libs/nested"):
+            self.assertIn(
+                "%s/%s:/workspace/%s" % (self.super_repo, relative, relative),
+                mounts,
+            )
+
+    def test_a_planted_git_dir_cannot_pull_host_files_in_through_a_symlink(self):
+        # `.git/modules` is writable, so the container can fabricate what looks
+        # like a submodule git dir and point its config at a host file. Mounting
+        # that would hand the next session whatever it named.
+        planted = os.path.join(self.super_repo, ".git", "modules", "planted")
+        os.makedirs(planted)
+        with open(os.path.join(planted, "HEAD"), "w") as handle:
+            handle.write("ref: refs/heads/main\n")
+        secret = os.path.join(self.tmp, "secret")
+        with open(secret, "w") as handle:
+            handle.write("private")
+        os.symlink(secret, os.path.join(planted, "config"))
+        os.symlink(self.tmp, os.path.join(planted, "hooks"))
+        mounts = self.mounts(self.super_repo)
+        # The planted dir is inside the workspace and mounting parts of it back
+        # onto itself is harmless; what must not happen is a mount whose source
+        # is the symlink, which docker would resolve to the host file behind it.
+        self.assertEqual(
+            [m for m in mounts if m.endswith("/planted/config:ro")
+             or m.endswith("/planted/hooks:ro")],
+            [],
+        )
+        with open(secret) as handle:
+            self.assertEqual(handle.read(), "private")
+
+    def test_a_symlinked_modules_directory_is_not_walked(self):
+        # Following it would guard -- and create files in -- git dirs anywhere
+        # on the host the container chose to name.
+        elsewhere = self.repo("elsewhere")
+        shutil.rmtree(os.path.join(self.super_repo, ".git", "modules"))
+        os.symlink(os.path.join(elsewhere, ".git", "modules"),
+                   os.path.join(self.super_repo, ".git", "modules"))
+        self.assertEqual(
+            [m for m in self.mounts(self.super_repo) if elsewhere in m], [])
+
 
 class WorktreeConfig(GuardCase):
     def test_guarded_only_where_the_extension_is_enabled(self):
@@ -234,6 +334,24 @@ class WorktreeConfig(GuardCase):
             "%s/.git/config.worktree:/workspace/.git/config.worktree:ro" % repo,
             self.mounts(repo),
         )
+
+    def test_read_from_each_git_dir_rather_than_inherited(self):
+        # The extension is per-repository: a submodule someone has run
+        # `git sparse-checkout` in has it on while the superproject does not.
+        inner = self.repo("inner")
+        super_repo = self.repo("super")
+        git(super_repo, "-c", "protocol.file.allow=always", "submodule",
+            "add", "-q", inner, "sub")
+        module_dir = os.path.join(super_repo, ".git", "modules", "sub")
+        git(module_dir, "config", "--file",
+            os.path.join(module_dir, "config"),
+            "extensions.worktreeConfig", "true")
+        mounts = self.mounts(super_repo)
+        self.assertIn(
+            "%s/config.worktree:/workspace/.git/modules/sub/config.worktree:ro"
+            % module_dir, mounts)
+        self.assertEqual(
+            [m for m in mounts if m.endswith("/.git/config.worktree:ro")], [])
 
     def test_enabled_extension_creates_the_file_it_guards(self):
         # git reads it when the extension is on, so an absent one is a hole.

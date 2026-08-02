@@ -20,40 +20,63 @@ container:
     would let the container point git at a directory of its own and hand back
     the two paths above.
   * `config.worktree` -- a second config file, read when `extensions.worktreeConfig`
-    is on. The container cannot turn the extension on (config is read-only), but
-    `git sparse-checkout` turns it on for its own reasons, so repos that have it
-    enabled are not unusual.
+    is on for that repo. The container cannot turn the extension on (config is
+    read-only), but `git sparse-checkout` turns it on for its own reasons, so
+    repos that have it enabled are not unusual.
 
-Each of those is bind-mounted read-only over the read-write workspace, for the
-git dir itself and for every git dir reachable from it: the git dirs of
-initialized submodules (`modules/`, recursively) and of linked worktrees
-(`worktrees/`). A `.git` that is a pointer file rather than a directory -- a
-linked worktree, a submodule checkout, `--separate-git-dir` -- is mounted
-read-only too, so the container cannot repoint itself at a git dir none of these
-mounts cover.
+Each of those is bind-mounted read-only, for the workspace's git dir and for
+every git dir reachable from it: the git dirs of initialized submodules
+(`modules/`, recursively) and of linked worktrees (`worktrees/`). A `.git` that
+is a pointer file rather than a directory -- a linked worktree, a submodule
+checkout, `--separate-git-dir` -- is mounted read-only too, so the container
+cannot repoint itself at a git dir none of these mounts cover.
 
-Each git dir is also bind-mounted onto itself, which makes it a mount point.
-Without that the read-only mounts are trivially sidestepped: renaming the git
-dir aside and copying it back reproduces the repo with a writable config, and
-the copy is what the host reads afterwards. Renaming a mount point fails.
+Three things make read-only actually hold:
 
-A read-only mount needs something on the host to cover, so a missing `hooks/`
-or `commondir` is created first rather than left as a hole. Both are inert: an
-empty hooks directory is what `git init` produces, and a `commondir` of `.`
-resolves to the git dir that contains it, which is where git looks anyway.
+  * A read-only mount covers one path. The same host file reached through
+    another mount of the workspace is still writable, so every guarded path is
+    emitted once per `--target`.
+  * A mount point cannot be renamed or removed, but a plain directory that
+    merely *contains* one can: the submounts follow it, and the vacated path can
+    be recreated writable, which is what the host reads afterwards. So every
+    directory on the way down to a guarded path -- `.git`, `.git/modules`, a
+    submodule's checkout -- is bound onto itself to make it a mount point too.
+  * A read-only mount needs something on the host to cover, so a missing
+    `hooks/` or `commondir` is created first rather than left as a gap. Both are
+    inert: an empty hooks directory is what `git init` produces, and a
+    `commondir` of `.` resolves to the git dir that contains it, which is where
+    git looks anyway. It is not quite invisible -- `git rev-parse
+    --git-common-dir` answers with an absolute path where it used to answer
+    `.git`, because git resolves the pointer it now finds.
+
+Symlinks are refused rather than followed. A guarded path that is a symlink is
+skipped, and the walk never descends through one: otherwise a container that
+writes `.git/modules/x/HEAD` and points `.git/modules/x/config` at a host file
+would have the next session mount that file in for it to read.
 
 Everything else in a git dir stays writable -- objects, refs, index, logs -- so
 commits, branches and fetches work as usual. Writes that do land in config
 (`git config --local`, `git remote add`, `git push -u`, and the branch tracking
 that `git switch <remote-branch>` records) fail inside the container by design.
 
-What this cannot reach: hooks that config already points *outside* the git dir
-(`core.hooksPath = .githooks`, husky's `.husky/`), and attribute-driven filter
-and diff commands, which a tracked `.gitattributes` can invoke just as well as
-`.git/info/attributes`. Both live in the read-write workspace, which is not a
-trust boundary -- an agent that can edit `package.json`, `Makefile` or
-`.pre-commit-config.yaml` can already run code on the host by other means. The
-point of these mounts is to close the paths that need no such cooperation.
+Where this stops:
+
+  * Only git dirs that exist when the session starts are covered. A repo the
+    agent clones or `git init`s inside the workspace, or a submodule or worktree
+    it adds mid-session, has an ordinary writable config and hooks -- as does an
+    unrelated checkout already vendored inside the workspace, which is not
+    reachable from the workspace's own git dir and is not searched for.
+  * Hooks and commands that config already points *outside* the git dir
+    (`core.hooksPath = .githooks`, husky's `.husky/`, an `include.path` into the
+    worktree) live in the workspace, as do attribute-driven filter and diff
+    commands, which a tracked `.gitattributes` invokes just as well as
+    `.git/info/attributes`.
+
+The workspace is not a trust boundary: an agent that can edit `package.json`, a
+`Makefile` or `.pre-commit-config.yaml` can already run code on the host by
+other means. The point of these mounts is to close the paths that need no such
+cooperation -- the ones that fire on a bare `git status` in a repo the user has
+no reason to distrust.
 """
 
 import os
@@ -111,13 +134,14 @@ def parse_args(argv):
     return workspace, targets
 
 
-def git_output(workspace, *args):
-    """Stdout of a git command in `workspace`, or None if it failed."""
+# --- Reading the repo ---------------------------------------------------------
+
+
+def git_output(cwd, *args):
+    """Stdout of a git command, or None if git failed or is not installed."""
     try:
         completed = subprocess.run(
-            ["git", "-C", workspace] + list(args),
-            capture_output=True, text=True,
-        )
+            ["git", "-C", cwd] + list(args), capture_output=True, text=True)
     except OSError:
         return None
     if completed.returncode != 0:
@@ -125,7 +149,7 @@ def git_output(workspace, *args):
     return completed.stdout.strip()
 
 
-def common_git_dir(workspace):
+def common_git_dir(workspace, warn):
     """The git dir holding `workspace`'s config and hooks, or None.
 
     Resolved through the filesystem so it can be compared against the workspace
@@ -134,54 +158,64 @@ def common_git_dir(workspace):
     found = git_output(
         workspace, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if not found:
+        if os.path.exists(os.path.join(workspace, ".git")):
+            warn("%s looks like a git repo but git would not read it; its git "
+                 "configuration is writable in the container" % workspace)
         return None
     return os.path.realpath(found)
 
 
-def worktree_config_enabled(workspace):
-    """True if git reads `config.worktree` files in this repo."""
-    return git_output(
-        workspace, "config", "--bool", "extensions.worktreeConfig") == "true"
+def worktree_config_enabled(git_dir):
+    """True if git reads `config.worktree` files for this repository.
 
-
-def submodule_git_dirs(git_dir):
-    """(path, relative path) of every initialized submodule git dir below.
-
-    Submodule git dirs live under `modules/`, keyed by submodule name -- which
-    may itself contain slashes, so the intermediate directories are walked
-    rather than assumed to be one level deep. A submodule can have submodules,
-    so each hit is descended into as well.
+    The extension is per-repository, so it is read from the git dir being
+    guarded rather than inherited from the workspace: a submodule that has had
+    `git sparse-checkout` run in it has the extension on when the superproject
+    does not.
     """
-    found = []
-    pending = [os.path.join(git_dir, "modules")]
-    while pending:
-        parent = pending.pop()
-        try:
-            entries = sorted(os.scandir(parent), key=lambda entry: entry.name)
-        except OSError:
-            continue
-        for entry in entries:
-            if not entry.is_dir(follow_symlinks=False):
-                continue
-            if os.path.isfile(os.path.join(entry.path, "HEAD")):
-                found.append((entry.path, os.path.relpath(entry.path, git_dir)))
-                pending.append(os.path.join(entry.path, "modules"))
-            else:
-                pending.append(entry.path)
-    return found
+    config = os.path.join(git_dir, "config")
+    if not os.path.isfile(config):
+        return False
+    return git_output(
+        git_dir, "config", "--file", config, "--bool",
+        "extensions.worktreeConfig") == "true"
 
 
-def worktree_git_dirs(git_dir):
-    """(path, relative path) of every linked worktree's git dir below."""
-    parent = os.path.join(git_dir, "worktrees")
+def _child_dirs(parent):
+    """Directory entries of `parent`, skipping symlinks and unreadable paths."""
+    if os.path.islink(parent):
+        return []
     try:
         entries = sorted(os.scandir(parent), key=lambda entry: entry.name)
     except OSError:
         return []
-    return [
-        (entry.path, os.path.relpath(entry.path, git_dir))
-        for entry in entries if entry.is_dir(follow_symlinks=False)
-    ]
+    return [entry.path for entry in entries
+            if entry.is_dir(follow_symlinks=False)]
+
+
+def submodule_git_dirs(git_dir):
+    """Every initialized submodule git dir below `git_dir`.
+
+    They live under `modules/`, keyed by submodule name -- which may itself
+    contain slashes, so the intermediate directories are walked rather than
+    assumed to be one level deep. A submodule can have submodules, so each hit
+    is descended into as well.
+    """
+    found = []
+    pending = [os.path.join(git_dir, "modules")]
+    while pending:
+        for path in _child_dirs(pending.pop()):
+            if os.path.isfile(os.path.join(path, "HEAD")):
+                found.append(path)
+                pending.append(os.path.join(path, "modules"))
+            else:
+                pending.append(path)
+    return found
+
+
+def worktree_git_dirs(git_dir):
+    """Every linked worktree's git dir below `git_dir`."""
+    return _child_dirs(os.path.join(git_dir, "worktrees"))
 
 
 def submodule_checkout(git_dir):
@@ -190,19 +224,50 @@ def submodule_checkout(git_dir):
     `core.worktree` is written relative to the git dir when git creates the
     submodule, so it is resolved against it.
     """
-    worktree = git_output(git_dir, "config", "--file",
-                          os.path.join(git_dir, "config"), "core.worktree")
+    config = os.path.join(git_dir, "config")
+    if not os.path.isfile(config):
+        return None
+    worktree = git_output(git_dir, "config", "--file", config, "core.worktree")
     if not worktree:
         return None
     return os.path.realpath(os.path.join(git_dir, worktree))
 
 
+def worktree_checkout_pointer(worktree_git_dir):
+    """The `.git` pointer file of a linked worktree, from its `gitdir` file."""
+    record = os.path.join(worktree_git_dir, "gitdir")
+    if not os.path.isfile(record):
+        return None
+    try:
+        with open(record) as handle:
+            named = handle.read().strip()
+    except OSError:
+        return None
+    return os.path.realpath(named) if named else None
+
+
+# --- Placing the mounts -------------------------------------------------------
+
+
+def is_inside(path, root):
+    """True if `path` is strictly below `root`. Both must be resolved."""
+    if not root:
+        return False
+    relative = os.path.relpath(path, root)
+    return relative != os.curdir and relative != os.pardir \
+        and not relative.startswith(os.pardir + os.sep)
+
+
 def ensure_present(path, contents, warn):
     """Create `path` if absent so a read-only mount has something to cover.
 
-    `contents` of None means a directory. Returns whether the path is now there;
-    a repo we cannot write to is reported rather than silently left unguarded.
+    `contents` of None means a directory. A git dir this user cannot write is
+    reported and left alone: the container runs as the same user, so it cannot
+    write there either, and failing the launch over it would help no one.
     """
+    if os.path.islink(path):
+        warn("%s is a symlink; leaving it writable in the container" % path)
+        return False
     if os.path.exists(path):
         return True
     try:
@@ -218,114 +283,111 @@ def ensure_present(path, contents, warn):
     return True
 
 
-def read_only(host, container):
-    return "%s:%s:ro" % (host, container)
-
-
-def git_dir_mounts(host_dir, container_dir, *, files, dirs=(), anchor=True,
-                   worktree_config=False, warn=None):
-    """Mounts guarding one git dir: the anchor, then the read-only paths."""
-    specs = []
-    if anchor:
-        specs.append("%s:%s" % (host_dir, container_dir))
+def guarded_paths(git_dir, files, dirs, warn):
+    """Host paths inside one git dir to make read-only, creating what is due."""
     wanted = dict(files)
-    if worktree_config:
+    if worktree_config_enabled(git_dir):
         wanted.update(WORKTREE_CONFIG)
+    paths = []
     for name, contents in wanted.items():
-        path = os.path.join(host_dir, name)
+        path = os.path.join(git_dir, name)
         if contents is None:
-            if not os.path.isfile(path):
+            if os.path.islink(path) or not os.path.isfile(path):
                 continue
         elif not ensure_present(path, contents, warn):
             continue
-        specs.append(read_only(path, os.path.join(container_dir, name)))
+        paths.append(path)
     for name in dirs:
-        path = os.path.join(host_dir, name)
-        if not ensure_present(path, None, warn):
-            continue
-        specs.append(read_only(path, os.path.join(container_dir, name)))
-    return specs
+        path = os.path.join(git_dir, name)
+        if ensure_present(path, None, warn):
+            paths.append(path)
+    return paths
 
 
-def repository_mounts(host_dir, container_dir, *, anchor, worktree_config, warn):
-    """Guard a git dir plus the submodule and worktree git dirs it contains.
-
-    A nested git dir keeps its path relative to the git dir it was found in, so
-    it lands under the same container path without a second lookup.
-    """
-    specs = git_dir_mounts(
-        host_dir, container_dir, files=REPOSITORY_FILES, dirs=REPOSITORY_DIRS,
-        anchor=anchor, worktree_config=worktree_config, warn=warn)
-    for path, relative in submodule_git_dirs(host_dir):
-        specs += git_dir_mounts(
-            path, os.path.join(container_dir, relative),
-            files=REPOSITORY_FILES, dirs=REPOSITORY_DIRS, anchor=False,
-            worktree_config=worktree_config, warn=warn)
-    for path, relative in worktree_git_dirs(host_dir):
-        specs += git_dir_mounts(
-            path, os.path.join(container_dir, relative), files=WORKTREE_FILES,
-            anchor=False, worktree_config=worktree_config, warn=warn)
-    return specs
-
-
-def pointer_mounts(host_pointer, workspace, targets):
-    """Read-only mounts for a `.git` that is a `gitdir:` pointer file.
-
-    Emitted for every container path the pointer is visible from. A pointer
-    outside the workspace is not mounted: it is not the container's to rewrite.
-    """
-    if not os.path.isfile(host_pointer):
+def ancestors_between(path, root):
+    """The directories from `root` down to `path`, both ends excluded."""
+    if not is_inside(path, root):
         return []
-    relative = os.path.relpath(host_pointer, workspace)
-    if relative.startswith(os.pardir + os.sep) or relative == os.pardir:
-        return []
-    return [
-        read_only(host_pointer, os.path.join(target, relative))
-        for target in targets
-    ]
+    parts = os.path.relpath(path, root).split(os.sep)
+    return [os.path.join(root, *parts[:depth])
+            for depth in range(1, len(parts))]
 
 
 def build_mounts(workspace, targets, warn=None):
-    """Every mount that guards `workspace`'s git configuration, in order."""
+    """Every mount that guards `workspace`'s git configuration.
+
+    Each host path is placed at every container path it is reachable from:
+    below a `--target` when it lives in the workspace, and at its own absolute
+    path when it does not -- which is where the pointer file naming it says to
+    look. Two paths landing on the same container path keep the first, since
+    docker refuses a repeated mount destination.
+    """
     warn = warn or (lambda message: None)
-    common = common_git_dir(workspace)
+    workspace = os.path.realpath(workspace)
+    common = common_git_dir(workspace, warn)
     if common is None:
         return []
-    workspace_real = os.path.realpath(workspace)
-    workspace_git = os.path.join(workspace, ".git")
-    worktree_config = worktree_config_enabled(workspace)
 
-    specs = []
-    if common == workspace_real:
-        # A bare repo: the workspace mount is the git dir, and is already a
-        # mount point, so it needs the read-only paths but no anchor.
-        for target in targets:
-            specs += repository_mounts(
-                common, target, anchor=False,
-                worktree_config=worktree_config, warn=warn)
-    elif common == os.path.realpath(workspace_git):
-        for target in targets:
-            specs += repository_mounts(
-                workspace_git, os.path.join(target, ".git"), anchor=True,
-                worktree_config=worktree_config, warn=warn)
-    else:
-        # A linked worktree or --separate-git-dir: the git dir lives outside
-        # the workspace, so it is mounted at its own host path -- which is
-        # where the pointer file names it.
-        warn("Detected git dir outside the workspace; mounting it: %s" % common)
-        specs += repository_mounts(
-            common, common, anchor=True,
-            worktree_config=worktree_config, warn=warn)
-        specs += pointer_mounts(workspace_git, workspace, targets)
+    # A git dir outside the workspace is mounted at its own path, so that is
+    # the mount everything inside it hangs off; inside the workspace, the
+    # workspace mount is.
+    outside = None if common == workspace or is_inside(common, workspace) \
+        else common
+    if outside:
+        warn("Detected a git dir outside the workspace; mounting it: %s"
+             % outside)
 
-    # A submodule's checkout carries its own pointer file inside the workspace.
-    # Rewriting it would send the host's git to a git dir nothing above covers.
-    for path, _ in submodule_git_dirs(common):
-        checkout = submodule_checkout(path)
-        if checkout:
-            specs += pointer_mounts(
-                os.path.join(checkout, ".git"), workspace_real, targets)
-    return specs
+    def container_paths(host):
+        if host == workspace:
+            return list(targets)
+        if is_inside(host, workspace):
+            relative = os.path.relpath(host, workspace)
+            return [os.path.join(target, relative) for target in targets]
+        if host == outside or is_inside(host, outside):
+            return [host]
+        return []
+
+    def root_of(host):
+        return workspace if is_inside(host, workspace) else outside
+
+    # (host path, read-only) in the order they should be mounted: a directory
+    # before what hangs off it, so `set -x` output reads top down.
+    plan = []
+
+    def guard(host, read_only):
+        for ancestor in ancestors_between(host, root_of(host)):
+            plan.append((ancestor, False))
+        plan.append((host, read_only))
+
+    repositories = [common] + submodule_git_dirs(common)
+    worktrees = worktree_git_dirs(common)
+    for git_dir in repositories + worktrees:
+        files, dirs = (REPOSITORY_FILES, REPOSITORY_DIRS) \
+            if git_dir in repositories else (WORKTREE_FILES, ())
+        if git_dir != workspace:
+            # A bare repo is its own workspace mount, already a mount point.
+            guard(git_dir, False)
+        for path in guarded_paths(git_dir, files, dirs, warn):
+            guard(path, True)
+
+    # Pointer files: a `.git` that names a git dir elsewhere. Guarding a git dir
+    # is moot if the pointer naming it can be repointed at an unguarded one.
+    pointers = [os.path.join(workspace, ".git")]
+    pointers += [worktree_checkout_pointer(path) for path in worktrees]
+    for module in repositories[1:]:
+        checkout = submodule_checkout(module)
+        pointers.append(os.path.join(checkout, ".git") if checkout else None)
+    for pointer in pointers:
+        if pointer and os.path.isfile(pointer) and not os.path.islink(pointer):
+            guard(pointer, True)
+
+    specs = {}
+    for host, read_only in plan:
+        for container in container_paths(host):
+            spec = "%s:%s:ro" % (host, container) if read_only \
+                else "%s:%s" % (host, container)
+            specs.setdefault(container, spec)
+    return list(specs.values())
 
 
 def main(argv, out=sys.stdout, err=sys.stderr):
