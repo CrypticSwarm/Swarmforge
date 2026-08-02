@@ -72,9 +72,11 @@ This means `oc` works from repo roots, subdirectories, and linked worktrees with
 
 `.git/config` and `.git/hooks` are mounted read-only wherever the git dir is visible in the container.
 Both execute on the *host* — hooks run on your next commit or checkout, and config carries `core.hooksPath`, `core.pager`, `core.sshCommand` and aliases — so the agent gets no write access to them.
-`scripts/git_guard.py` builds those mounts, covering every git dir reachable from the workspace: the repo's own, a linked worktree's shared common dir, and the git dirs of initialized submodules — each with their own linked worktrees.
+`scripts/git_guard.py` builds those mounts, covering every git dir reachable from the workspace: the repo's own, a linked worktree's shared common dir, and the git dirs of initialized submodules — each with their own submodules and worktrees, including a submodule initialized inside a worktree, whose git dir git keeps under that worktree rather than the repository.
+`remotes/` and `branches/`, the pre-config way to define a remote, are read-only for the same reason as `config`.
 It also guards the pointers that say where config and hooks live (`commondir`, a `.git` that is a `gitdir:` file, and `config.worktree` where `extensions.worktreeConfig` is on), and binds every directory on the way down onto itself, since a plain directory containing a read-only mount can still be renamed aside and recreated writable.
-A missing `hooks/` or `commondir` is created on the host first so there is no gap to slip through; both are inert, though a repo that gains a `commondir` starts answering `git rev-parse --git-common-dir` with an absolute path instead of `.git`.
+A guarded path that is absent is created on the host first so there is no gap to slip through — a repo with no `config` works fine, which makes its absence room to write one rather than a sign there is nothing to guard.
+The placeholders are inert, though a repo that gains a `commondir` starts answering `git rev-parse --git-common-dir` with an absolute path instead of `.git`.
 Only git dirs that exist when the session starts are covered — a repo the agent clones or `git init`s inside the workspace, or an unrelated checkout vendored there, is not.
 
 The rest of the git dir stays writable, so committing, branching, fetching, and `git worktree add` work as usual.

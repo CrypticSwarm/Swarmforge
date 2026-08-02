@@ -102,13 +102,28 @@ class PlainCheckout(GuardCase):
         self.assertTrue(os.path.isdir(hooks))
         self.assertIn("%s:/workspace/.git/hooks:ro" % hooks, mounts)
 
-    def test_config_is_never_invented(self):
-        # A file the repo does not have is not a file to fabricate; only the
-        # pointers whose absence is itself the hole get created.
+    def test_missing_config_is_created_rather_than_left_writable(self):
+        # A repo works fine with no config, so its absence is not a sign there
+        # is nothing to guard -- it is room for the container to write one.
         repo = self.repo()
-        os.remove(os.path.join(repo, ".git", "config"))
-        self.assertEqual(
-            [m for m in self.mounts(repo) if m.endswith("/config:ro")], [])
+        config = os.path.join(repo, ".git", "config")
+        os.remove(config)
+        self.assertIn("%s:/workspace/.git/config:ro" % config,
+                      self.mounts(repo))
+        with open(config) as handle:
+            self.assertEqual(handle.read(), "")
+        git(repo, "commit", "-q", "--allow-empty", "-m", "after")
+
+    def test_the_pre_config_remote_files_are_read_only(self):
+        # git still reads `remotes/<name>` and `branches/<name>` when config
+        # names no such remote, so a planted one decides where `git fetch
+        # <name>` goes and what it runs to get there.
+        repo = self.repo()
+        mounts = self.mounts(repo)
+        for name in ("remotes", "branches"):
+            path = os.path.join(repo, ".git", name)
+            self.assertTrue(os.path.isdir(path))
+            self.assertIn("%s:/workspace/.git/%s:ro" % (path, name), mounts)
 
     def test_a_path_docker_cannot_express_is_reported_not_mangled(self):
         # Directories inside a git dir are the container's to name, and a `-v`
@@ -232,6 +247,19 @@ class Anchoring(GuardCase):
             "--init", "--recursive", "-q")
         self.assert_anchored(top)
 
+    def test_submodule_initialized_inside_a_linked_worktree(self):
+        inner = self.repo("inner")
+        top = self.repo("top")
+        git(top, "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+            inner, "sub")
+        git(top, "commit", "-q", "-m", "add submodule")
+        worktree = os.path.join(self.tmp, "topwt")
+        git(top, "worktree", "add", "-q", "-b", "wtb", worktree)
+        git(worktree, "-c", "protocol.file.allow=always", "submodule",
+            "update", "--init", "-q")
+        self.assert_anchored(top)
+        self.assert_anchored(worktree)
+
     def test_worktree_inside_the_workspace(self):
         repo = self.repo()
         git(repo, "worktree", "add", "-q", "-b", "topic",
@@ -281,6 +309,48 @@ class SubmoduleWorktrees(GuardCase):
         mounts = self.mounts(self.super_repo)
         self.assertIn(
             "%s/.git:/workspace/sub-wt/.git:ro" % self.checkout, mounts)
+
+
+class SubmoduleInsideAWorktree(GuardCase):
+    """git puts it under the worktree's git dir, not the repository's."""
+
+    def setUp(self):
+        super().setUp()
+        self.inner = self.repo("inner")
+        self.super_repo = self.repo("super")
+        git(self.super_repo, "-c", "protocol.file.allow=always", "submodule",
+            "add", "-q", self.inner, "sub")
+        git(self.super_repo, "commit", "-q", "-m", "add submodule")
+        self.worktree = os.path.join(self.tmp, "superwt")
+        git(self.super_repo, "worktree", "add", "-q", "-b", "wtb",
+            self.worktree)
+        git(self.worktree, "-c", "protocol.file.allow=always", "submodule",
+            "update", "--init", "-q")
+        self.module_dir = os.path.join(
+            self.super_repo, ".git", "worktrees", "superwt", "modules", "sub")
+
+    def test_its_git_dir_is_guarded_from_the_main_checkout(self):
+        self.assertTrue(os.path.isdir(self.module_dir))
+        mounts = self.mounts(self.super_repo)
+        for name in ("config", "hooks", "commondir"):
+            self.assertIn(
+                "%s/%s:/workspace/.git/worktrees/superwt/modules/sub/%s:ro"
+                % (self.module_dir, name, name),
+                mounts,
+            )
+
+    def test_its_git_dir_is_guarded_from_the_worktree(self):
+        # From this side the common git dir is bound at its own host path, so
+        # the submodule's git dir is reachable there instead.
+        mounts = self.mounts(self.worktree)
+        self.assertIn(
+            "%s/config:%s/config:ro" % (self.module_dir, self.module_dir),
+            mounts)
+
+    def test_its_checkout_pointer_is_guarded(self):
+        self.assertIn(
+            "%s/sub/.git:/workspace/sub/.git:ro" % self.worktree,
+            self.mounts(self.worktree))
 
 
 class BareRepo(GuardCase):

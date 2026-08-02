@@ -23,11 +23,16 @@ container:
     is on for that repo. The container cannot turn the extension on (config is
     read-only), but `git sparse-checkout` turns it on for its own reasons, so
     repos that have it enabled are not unusual.
+  * `remotes/` and `branches/` -- the pre-config way to define a remote, still
+    read when config defines no remote of that name, so a planted file there
+    decides where a `git fetch <name>` goes and what it runs to get there.
 
 Each of those is bind-mounted read-only, for the workspace's git dir and for
 every git dir reachable from it: the git dirs of initialized submodules
-(`modules/`, recursively) and of linked worktrees (`worktrees/`). A `.git` that
-is a pointer file rather than a directory -- a linked worktree, a submodule
+(`modules/`) and of linked worktrees (`worktrees/`), and the same again from
+each of those, since a submodule initialized inside a linked worktree keeps its
+git dir under that worktree rather than under the repository. A `.git` that is
+a pointer file rather than a directory -- a linked worktree, a submodule
 checkout, `--separate-git-dir` -- is mounted read-only too, so the container
 cannot repoint itself at a git dir none of these mounts cover.
 
@@ -41,13 +46,15 @@ Three things make read-only actually hold:
     be recreated writable, which is what the host reads afterwards. So every
     directory on the way down to a guarded path -- `.git`, `.git/modules`, a
     submodule's checkout -- is bound onto itself to make it a mount point too.
-  * A read-only mount needs something on the host to cover, so a missing
-    `hooks/` or `commondir` is created first rather than left as a gap. Both are
-    inert: an empty hooks directory is what `git init` produces, and a
-    `commondir` of `.` resolves to the git dir that contains it, which is where
-    git looks anyway. It is not quite invisible -- `git rev-parse
-    --git-common-dir` answers with an absolute path where it used to answer
-    `.git`, because git resolves the pointer it now finds.
+  * A read-only mount needs something on the host to cover, so a guarded path
+    that is absent is created first rather than left as a gap -- a repo with no
+    `config` works fine, and the container writing one is the whole problem.
+    They are inert: empty directories are what `git init` produces, an empty
+    `config` says nothing, and a `commondir` of `.` resolves to the git dir
+    that contains it, which is where git looks anyway. Not quite invisible,
+    though -- `git rev-parse --git-common-dir` answers with an absolute path
+    where it used to answer `.git`, because git resolves the pointer it now
+    finds.
 
 Symlinks are refused rather than followed. A guarded path that is a symlink is
 skipped, and the walk never descends through one: otherwise a container that
@@ -90,11 +97,16 @@ import sys
 
 # Files made read-only in a git dir that holds a repository's config and hooks:
 # the workspace's own git dir, a submodule's, a linked worktree's shared common
-# dir. The value is what to write when the file is absent, or None to guard it
-# only where it already exists -- a git dir without a `config` is not a git dir
-# worth inventing one for.
-REPOSITORY_FILES = {"config": None, "commondir": ".\n"}
-REPOSITORY_DIRS = ("hooks",)
+# dir. The value is what to write when the file is absent -- an empty `config`
+# is inert, and a repo works fine without one, so its absence is a hole to fill
+# rather than a sign there is nothing to guard.
+REPOSITORY_FILES = {"config": "", "commondir": ".\n"}
+
+# `hooks/` is where git runs scripts from. `remotes/` and `branches/` are the
+# pre-config way to define a remote, still read when config defines no remote
+# of that name, so a planted file there decides where a `git fetch <name>`
+# goes -- and what it runs, for a URL naming a transport that executes one.
+REPOSITORY_DIRS = ("hooks", "remotes", "branches")
 
 # A per-worktree git dir under `worktrees/` has no config or hooks of its own --
 # both come from the common dir -- but it carries the `commondir` pointer that
@@ -256,12 +268,12 @@ def _child_dirs(parent):
 
 
 def submodule_git_dirs(git_dir):
-    """Every initialized submodule git dir below `git_dir`.
+    """The initialized submodule git dirs `git_dir` hosts.
 
     They live under `modules/`, keyed by submodule name -- which may itself
     contain slashes, so the intermediate directories are walked rather than
-    assumed to be one level deep. A submodule can have submodules, so each hit
-    is descended into as well.
+    assumed to be one level deep. A submodule's own submodules are not returned
+    here: each hit is a repository, and the caller comes back round for it.
     """
     found = []
     pending = [os.path.join(git_dir, "modules")]
@@ -269,7 +281,6 @@ def submodule_git_dirs(git_dir):
         for path in _child_dirs(pending.pop()):
             if os.path.isfile(os.path.join(path, "HEAD")):
                 found.append(path)
-                pending.append(os.path.join(path, "modules"))
             else:
                 pending.append(path)
     return found
@@ -451,10 +462,18 @@ def build_mounts(workspace, targets, warn=None):
     pointers = [workspace_git]
 
     # A submodule is a repository in its own right: its git dir has the config
-    # and hooks the host runs when the user works in it.
-    for repository in [common] + submodule_git_dirs(common):
-        if not mountable(repository, warn):
+    # and hooks the host runs when the user works in it, and submodules and
+    # worktrees of its own. A queue rather than a walk, because a repository is
+    # reached two ways -- under a repository's `modules/`, and under a linked
+    # worktree's, which is where git puts a submodule initialized in that
+    # worktree rather than under the repository it belongs to.
+    pending = [common]
+    seen = set()
+    while pending:
+        repository = pending.pop()
+        if repository in seen or not mountable(repository, warn):
             continue
+        seen.add(repository)
         config = read_config(repository)
         worktree_config = worktree_config_enabled(config)
         if repository != workspace:
@@ -463,10 +482,13 @@ def build_mounts(workspace, targets, warn=None):
         for path in guarded_paths(repository, REPOSITORY_FILES,
                                   REPOSITORY_DIRS, worktree_config, warn):
             guard(path, True)
-        if repository != common:
-            checkout = submodule_checkout(repository, config)
-            if checkout:
-                pointers.append(os.path.join(checkout, ".git"))
+        # Set on a submodule's git dir, and on the git dir of a repo whose
+        # checkout is somewhere else; either way it names the checkout whose
+        # `.git` points back here.
+        checkout = submodule_checkout(repository, config)
+        if checkout:
+            pointers.append(os.path.join(checkout, ".git"))
+        pending += submodule_git_dirs(repository)
         for worktree in worktree_git_dirs(repository):
             if not mountable(worktree, warn):
                 continue
@@ -477,6 +499,7 @@ def build_mounts(workspace, targets, warn=None):
                                       worktree_config, warn):
                 guard(path, True)
             pointers.append(worktree_checkout_pointer(worktree))
+            pending += submodule_git_dirs(worktree)
 
     for pointer in pointers:
         if pointer and os.path.isfile(pointer) and not os.path.islink(pointer) \
