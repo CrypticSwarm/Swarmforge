@@ -78,6 +78,7 @@ It also guards the pointers that say where config and hooks live (`commondir`, a
 A guarded path that is absent is created on the host first so there is no gap to slip through — a repo with no `config` works fine, which makes its absence room to write one rather than a sign there is nothing to guard.
 The placeholders are inert, though a repo that gains a `commondir` starts answering `git rev-parse --git-common-dir` with an absolute path instead of `.git`.
 Only git dirs that exist when the session starts are covered — a repo the agent clones or `git init`s inside the workspace, or an unrelated checkout vendored there, is not.
+A `.git` written into an existing subdirectory is worth knowing about specifically: it shadows the guarded repo for anything run from inside that directory, `git status` at the root neither reports it nor executes it, and a git-aware shell prompt or editor entering the directory is enough to run what its config says. `safe.directory`, git's gate for this, keys on ownership, and the container runs as your own uid.
 
 The rest of the git dir stays writable, so committing, branching, fetching, and `git worktree add` work as usual.
 Commands that write config do not, by design: `git config --local`, `git remote add`, `git submodule update --init`, and `git sparse-checkout` fail with `could not write config file ...: Device or resource busy`, and hook installers like `pre-commit install` or husky fail on the read-only `.git/hooks`.

@@ -74,7 +74,15 @@ Where this stops:
     agent clones or `git init`s inside the workspace, or a submodule or worktree
     it adds mid-session, has an ordinary writable config and hooks -- as does an
     unrelated checkout already vendored inside the workspace, which is not
-    reachable from the workspace's own git dir and is not searched for.
+    reachable from the workspace's own git dir and is not searched for. Note
+    what that allows: a `.git` written into an existing subdirectory shadows
+    the guarded repo for anything run from inside that directory, is invisible
+    to `git status`, `git clean` and `git diff` at the root (git skips entries
+    named `.git` when scanning), and needs no git command from the user -- a
+    prompt or editor that shells out to git in that directory is enough, and
+    `core.fsmonitor` runs on the index refresh a dirty-state check does. Git's
+    own gate for this, `safe.directory`, keys on ownership, and the anvil runs
+    as the user's own uid so it never fires.
   * A path carrying a colon or a newline cannot be spelled as a docker `-v`
     value, so it is reported and left unguarded rather than turned into some
     other mount. Nothing is created on the host for such a path either.
