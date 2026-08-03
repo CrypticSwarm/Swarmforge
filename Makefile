@@ -370,7 +370,7 @@ test: opencode_network
 	  -v "$(PROJECT_DIR)":/workspace \
 	  -v "$(TEST_DATA_DIR)":/home/opencode/.local/share/opencode \
 	  --entrypoint python \
-	  $(OPENCODE_IMG) /workspace/scripts/test_skills.py \
+	  $(OPENCODE_IMG) /workspace/scripts/skill_eval.py \
 	    --model "$(MODEL)" \
 	    --eval-model "$(EVAL_MODEL)" \
 	    --timeout-s "$(TEST_TIMEOUT_S)" \
