@@ -10,16 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run agent translator tests
-        run: python3 scripts/test_translate_agents.py
-      - name: Run tongs launcher core tests
-        run: python3 scripts/test_tongs.py
-      - name: Run anvil launcher tests
-        run: python3 scripts/test_run_anvil.py
-      - name: Run git guard tests
-        run: python3 scripts/test_git_guard.py
-      - name: Run container recipe tests
-        run: python3 scripts/test_run_agent_container.py
+      - name: Run unit tests
+        run: make test
       - name: Check entrypoint syntax
         run: sh -n anvil/entrypoint.sh
 
