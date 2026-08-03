@@ -111,6 +111,15 @@ _spec = importlib.util.spec_from_file_location("tongs", _TONGS_PATH)
 tongs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tongs)
 
+# The git-dir guard the Makefile already runs for the anvil's workspace mount.
+# The launcher reuses it for tongs that mount the workspace, so a tong sees the
+# same git-dir mounts (and the same read-only guards) the anvil does.
+_GIT_GUARD_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "git_guard.py")
+_guard_spec = importlib.util.spec_from_file_location("git_guard", _GIT_GUARD_PATH)
+git_guard = importlib.util.module_from_spec(_guard_spec)
+_guard_spec.loader.exec_module(git_guard)
+
 
 USAGE = (
     "usage: run_anvil.py [--user-tongs DIR] [--org-tongs DIR] "
@@ -797,6 +806,39 @@ def _mounts_workspace(defn):
     return False
 
 
+def _workspace_git_dir_specs(defn, workspace, warn=None):
+    """Git-dir mounts a workspace-mounting tong needs beyond the workspace bind.
+
+    The anvil's workspace bind is always paired with the mounts
+    `git_guard.build_mounts` works out: read-only guards over the config and
+    hooks the *host's* git obeys, and -- when the workspace is a linked worktree
+    or another checkout whose git dir lives outside it -- that git dir at its
+    own absolute path, which is where the checkout's `.git` pointer file says to
+    look. A tong that mounts the workspace needs the same set, or git inside it
+    cannot resolve a worktree checkout at all ("fatal: not a git repository").
+    The guard maps workspace-internal paths below every destination the
+    definition mounts the workspace at.
+
+    When every workspace mount is read-only, the extra mounts are forced
+    read-only too: build_mounts emits the git-dir binds writable (the anvil's
+    workspace is writable), and left as-is they would open a write path a
+    `workspace:ro` definition never asked for. Empty when the tong does not
+    mount the workspace, no workspace path is known, or the workspace is not a
+    git checkout. Raises `ValueError` for a malformed `mounts:` entry, like the
+    argv builder.
+    """
+    if not workspace:
+        return []
+    placements = tongs.workspace_mount_placements(defn)
+    if not placements:
+        return []
+    specs = git_guard.build_mounts(
+        workspace, [destination for destination, _ in placements], warn=warn)
+    if all(mode == "ro" for _, mode in placements):
+        specs = [spec if spec.endswith(":ro") else spec + ":ro" for spec in specs]
+    return specs
+
+
 def unsupported_tong_reasons(merged):
     """Reasons each discovered tong is outside what the launcher can start.
 
@@ -876,6 +918,14 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     plain_env = plan["env"]
     secrets = plan["secrets"]
 
+    try:
+        git_dir_specs = _workspace_git_dir_specs(
+            defn, workspace,
+            warn=lambda message: print("tong '%s': %s" % (name, message),
+                                       file=sys.stderr))
+    except ValueError as exc:
+        raise OrchestrationError("tong '%s': %s" % (name, exc))
+
     if not secrets:
         # A definition that got past validation should never fail argv assembly,
         # but if it does it is still a config problem, not a crash.
@@ -884,6 +934,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
                 name, defn,
                 container_name=container, network=network, alias=alias,
                 env=plain_env, label_hash=label_hash, workspace=workspace,
+                extra_mount_specs=git_dir_specs,
             )
         except ValueError as exc:
             raise OrchestrationError("tong '%s': %s" % (name, exc))
@@ -910,6 +961,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
                 container_name=container, network=network, alias=alias,
                 env=plain_env, label_hash=label_hash, workspace=workspace,
                 fifo_host_path=channel.host_path, entrypoint=entrypoint, command=command,
+                extra_mount_specs=git_dir_specs,
             )
         except ValueError as exc:
             raise OrchestrationError("tong '%s': %s" % (name, exc))

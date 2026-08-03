@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1760,6 +1761,134 @@ class RunWithTongsTests(unittest.TestCase):
         with self.assertRaises(run_anvil.OrchestrationError):
             self._run_org(docker, merged, self._ACME, anvil=anvil)
         self.assertEqual(docker.calls, [])
+
+
+class WorkspaceGitDirSpecTests(unittest.TestCase):
+    """_workspace_git_dir_specs: the git-dir mounts riding along with `workspace`."""
+
+    def test_no_workspace_path_is_empty(self):
+        defn = {"mounts": ["workspace"]}
+        self.assertEqual(run_anvil._workspace_git_dir_specs(defn, None), [])
+
+    def test_no_workspace_mount_never_calls_the_guard(self):
+        defn = {"mounts": ["docker-socket"]}
+        with mock.patch.object(run_anvil.git_guard, "build_mounts") as guard:
+            self.assertEqual(run_anvil._workspace_git_dir_specs(defn, "/ws"), [])
+        guard.assert_not_called()
+
+    def test_guard_receives_every_workspace_destination(self):
+        defn = {"mounts": ["workspace:/a", "workspace:/b:ro"]}
+        with mock.patch.object(run_anvil.git_guard, "build_mounts",
+                               return_value=[]) as guard:
+            run_anvil._workspace_git_dir_specs(defn, "/ws")
+        guard.assert_called_once_with("/ws", ["/a", "/b"], warn=None)
+
+    def test_read_write_workspace_keeps_guard_modes(self):
+        defn = {"mounts": ["workspace"]}
+        specs = ["/ws/.git:/workspace/.git",
+                 "/ws/.git/config:/workspace/.git/config:ro"]
+        with mock.patch.object(run_anvil.git_guard, "build_mounts",
+                               return_value=list(specs)):
+            self.assertEqual(run_anvil._workspace_git_dir_specs(defn, "/ws"), specs)
+
+    def test_read_only_workspace_forces_every_spec_read_only(self):
+        # build_mounts emits the git-dir binds writable (the anvil's workspace is
+        # writable); under a workspace:ro definition they must not open a write path.
+        defn = {"mounts": ["workspace:ro"]}
+        with mock.patch.object(
+            run_anvil.git_guard, "build_mounts",
+            return_value=["/ws/.git:/workspace/.git",
+                          "/ws/.git/config:/workspace/.git/config:ro"],
+        ):
+            self.assertEqual(
+                run_anvil._workspace_git_dir_specs(defn, "/ws"),
+                ["/ws/.git:/workspace/.git:ro",
+                 "/ws/.git/config:/workspace/.git/config:ro"],
+            )
+
+    def test_mixed_modes_keep_guard_modes(self):
+        # One writable workspace mount means the git dir must stay writable too.
+        defn = {"mounts": ["workspace:/a:ro", "workspace:/b"]}
+        with mock.patch.object(run_anvil.git_guard, "build_mounts",
+                               return_value=["/x/.git:/x/.git"]):
+            self.assertEqual(
+                run_anvil._workspace_git_dir_specs(defn, "/ws"),
+                ["/x/.git:/x/.git"],
+            )
+
+
+# git runs with the developer's global config otherwise, where a signing key or
+# a templateDir would change what these repos come out looking like.
+_GIT_ENV = dict(
+    os.environ,
+    GIT_CONFIG_GLOBAL="/dev/null",
+    GIT_CONFIG_SYSTEM="/dev/null",
+    GIT_AUTHOR_NAME="Test",
+    GIT_AUTHOR_EMAIL="test@example.com",
+    GIT_COMMITTER_NAME="Test",
+    GIT_COMMITTER_EMAIL="test@example.com",
+)
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-C", cwd] + list(args), check=True,
+                   capture_output=True, text=True, env=_GIT_ENV)
+
+
+class WorktreeTongMountTests(unittest.TestCase):
+    """A tong mounting a linked-worktree workspace sees the external git dir.
+
+    The worktree's `.git` is a pointer file naming a git dir under the main
+    checkout, so the workspace bind alone leaves git inside the tong with
+    "fatal: not a git repository". The launcher must pair the bind with the
+    same git-dir mounts the anvil gets: the external git dir at its own host
+    path, plus the read-only guards.
+    """
+
+    def setUp(self):
+        # realpath: git reports resolved paths, and the guard compares them.
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="tong-worktree-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(self.repo)
+        _git(self.repo, "init", "-q")
+        _git(self.repo, "commit", "-q", "--allow-empty", "-m", "root")
+        self.worktree = os.path.join(self.tmp, "wt")
+        _git(self.repo, "worktree", "add", "-q", self.worktree)
+        self.common = os.path.join(self.repo, ".git")
+
+    def _mounted(self, mounts):
+        defn = {
+            "lifecycle": "session",
+            "image": "git-signing",
+            "mounts": mounts,
+            "interface": {"kind": "none"},
+            "readiness": {"mode": "none"},
+        }
+        docker = FakeDocker()
+        rc = run_anvil.run_with_tongs(
+            _merged("sign", defn, source=tongs.USER), ANVIL_ARGV,
+            _opts(workspace=self.worktree),
+            docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(docker.run_argvs), 1)
+        started = docker.run_argvs[0]
+        return [started[i + 1] for i, part in enumerate(started) if part == "-v"]
+
+    def test_external_git_dir_mounted_at_its_own_path(self):
+        mounted = self._mounted(["workspace"])
+        self.assertIn("%s:/workspace" % self.worktree, mounted)
+        # The git dir the worktree's `.git` pointer names, at the path it names.
+        self.assertIn("%s:%s" % (self.common, self.common), mounted)
+        # The guards ride along: host-obeyed config stays read-only in the tong.
+        self.assertIn("%s/config:%s/config:ro" % (self.common, self.common), mounted)
+        self.assertIn("%s/.git:/workspace/.git:ro" % self.worktree, mounted)
+
+    def test_read_only_workspace_gets_read_only_git_dir(self):
+        mounted = self._mounted(["workspace:ro"])
+        self.assertIn("%s:/workspace:ro" % self.worktree, mounted)
+        self.assertIn("%s:%s:ro" % (self.common, self.common), mounted)
 
 
 if __name__ == "__main__":
