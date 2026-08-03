@@ -1546,6 +1546,27 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET):
     return specs
 
 
+def workspace_mount_placements(defn, socket_path=DEFAULT_DOCKER_SOCKET):
+    """Where a tong's `workspace` mounts land: `[(destination, mode)]`.
+
+    One entry per `workspace` magic word in `mounts:`, in declaration order,
+    with the normalized container destination and the declared access mode
+    (None when the entry names no mode -- docker's read-write default). The
+    orchestrator asks this to place the git-dir mounts a workspace checkout
+    needs beside the workspace bind (see run_anvil). Empty when the definition
+    mounts no workspace. Raises `ValueError` for a malformed entry, like
+    `tong_mount_specs`.
+    """
+    placements = []
+    for mount in defn.get("mounts") or []:
+        if not isinstance(mount, str):
+            raise ValueError("mount entries must be strings, got %r" % (mount,))
+        word, target, mode = parse_mount(mount)
+        if word == WORKSPACE_MOUNT:
+            placements.append((mount_destination(word, target, socket_path), mode))
+    return placements
+
+
 def tong_resource_flags(defn):
     """docker resource flags from a tong's `resources:` block.
 
@@ -1578,6 +1599,7 @@ def tong_run_argv(
     fifo_host_path=None,
     entrypoint=None,
     command=None,
+    extra_mount_specs=None,
 ):
     """Full `docker run -d` argv that starts one tong container.
 
@@ -1604,6 +1626,11 @@ def tong_run_argv(
     `declared_run_override`) so a secret-free tong still honors them, falling back
     to the image's own entrypoint/command when it declares neither. `mounts:` magic
     words and `resources:` are appended, then the image, then the trailing argv.
+
+    `extra_mount_specs` are fully-formed `-v` values the orchestrator computed
+    outside the definition (today the git-dir mounts that ride along with a
+    `workspace` mount -- see run_anvil); they are appended after the definition's
+    own mounts, mirroring how the Makefile orders the anvil's.
     """
     if entrypoint is None and command is None:
         entrypoint, command = declared_run_override(defn)
@@ -1629,6 +1656,8 @@ def tong_run_argv(
     for key in sorted(effective_env):
         argv += ["-e", "%s=%s" % (key, effective_env[key])]
     for spec in tong_mount_specs(defn, workspace, socket_path=socket_path):
+        argv += ["-v", spec]
+    for spec in extra_mount_specs or []:
         argv += ["-v", spec]
     argv += tong_resource_flags(defn)
     argv.append(defn["image"])

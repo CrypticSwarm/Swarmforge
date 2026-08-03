@@ -1441,6 +1441,36 @@ class DockerArgvTests(unittest.TestCase):
     def test_mount_specs_no_mounts_is_empty(self):
         self.assertEqual(tongs.tong_mount_specs({}, "/ws"), [])
 
+    def test_workspace_mount_placements_empty_without_workspace_mount(self):
+        self.assertEqual(tongs.workspace_mount_placements({}), [])
+        self.assertEqual(
+            tongs.workspace_mount_placements({"mounts": ["docker-socket"]}), []
+        )
+
+    def test_workspace_mount_placements_default_target_and_mode(self):
+        self.assertEqual(
+            tongs.workspace_mount_placements({"mounts": ["workspace"]}),
+            [("/workspace", None)],
+        )
+
+    def test_workspace_mount_placements_custom_target_and_mode(self):
+        self.assertEqual(
+            tongs.workspace_mount_placements({"mounts": ["workspace:/code:ro"]}),
+            [("/code", "ro")],
+        )
+
+    def test_workspace_mount_placements_normalizes_and_keeps_order(self):
+        self.assertEqual(
+            tongs.workspace_mount_placements(
+                {"mounts": ["workspace://a:ro", "docker-socket", "workspace:/b"]}
+            ),
+            [("/a", "ro"), ("/b", None)],
+        )
+
+    def test_workspace_mount_placements_malformed_entry_raises(self):
+        with self.assertRaises(ValueError):
+            tongs.workspace_mount_placements({"mounts": [42]})
+
     def test_mount_specs_workspace_without_workspace_path_raises(self):
         with self.assertRaises(ValueError):
             tongs.tong_mount_specs({"mounts": ["workspace"]}, "")
@@ -1548,6 +1578,31 @@ class DockerArgvTests(unittest.TestCase):
             [part for part in declared if part != "/ws:/work:rw"],
             [part for part in default if part != "/ws:/workspace"],
         )
+
+    def test_run_argv_extra_mount_specs_follow_definition_mounts(self):
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["workspace"]
+        argv = tongs.tong_run_argv(
+            "w", defn, container_name="c", network="n", alias="w", workspace="/ws",
+            extra_mount_specs=["/ws/.git/config:/workspace/.git/config:ro"],
+        )
+        mounted = [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
+        self.assertEqual(
+            mounted,
+            ["/ws:/workspace", "/ws/.git/config:/workspace/.git/config:ro"],
+        )
+
+    def test_run_argv_without_extra_mount_specs_is_unchanged(self):
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["workspace"]
+        with_none = tongs.tong_run_argv(
+            "w", defn, container_name="c", network="n", alias="w", workspace="/ws",
+            extra_mount_specs=None,
+        )
+        omitted = tongs.tong_run_argv(
+            "w", defn, container_name="c", network="n", alias="w", workspace="/ws",
+        )
+        self.assertEqual(with_none, omitted)
 
     def test_run_argv_secret_injection_mounts_fifo_wraps_entrypoint(self):
         # A secret-bearing tong gets the FIFO bind (read-only), the /bin/sh
