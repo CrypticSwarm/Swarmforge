@@ -20,31 +20,25 @@ It performs no orchestration: no docker, no networks, no exec-based secret
 resolution, no prompting. Secret resolution is driven by a caller-injected
 resolver (see `substitute_secrets`), which keeps the module pure.
 
-YAML parsing reuses the dependency-free subset parser from
-`anvil/translate_agents.py` so the launcher needs no third-party packages.
+YAML parsing reuses the dependency-free subset parser in `swarmforge.yamlite`,
+so the launcher needs no third-party packages.
 """
 
 import hashlib
-import importlib.util
 import json
 import os
 import posixpath
 import re
 import sys
 
-# --- Reuse the dependency-free YAML subset parser from translate_agents -------
-# Tong files are plain YAML (no frontmatter), but the nested-map / flat-list
-# grammar is identical, so we borrow the existing, tested parser rather than
-# duplicate it. Loaded by path like scripts/test_translate_agents.py does.
+# The launcher is run out of a checkout, not installed, so nothing has put the
+# repo root on the path yet. Prepend it so the checkout's own package wins over
+# any copy that happens to be installed on the host.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-_TA_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "anvil",
-    "translate_agents.py",
-)
-_spec = importlib.util.spec_from_file_location("translate_agents", _TA_PATH)
-_ta = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_ta)
+from swarmforge.yamlite import parse_map  # noqa: E402  (needs the path above)
 
 
 # --- Schema vocabulary --------------------------------------------------------
@@ -93,7 +87,7 @@ def warn(message):
 def load_yaml(text):
     """Parse a plain-YAML tong document into a dict (empty dict if blank)."""
     lines = text.split("\n")
-    data, _ = _ta.parse_map(lines, 0, 0)
+    data, _ = parse_map(lines, 0, 0)
     return data
 
 
