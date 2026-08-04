@@ -129,6 +129,18 @@ Three sources merge into `~/.claude` at startup (lowest to highest precedence):
 
 Skills, commands, and `agents/` are excluded from this merge — they travel through the asset pipeline above.
 
+### Status line
+
+`make build_claude` bakes `anvil/statusline.sh` into the image at `/usr/local/bin/swarmforge-statusline` and the entrypoint turns it on, so a container shows the model, directory, turn count, context percentage, and session token/cost totals with no host setup. It reads the session JSON on stdin and the transcript.
+
+Claude has no settings layer below `~/.claude/settings.json`, so the entrypoint seeds the default into that file (`anvil/seed_claude_settings.py`) after the config layers have merged, and only when no layer set `statusLine`. To use your own, set one in any config layer:
+
+```json
+{
+  "statusLine": { "type": "command", "command": "~/.claude/my-statusline.sh" }
+}
+```
+
 ## Agents
 
 Subagent definitions live under `agents/` in a single unified format and are rewritten to each harness's native dialect by the container entrypoint (`anvil/translate_agents.py`).

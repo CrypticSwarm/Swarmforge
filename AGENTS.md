@@ -7,7 +7,7 @@
 ## Repo Overview
 - `Makefile` orchestrates the local containers (`build_opencode`, `run_opencode`, `run_ollama`, etc.) and is the preferred entry point for automation.
 - `install.sh` appends an `oc` helper alias that shells out to `make -C <repo> run_opencode`; keep it POSIX-compliant because it is sourced in user shells.
-- `anvil/` holds the container-side assets shared by every harness image (OpenCode, Claude Code): Dockerfile, container entrypoint, and the unified-agent translator. The images build from the repo root (`-f anvil/Dockerfile`) so `swarmforge/` can be copied in beside them; `.dockerignore` keeps everything else out of the context.
+- `anvil/` holds the container-side assets shared by every harness image (OpenCode, Claude Code): Dockerfile, container entrypoint, the unified-agent translator, and the Claude-only status line (`statusline.sh`) with the seeder that defaults `settings.json` to it. The images build from the repo root (`-f anvil/Dockerfile`) so `swarmforge/` can be copied in beside them; `.dockerignore` keeps everything else out of the context.
 - `swarmforge/` is the Python shared by the host launcher and the container-side scripts. It is stdlib-only: the image installs no third-party Python and the launcher runs on the host's `python3`.
 - `opencode/` holds the OpenCode-native repo config layer (`opencode.json`, plus untracked plugin state); harness-neutral assets live at the top level in `skills/`, `commands/`, and `agents/`.
 - `ollama/` stores persistent Ollama state. Do not add large model blobs to git—only configuration or lightweight defaults belong here.
