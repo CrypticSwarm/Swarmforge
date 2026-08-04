@@ -83,7 +83,18 @@ class ImportRootAgreement(unittest.TestCase):
     def package_dest(self):
         return self.copy_dest("swarmforge/").rstrip("/")
 
-    def module_runs(self):
+    def shell_function_around(self, needle):
+        """The body of the entrypoint function containing `needle`.
+
+        Entrypoint functions are `name() {` with the closing brace at column
+        zero, which is what delimits the slice.
+        """
+        at = self.entrypoint.index(needle)
+        return self.entrypoint[
+            self.entrypoint.rindex("() {", 0, at):self.entrypoint.index("\n}\n", at)
+        ]
+
+    def module_runs(self, shell=None):
         """Every `python3 ... -m <module>` in the entrypoint, with its context.
 
         Yields (import root, flags, module). An absent PYTHONPATH gives a root
@@ -92,8 +103,8 @@ class ImportRootAgreement(unittest.TestCase):
         so prose about an invocation is not mistaken for one.
         """
         code = "\n".join(
-            line for line in self.entrypoint.splitlines()
-            if not line.lstrip().startswith("#")
+            re.sub(r"(?:^|\s)#.*", "", line)
+            for line in (self.entrypoint if shell is None else shell).splitlines()
         )
         return [
             (match.group("root"), (match.group("flags") or "").split(),
@@ -124,12 +135,15 @@ class ImportRootAgreement(unittest.TestCase):
         unknown option: agent translation degrades to a warning and the config
         merge takes the container down with it.
         """
-        match = re.search(r"^ARG PYTHON_VERSION=(\S+)", self.dockerfile, re.M)
-        self.assertIsNotNone(match, "Dockerfile pins no PYTHON_VERSION")
-        version = tuple(int(part) for part in match.group(1).split(".")[:2])
-        if any("-P" in flags for _, flags, _ in self.module_runs()):
+        # Every pin, not just the first: a stage may redeclare the arg with
+        # its own default, and the stage that compiles python is not the
+        # stage the global default is written in.
+        pins = re.findall(r"^ARG PYTHON_VERSION=(\S+)", self.dockerfile, re.M)
+        self.assertTrue(pins, "Dockerfile pins no PYTHON_VERSION")
+        for pin in pins:
+            version = tuple(int(part) for part in pin.split(".")[:2])
             self.assertGreaterEqual(
-                version, (3, 11), "the image python does not support -P")
+                version, (3, 11), "python %s does not support -P" % pin)
 
     def test_entrypoint_runs_only_modules_the_package_actually_ships(self):
         runs = self.module_runs()
@@ -163,9 +177,17 @@ class ImportRootAgreement(unittest.TestCase):
             "translator guard %s is not under %s" % (guard, import_root),
         )
         guarded = guard[len(import_root):].removesuffix(".py").replace("/", ".")
-        self.assertIn(
-            guarded, [module for _, _, module in self.module_runs()],
-            "translator guard covers %s, which the entrypoint never runs" % guarded,
+        # Only the runs the guard actually stands in front of: naming some
+        # other module the entrypoint happens to run elsewhere would leave
+        # the translator itself unguarded.
+        guarded_runs = [
+            module for _, _, module
+            in self.module_runs(self.shell_function_around(match.group(0)))
+        ]
+        self.assertEqual(
+            guarded_runs, [guarded],
+            "translator guard covers %s, but its function runs %s"
+            % (guarded, guarded_runs),
         )
 
 
@@ -247,10 +269,13 @@ class ContainerImportLayout(unittest.TestCase):
 
     def run_module(self, module, *args):
         # -P mirrors the entrypoint, which uses it to keep the workspace off
-        # sys.path; here it also stops the scratch dir from becoming a second
-        # way for the import to resolve.
+        # sys.path; here it also stops the staging dir from becoming a second
+        # way for the import to resolve. The image's python always has it; the
+        # host running these tests may predate it, and the staging dir holds
+        # no swarmforge/ for the working directory to resolve through anyway.
+        harden = ["-P"] if sys.version_info >= (3, 11) else []
         return subprocess.run(
-            [sys.executable, "-P", "-m", module, *args],
+            [sys.executable, *harden, "-m", module, *args],
             # Only the staged import root, and a working directory outside the
             # checkout: nothing here may reach the repo's own swarmforge/.
             env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": self.libdir},
