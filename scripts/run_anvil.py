@@ -103,9 +103,9 @@ import sys
 import tempfile
 import time
 
-# Load the pure core (layer discovery + name-based merge) by path, the same way
-# tongs.py loads translate_agents.py, so the launcher needs no package install
-# and no assumptions about the current working directory.
+# Load the pure core (layer discovery + name-based merge) by path, so the
+# launcher needs no package install and no assumptions about the current
+# working directory.
 _TONGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tongs.py")
 _spec = importlib.util.spec_from_file_location("tongs", _TONGS_PATH)
 tongs = importlib.util.module_from_spec(_spec)

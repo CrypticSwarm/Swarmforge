@@ -11,6 +11,7 @@ Run: python3 scripts/test_image_layout.py
 """
 
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
+DOCKERFILE = os.path.join(REPO_ROOT, "anvil", "Dockerfile")
+ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
 
 # Records the argv it was handed instead of building anything.
 DOCKER_STUB = """#!/bin/sh
@@ -35,6 +38,43 @@ model: anthropic/claude-sonnet-4-6
 
 You are the reviewer agent.
 """
+
+
+def dockerfile_copies():
+    """Every single-source `COPY <src> <dst>` in the Dockerfile, as pairs."""
+    pairs = {}
+    with open(DOCKERFILE) as handle:
+        for line in handle:
+            words = line.split()
+            if len(words) == 3 and words[0] == "COPY":
+                pairs[words[1]] = words[2]
+    return pairs
+
+
+class ImportRootAgreement(unittest.TestCase):
+    """The Dockerfile's layout and the entrypoint's import root must agree.
+
+    The translator can only find the shared package if the directory holding
+    it is the one the entrypoint puts on the path -- and that is two strings
+    in two files with nothing tying them together. A mismatch does not fail
+    the build; it surfaces as agents quietly not being translated.
+    """
+
+    def setUp(self):
+        self.copies = dockerfile_copies()
+        with open(ENTRYPOINT) as handle:
+            self.entrypoint = handle.read()
+
+    def test_package_is_copied_beneath_the_entrypoints_import_root(self):
+        package_dst = self.copies["swarmforge/"]
+        import_root = posixpath.dirname(package_dst.rstrip("/"))
+        self.assertIn("PYTHONPATH=%s " % import_root, self.entrypoint)
+
+    def test_entrypoint_runs_the_translator_where_the_dockerfile_puts_it(self):
+        self.assertIn(
+            'translator="%s"' % self.copies["anvil/translate_agents.py"],
+            self.entrypoint,
+        )
 
 
 class BuildRecipeArgv(unittest.TestCase):
