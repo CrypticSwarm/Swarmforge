@@ -41,11 +41,16 @@ You are the reviewer agent.
 
 
 def dockerfile_copies():
-    """Every single-source `COPY <src> <dst>` in the Dockerfile, as pairs."""
+    """Every one-source `COPY <src> <dst>` in the Dockerfile, as a src -> dst map.
+
+    Flag words (`--from`, `--chown`) are dropped, so a copy keeps its entry if
+    one is added. Multi-source copies would be indistinguishable from a flagged
+    one-source copy here, and the Dockerfile uses none.
+    """
     pairs = {}
     with open(DOCKERFILE) as handle:
         for line in handle:
-            words = line.split()
+            words = [word for word in line.split() if not word.startswith("--")]
             if len(words) == 3 and words[0] == "COPY":
                 pairs[words[1]] = words[2]
     return pairs
@@ -54,10 +59,10 @@ def dockerfile_copies():
 class ImportRootAgreement(unittest.TestCase):
     """The Dockerfile's layout and the entrypoint's import root must agree.
 
-    The translator can only find the shared package if the directory holding
-    it is the one the entrypoint puts on the path -- and that is two strings
-    in two files with nothing tying them together. A mismatch does not fail
-    the build; it surfaces as agents quietly not being translated.
+    Where the package is copied and where the entrypoint tells python to look
+    for it are two strings in two files with nothing tying them together, and
+    a mismatch does not fail the build -- it surfaces as agents quietly not
+    being translated.
     """
 
     def setUp(self):
@@ -65,14 +70,21 @@ class ImportRootAgreement(unittest.TestCase):
         with open(ENTRYPOINT) as handle:
             self.entrypoint = handle.read()
 
-    def test_package_is_copied_beneath_the_entrypoints_import_root(self):
-        package_dst = self.copies["swarmforge/"]
-        import_root = posixpath.dirname(package_dst.rstrip("/"))
-        self.assertIn("PYTHONPATH=%s " % import_root, self.entrypoint)
+    def copy_dest(self, src):
+        self.assertIn(
+            src, self.copies, "Dockerfile has no `COPY %s <dest>` line" % src)
+        return self.copies[src]
+
+    def test_package_is_copied_beneath_the_import_root_the_translator_gets(self):
+        import_root = posixpath.dirname(self.copy_dest("swarmforge/").rstrip("/"))
+        self.assertIn(
+            'PYTHONPATH=%s python3 "${translator}"' % import_root,
+            self.entrypoint,
+        )
 
     def test_entrypoint_runs_the_translator_where_the_dockerfile_puts_it(self):
         self.assertIn(
-            'translator="%s"' % self.copies["anvil/translate_agents.py"],
+            'translator="%s"' % self.copy_dest("anvil/translate_agents.py"),
             self.entrypoint,
         )
 
