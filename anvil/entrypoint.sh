@@ -146,7 +146,7 @@ prepare_unified_agents() {
       ;;
   esac
 
-  python3 "${translator}" "${AGENT_BIN}" "${agents_dst}" \
+  PYTHONPATH=/usr/local/lib/swarmforge python3 "${translator}" "${AGENT_BIN}" "${agents_dst}" \
     "${SWARMFORGE_ASSETS_USER_DIR:-}/agents" \
     "${SWARMFORGE_ASSETS_ORG_DIR:-}/agents" \
     "${SWARMFORGE_ASSETS_REPO_DIR:-}/agents" \

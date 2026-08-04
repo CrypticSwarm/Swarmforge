@@ -257,7 +257,8 @@ build_opencode:
 	  --build-arg OPENCODE_VERSION=$(OPENCODE_VERSION) \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
 	  --build-arg OPENCODE_INSTALL_BUST=$(OPENCODE_INSTALL_BUST) \
-	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)/anvil"
+	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
+	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)"
 
 # Rebuild only from the OpenCode install step onward.
 update_opencode:
@@ -274,7 +275,8 @@ build_claude:
 	  --build-arg AGENT=claude \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
 	  --build-arg CLAUDE_INSTALL_BUST=$(CLAUDE_INSTALL_BUST) \
-	  -t $(CLAUDE_IMG) "$(SWARMFORGE_DIR)/anvil"
+	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
+	  -t $(CLAUDE_IMG) "$(SWARMFORGE_DIR)"
 
 # Rebuild only from the Claude install step onward.
 update_claude:
