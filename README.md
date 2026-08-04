@@ -131,7 +131,7 @@ Skills, commands, and `agents/` are excluded from this merge — they travel thr
 
 ## Agents
 
-Subagent definitions live under `agents/` in a single unified format and are rewritten to each harness's native dialect by the container entrypoint (`anvil/translate_agents.py`).
+Subagent definitions live under `agents/` in a single unified format and are rewritten to each harness's native dialect by the container entrypoint (`swarmforge/agents/translate.py`).
 
 A unified agent is a markdown file whose body is the system prompt and whose YAML frontmatter is a superset of the OpenCode agent schema. The filename is the agent's identity (`reviewer.md` -> agent `reviewer`):
 
