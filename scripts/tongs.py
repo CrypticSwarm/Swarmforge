@@ -14,7 +14,7 @@ This module is the pure core of the tongs launcher: layer discovery, name-based
 merge with `disable`, schema validation, secret-reference parsing, config-hash
 labels, and approval keying. Every function here is side-effect free (aside from
 the small JSON/YAML file readers) so it can be unit-tested exactly like
-`anvil/translate_agents.py` -- see `scripts/test_tongs.py`.
+`swarmforge/agents/translate.py` -- see `scripts/test_tongs.py`.
 
 It performs no orchestration: no docker, no networks, no exec-based secret
 resolution, no prompting. Secret resolution is driven by a caller-injected
@@ -939,7 +939,7 @@ def mcp_config_claude(merged):
 
 
 # Per-harness MCP emitters, dispatched by harness name, mirroring the EMITTERS
-# table in translate_agents.py.
+# table in swarmforge/agents/translate.py.
 MCP_EMITTERS = {
     "opencode": mcp_config_opencode,
     "claude": mcp_config_claude,

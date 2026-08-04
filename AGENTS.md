@@ -7,8 +7,8 @@
 ## Repo Overview
 - `Makefile` orchestrates the local containers (`build_opencode`, `run_opencode`, `run_ollama`, etc.) and is the preferred entry point for automation.
 - `install.sh` appends an `oc` helper alias that shells out to `make -C <repo> run_opencode`; keep it POSIX-compliant because it is sourced in user shells.
-- `anvil/` holds the container-side assets shared by every harness image (OpenCode, Claude Code): Dockerfile, container entrypoint, and the unified-agent translator. The images build from the repo root (`-f anvil/Dockerfile`) so `swarmforge/` can be copied in beside them; `.dockerignore` keeps everything else out of the context.
-- `swarmforge/` is the Python shared by the host launcher and the container-side scripts. It is stdlib-only: the image installs no third-party Python and the launcher runs on the host's `python3`.
+- `anvil/` holds the container-side assets shared by every harness image (OpenCode, Claude Code): the Dockerfile and the container entrypoint. The images build from the repo root (`-f anvil/Dockerfile`) so `swarmforge/` can be copied in; `.dockerignore` keeps everything else out of the context.
+- `swarmforge/` is the Python shared by the host launcher and the container: the entrypoint runs everything it needs from this package with `python3 -m`. It is stdlib-only: the image installs no third-party Python and the launcher runs on the host's `python3`.
 - `opencode/` holds the OpenCode-native repo config layer (`opencode.json`, plus untracked plugin state); harness-neutral assets live at the top level in `skills/`, `commands/`, and `agents/`.
 - `ollama/` stores persistent Ollama state. Do not add large model blobs to git—only configuration or lightweight defaults belong here.
 
@@ -17,7 +17,7 @@
 - Prefer `make` variables and targets over ad-hoc scripts so contributors can compose workflows via the existing Makefile.
 - Keep Dockerfiles Debian-based (see `DEBIAN_TAG`) and avoid pinning GPU driver versions inside the image; rely on host NVIDIA tooling instead.
 - When editing skills under `skills/`, ensure YAML frontmatter only contains `name` and `description`, and keep the detailed guidance in the corresponding `SKILL.md` body.
-- Subagent definitions under `agents/` use the unified agent format documented in `README.md` (`## Agents`); the entrypoint rewrites them per harness via `anvil/translate_agents.py`, so never hand-write harness-specific dialects there.
+- Subagent definitions under `agents/` use the unified agent format documented in `README.md` (`## Agents`); the entrypoint rewrites them per harness via `swarmforge/agents/translate.py`, so never hand-write harness-specific dialects there.
 
 ## Build, Test, and Run
 - Build the OpenCode image with `make build_opencode` after changing anything under `anvil/` or `swarmforge/`.
