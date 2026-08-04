@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Docker mounts that keep the anvil out of a repo's git configuration.
 
-Usage: git_guard.py --workspace DIR [--target CONTAINER_PATH]...
+Usage: git-guard --workspace DIR [--target CONTAINER_PATH]...
 
 Prints one docker `-v` value per line (the caller supplies the `-v` itself), for
 the workspace mounted at each `--target`. Nothing is printed when the workspace
@@ -529,7 +529,7 @@ def main(argv, out=sys.stdout, err=sys.stderr):
     try:
         workspace, targets = parse_args(argv)
     except UsageError as exc:
-        err.write("git_guard.py: %s\n" % exc)
+        err.write("git-guard: %s\n" % exc)
         return 2
 
     def warn(message):

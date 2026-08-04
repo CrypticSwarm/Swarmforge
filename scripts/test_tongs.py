@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/tongs.py. Run: python3 scripts/test_tongs.py"""
+"""Unit tests for swarmforge.tongs. Run: python3 scripts/test_tongs.py"""
 
-import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 
-MODULE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tongs.py")
-spec = importlib.util.spec_from_file_location("tongs", MODULE_PATH)
-tongs = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(tongs)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The launcher's entry-point shim puts the repo root on the path; standing in
+# for it here keeps this file runnable on its own, not just under a discovery
+# run that already set it.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from swarmforge import tongs
 
 
 GITHUB_TONG = """\

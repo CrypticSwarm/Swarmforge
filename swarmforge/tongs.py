@@ -31,14 +31,7 @@ import posixpath
 import re
 import sys
 
-# The launcher is run out of a checkout, not installed, so nothing has put the
-# repo root on the path yet. Prepend it so the checkout's own package wins over
-# any copy that happens to be installed on the host.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
-from swarmforge.yamlite import parse_map  # noqa: E402  (needs the path above)
+from swarmforge.yamlite import parse_map
 
 
 # --- Schema vocabulary --------------------------------------------------------
@@ -465,8 +458,8 @@ def substitute_secrets(value, resolver):
 # fallback, and any other key at the provider level is a typo caught at load.
 #
 # Loading the table and building the argv are pure and live here; the subprocess
-# that actually runs the CLI is the caller's (see run_anvil.make_secret_resolver),
-# keeping this module side-effect free.
+# that actually runs the CLI is the caller's (see
+# swarmforge.anvil.make_secret_resolver), keeping this module side-effect free.
 
 SECRET_REF_TOKEN = "{ref}"
 
@@ -1243,7 +1236,7 @@ def readiness_settings(defn):
 # functions above produce) into the concrete `docker run` argv for a tong, and
 # rewrites the anvil's own argv to reach the tongs. These builders are pure --
 # they return argv lists, run no docker -- so the exact flags can be unit-tested;
-# `run_anvil.py` owns the side-effectful execution.
+# `swarmforge.anvil` owns the side-effectful execution.
 
 # Mount magic words (decision: opt-in words, never raw host paths from a
 # definition). `workspace` mounts the session's workspace; `docker-socket` grants
@@ -1547,9 +1540,9 @@ def workspace_mount_placements(defn, socket_path=DEFAULT_DOCKER_SOCKET):
     with the normalized container destination and the declared access mode
     (None when the entry names no mode -- docker's read-write default). The
     orchestrator asks this to place the git-dir mounts a workspace checkout
-    needs beside the workspace bind (see run_anvil). Empty when the definition
-    mounts no workspace. Raises `ValueError` for a malformed entry, like
-    `tong_mount_specs`.
+    needs beside the workspace bind (see swarmforge.anvil). Empty when the
+    definition mounts no workspace. Raises `ValueError` for a malformed
+    entry, like `tong_mount_specs`.
     """
     placements = []
     for mount in defn.get("mounts") or []:
@@ -1623,8 +1616,8 @@ def tong_run_argv(
 
     `extra_mount_specs` are fully-formed `-v` values the orchestrator computed
     outside the definition (today the git-dir mounts that ride along with a
-    `workspace` mount -- see run_anvil); they are appended after the definition's
-    own mounts, mirroring how the Makefile orders the anvil's.
+    `workspace` mount -- see swarmforge.anvil); they are appended after the
+    definition's own mounts, mirroring how the Makefile orders the anvil's.
     """
     if entrypoint is None and command is None:
         entrypoint, command = declared_run_override(defn)
@@ -1779,8 +1772,8 @@ def inject_anvil_argv(anvil_argv, network=None, pre_image_args=(), post_image_ar
 
 
 # --- Diagnostic CLI -----------------------------------------------------------
-# Not wired into any launch path. `tongs.py validate <dir>...` lints definitions
-# layered lowest-to-highest; `tongs.py discover <dir>...` dumps the merged set.
+# Not wired into any launch path. `tongs validate <dir>...` lints definitions
+# layered lowest-to-highest; `tongs discover <dir>...` dumps the merged set.
 
 
 def _layer_dirs_from_argv(paths):
@@ -1794,7 +1787,7 @@ def _layer_dirs_from_argv(paths):
 
 def main(argv):
     if len(argv) < 2 or argv[0] not in ("validate", "discover"):
-        print("usage: tongs.py {validate|discover} <layer_dir>...", file=sys.stderr)
+        print("usage: tongs {validate|discover} <layer_dir>...", file=sys.stderr)
         return 2
     command, paths = argv[0], argv[1:]
     merged = merge_tongs(discover(_layer_dirs_from_argv(paths)))

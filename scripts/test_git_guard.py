@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/git_guard.py. Run: python3 scripts/test_git_guard.py"""
+"""Unit tests for swarmforge.gitguard. Run: python3 scripts/test_git_guard.py"""
 
-import importlib.util
 import io
 import os
 import shutil
@@ -11,10 +10,15 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODULE_PATH = os.path.join(HERE, "git_guard.py")
-spec = importlib.util.spec_from_file_location("git_guard", MODULE_PATH)
-git_guard = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(git_guard)
+REPO_ROOT = os.path.dirname(HERE)
+
+# The guard's entry-point shim puts the repo root on the path; standing in for
+# it here keeps this file runnable on its own, not just under a discovery run
+# that already set it.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from swarmforge import gitguard
 
 
 # git runs with the developer's global config otherwise, where a signing key or
@@ -50,7 +54,7 @@ class GuardCase(unittest.TestCase):
         return path
 
     def mounts(self, workspace, targets=("/workspace",)):
-        return git_guard.build_mounts(workspace, list(targets))
+        return gitguard.build_mounts(workspace, list(targets))
 
 
 class PlainCheckout(GuardCase):
@@ -91,7 +95,7 @@ class PlainCheckout(GuardCase):
         # The repo still behaves: git resolves the pointer back to the git dir.
         git(repo, "commit", "-q", "--allow-empty", "-m", "after")
         self.assertEqual(
-            git_guard.common_git_dir(repo, lambda m: None),
+            gitguard.common_git_dir(repo, lambda m: None),
             os.path.join(repo, ".git"))
 
     def test_missing_hooks_directory_is_created_rather_than_skipped(self):
@@ -134,8 +138,8 @@ class PlainCheckout(GuardCase):
         with open(os.path.join(planted, "HEAD"), "w") as handle:
             handle.write("ref: refs/heads/main\n")
         warnings = []
-        mounts = git_guard.build_mounts(repo, ["/workspace"],
-                                        warn=warnings.append)
+        mounts = gitguard.build_mounts(repo, ["/workspace"],
+                                       warn=warnings.append)
         self.assertEqual([m for m in mounts if "\n" in m], [])
         self.assertEqual([t for t in warnings if "colon or newline" in t],
                          ["%s cannot be expressed as a docker mount (it "
@@ -152,7 +156,7 @@ class PlainCheckout(GuardCase):
         shutil.move(os.path.join(repo, ".git"), moved)
         os.symlink(moved, os.path.join(repo, ".git"))
         warnings = []
-        git_guard.build_mounts(repo, ["/workspace"], warn=warnings.append)
+        gitguard.build_mounts(repo, ["/workspace"], warn=warnings.append)
         self.assertTrue(any("symlink" in text for text in warnings), warnings)
 
     @unittest.skipIf(os.geteuid() == 0, "root ignores the permission bits")
@@ -162,7 +166,7 @@ class PlainCheckout(GuardCase):
         os.chmod(git_dir, 0o500)
         self.addCleanup(os.chmod, git_dir, 0o700)
         warnings = []
-        mounts = git_guard.build_mounts(repo, ["/workspace"], warn=warnings.append)
+        mounts = gitguard.build_mounts(repo, ["/workspace"], warn=warnings.append)
         self.assertTrue(any("commondir" in text for text in warnings), warnings)
         self.assertNotIn(
             "%s/commondir:/workspace/.git/commondir:ro" % git_dir, mounts)
@@ -587,7 +591,7 @@ class WorktreeConfig(GuardCase):
 class CommandLine(GuardCase):
     def _main(self, argv):
         out, err = io.StringIO(), io.StringIO()
-        code = git_guard.main(argv, out=out, err=err)
+        code = gitguard.main(argv, out=out, err=err)
         return code, out.getvalue(), err.getvalue()
 
     def test_prints_one_mount_per_line(self):

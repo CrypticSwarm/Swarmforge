@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Entry point for the tong-definition diagnostic CLI (`validate`/`discover`).
+
+Swarmforge runs out of a checkout rather than an installed package, so nothing
+has put the repo root on the import path yet. This shim prepends it -- ahead of
+any copy that happens to be installed on the host -- and hands off to
+`swarmforge.tongs`. Resolving that path is the whole job: no launcher logic
+lives here, and no module under `swarmforge/` needs to know where it sits on
+disk.
+"""
+
+import os
+import sys
+
+# realpath, not abspath: a shim reached through a symlink on PATH must still
+# resolve to the checkout it lives in.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from swarmforge.tongs import main  # noqa: E402  (needs the path above)
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

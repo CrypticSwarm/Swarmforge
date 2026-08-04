@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Unit tests for scripts/run_anvil.py. Run: python3 scripts/test_run_anvil.py"""
+"""Unit tests for swarmforge.anvil. Run: python3 scripts/test_run_anvil.py"""
 
-import importlib.util
 import io
 import json
 import os
@@ -14,11 +13,21 @@ import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODULE_PATH = os.path.join(HERE, "run_anvil.py")
-spec = importlib.util.spec_from_file_location("run_anvil", MODULE_PATH)
-run_anvil = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(run_anvil)
-tongs = run_anvil.tongs
+REPO_ROOT = os.path.dirname(HERE)
+
+# The launcher's entry-point shim puts the repo root on the path; standing in
+# for it here keeps this file runnable on its own, not just under a discovery
+# run that already set it.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+# Aliased because `anvil` is already this file's name for the anvil's own argv.
+from swarmforge import anvil as launcher
+from swarmforge import tongs
+
+# The Makefile launches the anvil through this shim, so the subprocess tests
+# below drive the same entry point the live launch path uses.
+LAUNCHER_BIN = os.path.join(REPO_ROOT, "bin", "run-anvil")
 
 
 # A docker invocation shaped like the one run_agent_container builds: the
@@ -57,14 +66,14 @@ def _merged(name, defn, source=tongs.WORKSPACE):
 
 class ParseArgsTests(unittest.TestCase):
     def test_splits_layers_and_command_at_separator(self):
-        opts, cmd = run_anvil.parse_args(
+        opts, cmd = launcher.parse_args(
             ["--repo-tongs", "/r", "--workspace-tongs", "/w", "--", "docker", "run", "img"]
         )
         self.assertEqual(opts.layer_dirs, [(tongs.REPO, "/r"), (tongs.WORKSPACE, "/w")])
         self.assertEqual(cmd, ["docker", "run", "img"])
 
     def test_layers_ordered_canonically_regardless_of_flag_order(self):
-        opts, _ = run_anvil.parse_args(
+        opts, _ = launcher.parse_args(
             ["--workspace-tongs", "/w", "--user-tongs", "/u", "--", "x"]
         )
         # USER precedes WORKSPACE in canonical precedence even though the
@@ -72,12 +81,12 @@ class ParseArgsTests(unittest.TestCase):
         self.assertEqual(opts.layer_dirs, [(tongs.USER, "/u"), (tongs.WORKSPACE, "/w")])
 
     def test_no_layer_flags_is_valid(self):
-        opts, cmd = run_anvil.parse_args(["--", "docker", "run", "img"])
+        opts, cmd = launcher.parse_args(["--", "docker", "run", "img"])
         self.assertEqual(opts.layer_dirs, [])
         self.assertEqual(cmd, ["docker", "run", "img"])
 
     def test_approval_options_default_to_inert(self):
-        opts, _ = run_anvil.parse_args(["--", "x"])
+        opts, _ = launcher.parse_args(["--", "x"])
         self.assertIsNone(opts.workspace)
         self.assertIsNone(opts.approvals)
         self.assertIsNone(opts.providers)
@@ -85,7 +94,7 @@ class ParseArgsTests(unittest.TestCase):
         self.assertFalse(opts.no_prompt)
 
     def test_parses_workspace_approvals_and_no_prompt(self):
-        opts, cmd = run_anvil.parse_args(
+        opts, cmd = launcher.parse_args(
             ["--workspace", "/ws", "--approvals", "/a.json",
              "--providers", "/p.yaml", "--anvil-image", "anvil:img",
              "--no-prompt", "--", "x"]
@@ -98,70 +107,70 @@ class ParseArgsTests(unittest.TestCase):
         self.assertEqual(cmd, ["x"])
 
     def test_parses_harness(self):
-        opts, _ = run_anvil.parse_args(["--harness", "claude", "--", "x"])
+        opts, _ = launcher.parse_args(["--harness", "claude", "--", "x"])
         self.assertEqual(opts.harness, "claude")
 
     def test_harness_defaults_to_none(self):
-        opts, _ = run_anvil.parse_args(["--", "x"])
+        opts, _ = launcher.parse_args(["--", "x"])
         self.assertIsNone(opts.harness)
 
     def test_harness_without_value_raises(self):
-        with self.assertRaises(run_anvil.UsageError):
-            run_anvil.parse_args(["--harness"])
+        with self.assertRaises(launcher.UsageError):
+            launcher.parse_args(["--harness"])
 
     def test_anvil_image_without_value_raises(self):
-        with self.assertRaises(run_anvil.UsageError):
-            run_anvil.parse_args(["--anvil-image"])
+        with self.assertRaises(launcher.UsageError):
+            launcher.parse_args(["--anvil-image"])
 
     def test_workspace_without_value_raises(self):
-        with self.assertRaises(run_anvil.UsageError):
-            run_anvil.parse_args(["--workspace"])
+        with self.assertRaises(launcher.UsageError):
+            launcher.parse_args(["--workspace"])
 
     def test_approvals_without_value_raises(self):
-        with self.assertRaises(run_anvil.UsageError):
-            run_anvil.parse_args(["--approvals"])
+        with self.assertRaises(launcher.UsageError):
+            launcher.parse_args(["--approvals"])
 
     def test_providers_without_value_raises(self):
-        with self.assertRaises(run_anvil.UsageError):
-            run_anvil.parse_args(["--providers"])
+        with self.assertRaises(launcher.UsageError):
+            launcher.parse_args(["--providers"])
 
     def test_missing_separator_raises(self):
-        with self.assertRaises(run_anvil.UsageError):
-            run_anvil.parse_args(["--repo-tongs", "/r", "docker", "run"])
+        with self.assertRaises(launcher.UsageError):
+            launcher.parse_args(["--repo-tongs", "/r", "docker", "run"])
 
     def test_empty_command_after_separator_raises(self):
-        with self.assertRaises(run_anvil.UsageError):
-            run_anvil.parse_args(["--repo-tongs", "/r", "--"])
+        with self.assertRaises(launcher.UsageError):
+            launcher.parse_args(["--repo-tongs", "/r", "--"])
 
     def test_flag_without_value_raises(self):
-        with self.assertRaises(run_anvil.UsageError):
-            run_anvil.parse_args(["--repo-tongs"])
+        with self.assertRaises(launcher.UsageError):
+            launcher.parse_args(["--repo-tongs"])
 
     def test_unknown_argument_raises(self):
-        with self.assertRaises(run_anvil.UsageError):
-            run_anvil.parse_args(["--bogus", "/r", "--", "x"])
+        with self.assertRaises(launcher.UsageError):
+            launcher.parse_args(["--bogus", "/r", "--", "x"])
 
     def test_command_tokens_are_preserved_even_if_they_look_like_flags(self):
         # Everything after '--' is the command; a later '--' or a tong-looking
         # flag inside it is data, not parsed.
-        _, cmd = run_anvil.parse_args(["--", "docker", "run", "--user-tongs", "--"])
+        _, cmd = launcher.parse_args(["--", "docker", "run", "--user-tongs", "--"])
         self.assertEqual(cmd, ["docker", "run", "--user-tongs", "--"])
 
 
 class DiscoverTongsTests(unittest.TestCase):
     def test_no_layers_is_empty(self):
-        self.assertEqual(run_anvil.discover_tongs([]), {})
+        self.assertEqual(launcher.discover_tongs([]), {})
 
     def test_missing_dirs_are_empty(self):
         # The inert-when-empty basis: absent layer dirs discover nothing.
         layer_dirs = [(tongs.REPO, "/nonexistent/tongs"), (tongs.WORKSPACE, "/also/missing")]
-        self.assertEqual(run_anvil.discover_tongs(layer_dirs), {})
+        self.assertEqual(launcher.discover_tongs(layer_dirs), {})
 
     def test_discovers_a_present_definition(self):
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "gh.yaml"), "w") as handle:
                 handle.write("lifecycle: session\nimage: x\ninterface:\n  kind: none\n")
-            merged = run_anvil.discover_tongs([(tongs.WORKSPACE, tmp)])
+            merged = launcher.discover_tongs([(tongs.WORKSPACE, tmp)])
             self.assertEqual(sorted(merged), ["gh"])
 
 
@@ -169,18 +178,18 @@ class MainErrorTests(unittest.TestCase):
     def test_bad_args_return_two_without_exec(self):
         # main() reports usage and returns 2 for malformed argv; it must not
         # reach exec_anvil (which would replace the test process).
-        self.assertEqual(run_anvil.main(["--repo-tongs", "/r"]), 2)
-        self.assertEqual(run_anvil.main([]), 2)
+        self.assertEqual(launcher.main(["--repo-tongs", "/r"]), 2)
+        self.assertEqual(launcher.main([]), 2)
 
     def test_unexecutable_anvil_returns_127(self):
         # A missing anvil binary yields the shell's uninvocable-command status
         # instead of an uncaught OSError. exec_anvil returns here because the
         # exec fails, so the test process is not replaced.
-        self.assertEqual(run_anvil.exec_anvil(["/no/such/binary-xyz"]), 127)
+        self.assertEqual(launcher.exec_anvil(["/no/such/binary-xyz"]), 127)
 
 
 def _run_launcher(extra_args):
-    """Invoke run_anvil.py in a child process and capture the execed argv.
+    """Invoke the launcher in a child process and capture the execed argv.
 
     The anvil "command" is a tiny python program that prints the argv it
     receives as JSON. Because the launcher execs it, the JSON we read back is
@@ -188,7 +197,7 @@ def _run_launcher(extra_args):
     command byte-for-byte through a real os.execvp.
     """
     echo = [sys.executable, "-c", "import sys, json; sys.stdout.write(json.dumps(sys.argv[1:]))"]
-    argv = [sys.executable, MODULE_PATH] + extra_args + ["--"] + echo + ANVIL_ARGV
+    argv = [sys.executable, LAUNCHER_BIN] + extra_args + ["--"] + echo + ANVIL_ARGV
     completed = subprocess.run(argv, capture_output=True, text=True, check=True)
     return json.loads(completed.stdout), completed.stderr
 
@@ -227,14 +236,14 @@ class PassthroughInvariantTests(unittest.TestCase):
 
 
 def _run_launcher_raw(extra_args, stdin_text=None):
-    """Invoke run_anvil.py in a child process without asserting success.
+    """Invoke the launcher in a child process without asserting success.
 
     Like `_run_launcher` but returns the raw CompletedProcess so tests can
     inspect a non-zero exit (e.g. a denied approval that must not exec the
     anvil). `stdin_text` is fed to the launcher's stdin.
     """
     echo = [sys.executable, "-c", "import sys, json; sys.stdout.write(json.dumps(sys.argv[1:]))"]
-    argv = [sys.executable, MODULE_PATH] + extra_args + ["--"] + echo + ANVIL_ARGV
+    argv = [sys.executable, LAUNCHER_BIN] + extra_args + ["--"] + echo + ANVIL_ARGV
     return subprocess.run(argv, input=stdin_text, capture_output=True, text=True)
 
 
@@ -250,12 +259,12 @@ class DefaultApprovalsPathTests(unittest.TestCase):
 
     def test_honors_user_assets_dir(self):
         os.environ["SWARMFORGE_USER_ASSETS_DIR"] = "/opt/sf"
-        self.assertEqual(run_anvil.default_approvals_path(), "/opt/sf/approvals.json")
+        self.assertEqual(launcher.default_approvals_path(), "/opt/sf/approvals.json")
 
     def test_falls_back_to_home_swarmforge(self):
         os.environ.pop("SWARMFORGE_USER_ASSETS_DIR", None)
         expected = os.path.join(os.path.expanduser("~"), ".swarmforge", "approvals.json")
-        self.assertEqual(run_anvil.default_approvals_path(), expected)
+        self.assertEqual(launcher.default_approvals_path(), expected)
 
 
 class DefaultProvidersPathTests(unittest.TestCase):
@@ -271,7 +280,7 @@ class DefaultProvidersPathTests(unittest.TestCase):
     def test_honors_user_assets_dir(self):
         os.environ["SWARMFORGE_USER_ASSETS_DIR"] = "/opt/sf"
         self.assertEqual(
-            run_anvil.default_providers_path(), "/opt/sf/secret-providers.yaml"
+            launcher.default_providers_path(), "/opt/sf/secret-providers.yaml"
         )
 
     def test_falls_back_to_home_swarmforge(self):
@@ -279,12 +288,12 @@ class DefaultProvidersPathTests(unittest.TestCase):
         expected = os.path.join(
             os.path.expanduser("~"), ".swarmforge", "secret-providers.yaml"
         )
-        self.assertEqual(run_anvil.default_providers_path(), expected)
+        self.assertEqual(launcher.default_providers_path(), expected)
 
 
 class RenderPrivilegeSummaryTests(unittest.TestCase):
     def test_renders_requested_privileges(self):
-        text = run_anvil.render_privilege_summary(
+        text = launcher.render_privilege_summary(
             "github", tongs.privilege_summary(WORKSPACE_TONG)
         )
         self.assertIn("github", text)
@@ -296,7 +305,7 @@ class RenderPrivilegeSummaryTests(unittest.TestCase):
 
     def test_omits_unrequested_sections(self):
         defn = {"image": "x", "interface": {"kind": "none"}}
-        text = run_anvil.render_privilege_summary("x", tongs.privilege_summary(defn))
+        text = launcher.render_privilege_summary("x", tongs.privilege_summary(defn))
         self.assertNotIn("secrets:", text)
         self.assertNotIn("docker socket", text)
 
@@ -314,7 +323,7 @@ class GateTests(unittest.TestCase):
 
     def _gate(self, merged, answer="", prompt=True, workspace=None):
         out = io.StringIO()
-        run_anvil.gate_workspace_tongs(
+        launcher.gate_workspace_tongs(
             merged,
             self.ws if workspace is None else workspace,
             self.approvals,
@@ -346,18 +355,18 @@ class GateTests(unittest.TestCase):
 
     def test_declined_workspace_tong_raises_and_does_not_persist(self):
         merged = _merged("gh", WORKSPACE_TONG)
-        with self.assertRaises(run_anvil.ApprovalDenied):
+        with self.assertRaises(launcher.ApprovalDenied):
             self._gate(merged, answer="n\n")
         self.assertFalse(os.path.exists(self.approvals))
 
     def test_eof_reads_as_decline(self):
         merged = _merged("gh", WORKSPACE_TONG)
-        with self.assertRaises(run_anvil.ApprovalDenied):
+        with self.assertRaises(launcher.ApprovalDenied):
             self._gate(merged, answer="")  # empty stdin => EOF => No
 
     def test_no_prompt_fails_closed_when_unapproved(self):
         merged = _merged("gh", WORKSPACE_TONG)
-        with self.assertRaises(run_anvil.ApprovalDenied):
+        with self.assertRaises(launcher.ApprovalDenied):
             self._gate(merged, prompt=False)
         self.assertFalse(os.path.exists(self.approvals))
 
@@ -374,12 +383,12 @@ class GateTests(unittest.TestCase):
         self._gate(merged, answer="y\n")
         changed = dict(WORKSPACE_TONG, image="registry/github@sha256:def")
         # A new hash is unapproved, so the fail-closed path fires again.
-        with self.assertRaises(run_anvil.ApprovalDenied):
+        with self.assertRaises(launcher.ApprovalDenied):
             self._gate(_merged("gh", changed), prompt=False)
 
     def test_missing_workspace_path_fails_closed(self):
         merged = _merged("gh", WORKSPACE_TONG)
-        with self.assertRaises(run_anvil.ApprovalDenied):
+        with self.assertRaises(launcher.ApprovalDenied):
             self._gate(merged, answer="y\n", workspace="")
 
 
@@ -393,32 +402,32 @@ class SecretResolverTests(unittest.TestCase):
         return [sys.executable, "-c", "import sys; sys.stdout.write(%s)" % expr, "{ref}"]
 
     def test_resolves_ref_via_provider_cli(self):
-        resolve = run_anvil.make_secret_resolver({"echo": self._writes("sys.argv[1]")})
+        resolve = launcher.make_secret_resolver({"echo": self._writes("sys.argv[1]")})
         self.assertEqual(resolve("echo", "op://Work/secret"), "op://Work/secret")
 
     def test_provider_stderr_inherits_terminal(self):
-        with mock.patch.object(run_anvil.subprocess, "run") as run:
+        with mock.patch.object(launcher.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["provider"], 0, stdout=b"secret\n")
-            resolve = run_anvil.make_secret_resolver({"p": ["provider", "{ref}"]})
+            resolve = launcher.make_secret_resolver({"p": ["provider", "{ref}"]})
             self.assertEqual(resolve("p", "ref"), "secret")
             self.assertIsNone(run.call_args.kwargs.get("stderr"))
 
     def test_strips_single_trailing_newline(self):
-        resolve = run_anvil.make_secret_resolver({"echo": self._writes("sys.argv[1] + '\\n'")})
+        resolve = launcher.make_secret_resolver({"echo": self._writes("sys.argv[1] + '\\n'")})
         self.assertEqual(resolve("echo", "token"), "token")
 
     def test_preserves_inner_and_other_whitespace(self):
         # Only one trailing newline is stripped; interior/extra newlines survive.
-        resolve = run_anvil.make_secret_resolver({"echo": self._writes("sys.argv[1] + '\\n\\n'")})
+        resolve = launcher.make_secret_resolver({"echo": self._writes("sys.argv[1] + '\\n\\n'")})
         self.assertEqual(resolve("echo", "a\nb"), "a\nb\n")
 
     def test_unknown_provider_raises(self):
-        resolve = run_anvil.make_secret_resolver({"op": ["op", "read", "{ref}"]})
-        with self.assertRaises(run_anvil.SecretResolutionError):
+        resolve = launcher.make_secret_resolver({"op": ["op", "read", "{ref}"]})
+        with self.assertRaises(launcher.SecretResolutionError):
             resolve("vault", "x")
 
     def test_override_resolves_matching_ref(self):
-        resolve = run_anvil.make_secret_resolver(
+        resolve = launcher.make_secret_resolver(
             {"shared": {"default": None, "overrides": {"tok": self._writes("sys.argv[1]")}}}
         )
         self.assertEqual(resolve("shared", "tok"), "tok")
@@ -426,41 +435,41 @@ class SecretResolverTests(unittest.TestCase):
     def test_unmapped_ref_without_default_raises(self):
         # A structured provider that names neither the ref nor `default` stops the
         # launch with a clear message rather than shelling out to a wrong command.
-        resolve = run_anvil.make_secret_resolver(
+        resolve = launcher.make_secret_resolver(
             {"shared": {"default": None, "overrides": {"tok": ["op", "read", "{ref}"]}}}
         )
-        with self.assertRaises(run_anvil.SecretResolutionError) as ctx:
+        with self.assertRaises(launcher.SecretResolutionError) as ctx:
             resolve("shared", "other")
         self.assertIn("shared", str(ctx.exception))
         self.assertIn("other", str(ctx.exception))
 
     def test_nonzero_exit_raises(self):
-        resolve = run_anvil.make_secret_resolver(
+        resolve = launcher.make_secret_resolver(
             {"boom": [sys.executable, "-c", "import sys; sys.exit(3)"]}
         )
-        with self.assertRaises(run_anvil.SecretResolutionError):
+        with self.assertRaises(launcher.SecretResolutionError):
             resolve("boom", "x")
 
     def test_unrunnable_provider_raises(self):
-        resolve = run_anvil.make_secret_resolver({"missing": ["/no/such/binary-xyz", "{ref}"]})
-        with self.assertRaises(run_anvil.SecretResolutionError):
+        resolve = launcher.make_secret_resolver({"missing": ["/no/such/binary-xyz", "{ref}"]})
+        with self.assertRaises(launcher.SecretResolutionError):
             resolve("missing", "x")
 
     def test_error_message_never_contains_the_secret(self):
         # A failing CLI must not surface the resolved value; here it prints the
         # ref to stderr and fails, and the error names provider/ref (which are
         # not secret) -- the resolver never reaches a secret value on failure.
-        resolve = run_anvil.make_secret_resolver(
+        resolve = launcher.make_secret_resolver(
             {"boom": [sys.executable, "-c", "import sys; sys.exit(1)"]}
         )
-        with self.assertRaises(run_anvil.SecretResolutionError) as ctx:
+        with self.assertRaises(launcher.SecretResolutionError) as ctx:
             resolve("boom", "ref-token")
         self.assertIn("boom", str(ctx.exception))
 
     def test_drives_plan_tong_secrets_end_to_end(self):
         # The resolver is the impure half of tongs.plan_tong_secrets: a secret env
         # var resolves to a value under `secrets`, never the plain `-e` env.
-        resolve = run_anvil.make_secret_resolver({"echo": self._writes("sys.argv[1]")})
+        resolve = launcher.make_secret_resolver({"echo": self._writes("sys.argv[1]")})
         plan = tongs.plan_tong_secrets(
             {"REGION": "us", "TOKEN": "${secret:echo:s3cr3t}"}, resolve
         )
@@ -483,7 +492,7 @@ class MainGateTests(unittest.TestCase):
         # test process is not replaced).
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = self._workspace_tongs_dir(tmp)
-            rc = run_anvil.main(
+            rc = launcher.main(
                 [
                     "--workspace-tongs", tongs_dir,
                     "--workspace", tmp,
@@ -585,8 +594,8 @@ class MainGateTests(unittest.TestCase):
                     "lifecycle: shared\nimage: x\ninterface:\n  kind: none\n"
                     "readiness:\n  mode: none\n"
                 )
-            with mock.patch.object(run_anvil, "run_with_tongs", side_effect=KeyboardInterrupt):
-                rc = run_anvil.main(["--repo-tongs", tongs_dir, "--", "/no/such/binary-xyz"])
+            with mock.patch.object(launcher, "run_with_tongs", side_effect=KeyboardInterrupt):
+                rc = launcher.main(["--repo-tongs", tongs_dir, "--", "/no/such/binary-xyz"])
             self.assertEqual(rc, 130)
 
     def test_colliding_mcp_aliases_refused_without_exec(self):
@@ -667,7 +676,7 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
     """The single chokepoint that refuses tongs the launcher cannot start yet."""
 
     def _reasons(self, defn):
-        return run_anvil.unsupported_tong_reasons(_merged("t", defn, source=tongs.REPO))
+        return launcher.unsupported_tong_reasons(_merged("t", defn, source=tongs.REPO))
 
     def test_startable_port_tong_has_no_reasons(self):
         self.assertEqual(
@@ -864,7 +873,7 @@ class FakeChannels:
 
 # Tiny launcher options for driving run_with_tongs directly.
 def _opts(workspace=None, anvil_image="anvil:img", harness="opencode"):
-    return run_anvil.LauncherOptions(
+    return launcher.LauncherOptions(
         layer_dirs=[], workspace=workspace, approvals=None, providers=None,
         harness=harness, anvil_image=anvil_image, no_prompt=False,
     )
@@ -961,32 +970,32 @@ class DockerCLITests(unittest.TestCase):
 
     def test_ensure_network_creates_when_absent(self):
         rec = _RecordingRun({("docker", "network", "inspect"): 1})
-        run_anvil.DockerCLI(run=rec).ensure_network("sess-net")
+        launcher.DockerCLI(run=rec).ensure_network("sess-net")
         self.assertEqual(rec.argvs[0][:4], ["docker", "network", "inspect", "sess-net"])
         self.assertIn(["docker", "network", "create", "sess-net"], rec.argvs)
 
     def test_ensure_network_reuses_existing(self):
         rec = _RecordingRun()  # inspect returns 0 => already present
-        run_anvil.DockerCLI(run=rec).ensure_network("sess-net")
+        launcher.DockerCLI(run=rec).ensure_network("sess-net")
         self.assertNotIn(["docker", "network", "create", "sess-net"], rec.argvs)
 
     def test_ensure_network_raises_when_create_fails(self):
         rec = _RecordingRun(
             {("docker", "network", "inspect"): 1, ("docker", "network", "create"): 1}
         )
-        with self.assertRaises(run_anvil.DockerError):
-            run_anvil.DockerCLI(run=rec).ensure_network("sess-net")
+        with self.assertRaises(launcher.DockerError):
+            launcher.DockerCLI(run=rec).ensure_network("sess-net")
 
     def test_network_connect_passes_alias(self):
         rec = _RecordingRun()
-        run_anvil.DockerCLI(run=rec).network_connect("net", "ctr", aliases=["gh"])
+        launcher.DockerCLI(run=rec).network_connect("net", "ctr", aliases=["gh"])
         self.assertEqual(
             rec.argvs[-1], ["docker", "network", "connect", "--alias", "gh", "net", "ctr"]
         )
 
     def test_network_connect_passes_every_alias(self):
         rec = _RecordingRun()
-        run_anvil.DockerCLI(run=rec).network_connect("net", "ctr", aliases=["gh", "api"])
+        launcher.DockerCLI(run=rec).network_connect("net", "ctr", aliases=["gh", "api"])
         self.assertEqual(
             rec.argvs[-1],
             ["docker", "network", "connect", "--alias", "gh", "--alias", "api",
@@ -995,20 +1004,20 @@ class DockerCLITests(unittest.TestCase):
 
     def test_network_connect_without_alias(self):
         rec = _RecordingRun()
-        run_anvil.DockerCLI(run=rec).network_connect("net", "ctr")
+        launcher.DockerCLI(run=rec).network_connect("net", "ctr")
         self.assertEqual(rec.argvs[-1], ["docker", "network", "connect", "net", "ctr"])
 
     def test_network_connect_raises_on_failure(self):
         rec = _RecordingRun({("docker", "network", "connect"): 1})
-        with self.assertRaises(run_anvil.DockerError):
-            run_anvil.DockerCLI(run=rec).network_connect("net", "ctr")
+        with self.assertRaises(launcher.DockerError):
+            launcher.DockerCLI(run=rec).network_connect("net", "ctr")
 
     def test_network_disconnect_and_rm_are_best_effort(self):
         # Teardown must not raise even when the network or endpoint is already gone.
         rec = _RecordingRun(
             {("docker", "network", "disconnect"): 1, ("docker", "network", "rm"): 1}
         )
-        cli = run_anvil.DockerCLI(run=rec)
+        cli = launcher.DockerCLI(run=rec)
         cli.network_disconnect("net", "ctr")
         cli.network_rm("net")
         self.assertIn(["docker", "network", "disconnect", "net", "ctr"], rec.argvs)
@@ -1016,9 +1025,9 @@ class DockerCLITests(unittest.TestCase):
 
     def test_run_foreground_multi_creates_connects_then_starts(self):
         rec = _RecordingRun()
-        cli = run_anvil.DockerCLI(run=rec)
+        cli = launcher.DockerCLI(run=rec)
         argv = ["docker", "run", "-it", "--name", "anvil", "--network", "sess", "img"]
-        with mock.patch.object(run_anvil.subprocess, "Popen") as popen:
+        with mock.patch.object(launcher.subprocess, "Popen") as popen:
             popen.return_value.wait.return_value = 7
             rc = cli.run_foreground_multi(argv, ["base-net"], "anvil")
         self.assertEqual(rc, 7)
@@ -1052,34 +1061,34 @@ class DockerCLITests(unittest.TestCase):
         return run
 
     def test_image_exec_config_parses_entrypoint_cmd_user(self):
-        cli = run_anvil.DockerCLI(run=self._image_run('["node"]', '["server.js"]', '"1000"'))
+        cli = launcher.DockerCLI(run=self._image_run('["node"]', '["server.js"]', '"1000"'))
         self.assertEqual(cli.image_exec_config("img"), (["node"], ["server.js"], "1000"))
 
     def test_image_exec_config_treats_null_as_empty(self):
-        cli = run_anvil.DockerCLI(run=self._image_run("null", "null", "null"))
+        cli = launcher.DockerCLI(run=self._image_run("null", "null", "null"))
         self.assertEqual(cli.image_exec_config("img"), ([], [], ""))
 
     def test_image_exec_config_pulls_when_absent_then_succeeds(self):
         rec_run = self._image_run('["app"]', "null", '""', inspect_codes=(1, 0))
-        cli = run_anvil.DockerCLI(run=rec_run)
+        cli = launcher.DockerCLI(run=rec_run)
         self.assertEqual(cli.image_exec_config("img"), (["app"], [], ""))
 
     def test_image_exec_config_raises_when_still_missing(self):
-        cli = run_anvil.DockerCLI(run=self._image_run("null", "null", "null",
+        cli = launcher.DockerCLI(run=self._image_run("null", "null", "null",
                                                       inspect_codes=(1, 1)))
-        with self.assertRaises(run_anvil.DockerError):
+        with self.assertRaises(launcher.DockerError):
             cli.image_exec_config("img")
 
 
 class UidOfTests(unittest.TestCase):
     def test_bare_uid_parses(self):
-        self.assertEqual(run_anvil._uid_of("1000"), 1000)
-        self.assertEqual(run_anvil._uid_of("1000:1000"), 1000)
+        self.assertEqual(launcher._uid_of("1000"), 1000)
+        self.assertEqual(launcher._uid_of("1000:1000"), 1000)
 
     def test_name_or_empty_is_none(self):
-        self.assertIsNone(run_anvil._uid_of("appuser"))
-        self.assertIsNone(run_anvil._uid_of(""))
-        self.assertIsNone(run_anvil._uid_of(None))
+        self.assertIsNone(launcher._uid_of("appuser"))
+        self.assertIsNone(launcher._uid_of(""))
+        self.assertIsNone(launcher._uid_of(None))
 
 
 class SecretChannelTests(unittest.TestCase):
@@ -1087,10 +1096,10 @@ class SecretChannelTests(unittest.TestCase):
         # No reader ever opens the FIFO, so the non-blocking write open keeps
         # getting ENXIO; once the (fake) clock passes the deadline it fails closed
         # rather than hanging the launcher.
-        channel = run_anvil.open_secret_channel()
+        channel = launcher.open_secret_channel()
         try:
             clock = iter([0.0, 1.0, 2.0, 99.0])
-            with self.assertRaises(run_anvil.OrchestrationError):
+            with self.assertRaises(launcher.OrchestrationError):
                 channel.deliver(
                     "export X='y'\n", timeout=5.0, poll=0.0,
                     sleep=lambda _s: None, monotonic=lambda: next(clock),
@@ -1101,7 +1110,7 @@ class SecretChannelTests(unittest.TestCase):
     def test_delivers_payload_to_a_reader(self):
         # With a reader attached, the payload is written and the reader sees it
         # followed by EOF -- the real FIFO round-trip, no docker involved.
-        channel = run_anvil.open_secret_channel()
+        channel = launcher.open_secret_channel()
         received = []
 
         def reader():
@@ -1120,7 +1129,7 @@ class SecretChannelTests(unittest.TestCase):
     def test_delivers_payload_larger_than_pipe_buffer(self):
         # A payload bigger than the pipe capacity (~64 KiB) forces several writes
         # and a full buffer; every byte must still arrive (no silent truncation).
-        channel = run_anvil.open_secret_channel()
+        channel = launcher.open_secret_channel()
         payload = "export BIG='" + ("x" * 200000) + "'\n"
         received = []
 
@@ -1145,38 +1154,38 @@ class McpInjectionTests(unittest.TestCase):
 
     def test_empty_fragment_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            pre, post = run_anvil._mcp_injection({}, "opencode", tmp)
+            pre, post = launcher._mcp_injection({}, "opencode", tmp)
             self.assertEqual((pre, post), ([], []))
             self.assertEqual(os.listdir(tmp), [])  # no file written
 
     def test_opencode_mounts_and_sets_env(self):
         with tempfile.TemporaryDirectory() as tmp:
-            pre, post = run_anvil._mcp_injection(self.FRAGMENT, "opencode", tmp)
+            pre, post = launcher._mcp_injection(self.FRAGMENT, "opencode", tmp)
             host_path = os.path.join(tmp, "tong-mcp.json")
             self.assertEqual(post, [])  # OpenCode reads it via the entrypoint
             self.assertEqual(
                 pre,
-                ["-v", "%s:%s:ro" % (host_path, run_anvil.MCP_CONFIG_CONTAINER_PATH),
-                 "-e", "%s=%s" % (run_anvil.MCP_FILE_ENV, run_anvil.MCP_CONFIG_CONTAINER_PATH)],
+                ["-v", "%s:%s:ro" % (host_path, launcher.MCP_CONFIG_CONTAINER_PATH),
+                 "-e", "%s=%s" % (launcher.MCP_FILE_ENV, launcher.MCP_CONFIG_CONTAINER_PATH)],
             )
             with open(host_path, encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), self.FRAGMENT)
 
     def test_claude_mounts_and_appends_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
-            pre, post = run_anvil._mcp_injection(self.FRAGMENT, "claude", tmp)
+            pre, post = launcher._mcp_injection(self.FRAGMENT, "claude", tmp)
             host_path = os.path.join(tmp, "tong-mcp.json")
             self.assertEqual(
-                pre, ["-v", "%s:%s:ro" % (host_path, run_anvil.MCP_CONFIG_CONTAINER_PATH)]
+                pre, ["-v", "%s:%s:ro" % (host_path, launcher.MCP_CONFIG_CONTAINER_PATH)]
             )
-            self.assertEqual(post, ["--mcp-config", run_anvil.MCP_CONFIG_CONTAINER_PATH])
+            self.assertEqual(post, ["--mcp-config", launcher.MCP_CONFIG_CONTAINER_PATH])
             with open(host_path, encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), self.FRAGMENT)
 
 
 class RunWithTongsTests(unittest.TestCase):
     def _run(self, docker, merged, anvil=None, workspace=None, harness="opencode"):
-        return run_anvil.run_with_tongs(
+        return launcher.run_with_tongs(
             merged, anvil or ANVIL_ARGV, _opts(workspace=workspace, harness=harness),
             docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
         )
@@ -1209,7 +1218,7 @@ class RunWithTongsTests(unittest.TestCase):
         # rather than a traceback, and nothing is started or removed.
         defn = dict(SHARED_OLLAMA, mounts=["docker-socket", "docker-socket"])
         docker = FakeDocker()
-        with self.assertRaisesRegex(run_anvil.OrchestrationError, "tong 'ollama'.*overlaps"):
+        with self.assertRaisesRegex(launcher.OrchestrationError, "tong 'ollama'.*overlaps"):
             self._run(docker, _merged("ollama", defn, source=tongs.REPO))
         self.assertEqual(docker.run_argvs, [])
         self.assertNotIn(("rm_force", "swarmforge-shared-ollama"), docker.calls)
@@ -1289,7 +1298,7 @@ class RunWithTongsTests(unittest.TestCase):
 
     def _mcp_mount_host_path(self, argv):
         """Host path of the read-only MCP-config bind mount in an anvil argv."""
-        suffix = ":%s:ro" % run_anvil.MCP_CONFIG_CONTAINER_PATH
+        suffix = ":%s:ro" % launcher.MCP_CONFIG_CONTAINER_PATH
         for index, token in enumerate(argv):
             if token == "-v" and argv[index + 1].endswith(suffix):
                 return argv[index + 1][: -len(suffix)]
@@ -1304,7 +1313,7 @@ class RunWithTongsTests(unittest.TestCase):
         argv = docker.anvil_argv
         self.assertIn("github", docker.run_argvs[0])  # tong started under its alias
         self.assertIn(
-            "%s=%s" % (run_anvil.MCP_FILE_ENV, run_anvil.MCP_CONFIG_CONTAINER_PATH), argv
+            "%s=%s" % (launcher.MCP_FILE_ENV, launcher.MCP_CONFIG_CONTAINER_PATH), argv
         )
         self._mcp_mount_host_path(argv)  # the read-only mount is present
         self.assertNotIn("--mcp-config", argv)  # OpenCode does not use the flag
@@ -1316,8 +1325,8 @@ class RunWithTongsTests(unittest.TestCase):
         self._run(docker, _merged("github-creds", SHARED_MCP, source=tongs.REPO),
                   harness="claude")
         argv = docker.anvil_argv
-        self.assertEqual(argv[-2:], ["--mcp-config", run_anvil.MCP_CONFIG_CONTAINER_PATH])
-        self.assertNotIn("%s=%s" % (run_anvil.MCP_FILE_ENV, run_anvil.MCP_CONFIG_CONTAINER_PATH),
+        self.assertEqual(argv[-2:], ["--mcp-config", launcher.MCP_CONFIG_CONTAINER_PATH])
+        self.assertNotIn("%s=%s" % (launcher.MCP_FILE_ENV, launcher.MCP_CONFIG_CONTAINER_PATH),
                          argv)
         self._mcp_mount_host_path(argv)  # the read-only mount is present
 
@@ -1325,7 +1334,7 @@ class RunWithTongsTests(unittest.TestCase):
         for harness in (None, "opencdoe"):
             with self.subTest(harness=harness):
                 docker = FakeDocker()
-                with self.assertRaisesRegex(run_anvil.OrchestrationError, "--harness"):
+                with self.assertRaisesRegex(launcher.OrchestrationError, "--harness"):
                     self._run(docker, _merged("github-creds", SHARED_MCP, source=tongs.REPO),
                               harness=harness)
                 self.assertEqual(docker.calls, [])
@@ -1348,7 +1357,7 @@ class RunWithTongsTests(unittest.TestCase):
             "interface": {"kind": "port", "port": 5432},
             "readiness": {"mode": "tcp", "timeout": "1s"},
         }
-        with self.assertRaises(run_anvil.OrchestrationError):
+        with self.assertRaises(launcher.OrchestrationError):
             self._run(docker, _merged("pg", defn, source=tongs.REPO))
         self.assertIsNone(docker.anvil_argv)  # anvil never ran
 
@@ -1362,7 +1371,7 @@ class RunWithTongsTests(unittest.TestCase):
         # falls back to "is the container running" using inspect_state.
         states = {"swarmforge-shared-ollama": {"running": True, "label": tongs.config_hash(SHARED_OLLAMA)}}
         docker = FakeDocker(states=states)
-        rc = run_anvil.run_with_tongs(
+        rc = launcher.run_with_tongs(
             _merged("ollama", SHARED_OLLAMA, source=tongs.REPO), ANVIL_ARGV,
             _opts(anvil_image=None), docker=docker,
             sleep=lambda _s: None, monotonic=_Clock(),
@@ -1373,7 +1382,7 @@ class RunWithTongsTests(unittest.TestCase):
     # --- Secret resolution + FIFO env delivery ------------------------------
 
     def _run_secret(self, docker, merged, providers, channels=None):
-        return run_anvil.run_with_tongs(
+        return launcher.run_with_tongs(
             merged, ANVIL_ARGV, _opts(), docker=docker, providers=providers,
             make_channel=channels or FakeChannels(),
             sleep=lambda _s: None, monotonic=_Clock(),
@@ -1417,7 +1426,7 @@ class RunWithTongsTests(unittest.TestCase):
         # No provider for the referenced scheme => resolution fails before the tong
         # even starts, and the anvil never runs.
         docker = FakeDocker()
-        with self.assertRaises(run_anvil.SecretResolutionError):
+        with self.assertRaises(launcher.SecretResolutionError):
             self._run_secret(docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), {})
         self.assertEqual(docker.run_argvs, [])  # never reached the start
         self.assertIsNone(docker.anvil_argv)
@@ -1427,8 +1436,8 @@ class RunWithTongsTests(unittest.TestCase):
         # container is removed before raising, so a `shared` tong is not left
         # stamped with its config-hash label (and reused) while missing its secret.
         docker = FakeDocker()
-        channels = FakeChannels(deliver_error=run_anvil.DockerError("boom"))
-        with self.assertRaises(run_anvil.DockerError):
+        channels = FakeChannels(deliver_error=launcher.DockerError("boom"))
+        with self.assertRaises(launcher.DockerError):
             self._run_secret(
                 docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS,
                 channels=channels,
@@ -1445,7 +1454,7 @@ class RunWithTongsTests(unittest.TestCase):
         defn = dict(SHARED_SECRET, mounts=["workspace:/run"])
         docker = FakeDocker()
         channels = FakeChannels()
-        with self.assertRaisesRegex(run_anvil.OrchestrationError, "tong 'gh'.*overlaps"):
+        with self.assertRaisesRegex(launcher.OrchestrationError, "tong 'gh'.*overlaps"):
             self._run_secret(
                 docker, _merged("gh", defn, source=tongs.REPO), ECHO_PROVIDERS,
                 channels=channels,
@@ -1649,8 +1658,8 @@ class RunWithTongsTests(unittest.TestCase):
     def test_session_tong_without_anvil_name_raises_before_any_docker_call(self):
         docker = FakeDocker()
         anvil = ["docker", "run", "-it", "--rm", "--network", "opencode-net", "img"]
-        with self.assertRaises(run_anvil.OrchestrationError):
-            run_anvil.run_with_tongs(
+        with self.assertRaises(launcher.OrchestrationError):
+            launcher.run_with_tongs(
                 _merged("pg", SESSION_PORT, source=tongs.REPO), anvil, _opts(),
                 docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
             )
@@ -1663,11 +1672,11 @@ class RunWithTongsTests(unittest.TestCase):
 
     def _run_org(self, docker, merged, org_dir, harness="opencode", anvil=None):
         """Drive run_with_tongs with an org layer dir wired into the options."""
-        opts = run_anvil.LauncherOptions(
+        opts = launcher.LauncherOptions(
             layer_dirs=[(tongs.ORG, org_dir)], workspace=None, approvals=None,
             providers=None, harness=harness, anvil_image="anvil:img", no_prompt=False,
         )
-        return run_anvil.run_with_tongs(
+        return launcher.run_with_tongs(
             merged, anvil or ANVIL_ARGV, opts,
             docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
         )
@@ -1758,7 +1767,7 @@ class RunWithTongsTests(unittest.TestCase):
         docker = FakeDocker()
         anvil = ["docker", "run", "-it", "--rm", "--network", "opencode-net", "img"]
         merged = {"asana": {"source": tongs.ORG, "definition": ORG_ASANA}}
-        with self.assertRaises(run_anvil.OrchestrationError):
+        with self.assertRaises(launcher.OrchestrationError):
             self._run_org(docker, merged, self._ACME, anvil=anvil)
         self.assertEqual(docker.calls, [])
 
@@ -1768,40 +1777,40 @@ class WorkspaceGitDirSpecTests(unittest.TestCase):
 
     def test_no_workspace_path_is_empty(self):
         defn = {"mounts": ["workspace"]}
-        self.assertEqual(run_anvil._workspace_git_dir_specs(defn, None), [])
+        self.assertEqual(launcher._workspace_git_dir_specs(defn, None), [])
 
     def test_no_workspace_mount_never_calls_the_guard(self):
         defn = {"mounts": ["docker-socket"]}
-        with mock.patch.object(run_anvil.git_guard, "build_mounts") as guard:
-            self.assertEqual(run_anvil._workspace_git_dir_specs(defn, "/ws"), [])
+        with mock.patch.object(launcher.gitguard, "build_mounts") as guard:
+            self.assertEqual(launcher._workspace_git_dir_specs(defn, "/ws"), [])
         guard.assert_not_called()
 
     def test_guard_receives_every_workspace_destination(self):
         defn = {"mounts": ["workspace:/a", "workspace:/b:ro"]}
-        with mock.patch.object(run_anvil.git_guard, "build_mounts",
+        with mock.patch.object(launcher.gitguard, "build_mounts",
                                return_value=[]) as guard:
-            run_anvil._workspace_git_dir_specs(defn, "/ws")
+            launcher._workspace_git_dir_specs(defn, "/ws")
         guard.assert_called_once_with("/ws", ["/a", "/b"], warn=None)
 
     def test_read_write_workspace_keeps_guard_modes(self):
         defn = {"mounts": ["workspace"]}
         specs = ["/ws/.git:/workspace/.git",
                  "/ws/.git/config:/workspace/.git/config:ro"]
-        with mock.patch.object(run_anvil.git_guard, "build_mounts",
+        with mock.patch.object(launcher.gitguard, "build_mounts",
                                return_value=list(specs)):
-            self.assertEqual(run_anvil._workspace_git_dir_specs(defn, "/ws"), specs)
+            self.assertEqual(launcher._workspace_git_dir_specs(defn, "/ws"), specs)
 
     def test_read_only_workspace_forces_every_spec_read_only(self):
         # build_mounts emits the git-dir binds writable (the anvil's workspace is
         # writable); under a workspace:ro definition they must not open a write path.
         defn = {"mounts": ["workspace:ro"]}
         with mock.patch.object(
-            run_anvil.git_guard, "build_mounts",
+            launcher.gitguard, "build_mounts",
             return_value=["/ws/.git:/workspace/.git",
                           "/ws/.git/config:/workspace/.git/config:ro"],
         ):
             self.assertEqual(
-                run_anvil._workspace_git_dir_specs(defn, "/ws"),
+                launcher._workspace_git_dir_specs(defn, "/ws"),
                 ["/ws/.git:/workspace/.git:ro",
                  "/ws/.git/config:/workspace/.git/config:ro"],
             )
@@ -1809,10 +1818,10 @@ class WorkspaceGitDirSpecTests(unittest.TestCase):
     def test_mixed_modes_keep_guard_modes(self):
         # One writable workspace mount means the git dir must stay writable too.
         defn = {"mounts": ["workspace:/a:ro", "workspace:/b"]}
-        with mock.patch.object(run_anvil.git_guard, "build_mounts",
+        with mock.patch.object(launcher.gitguard, "build_mounts",
                                return_value=["/x/.git:/x/.git"]):
             self.assertEqual(
-                run_anvil._workspace_git_dir_specs(defn, "/ws"),
+                launcher._workspace_git_dir_specs(defn, "/ws"),
                 ["/x/.git:/x/.git"],
             )
 
@@ -1866,7 +1875,7 @@ class WorktreeTongMountTests(unittest.TestCase):
             "readiness": {"mode": "none"},
         }
         docker = FakeDocker()
-        rc = run_anvil.run_with_tongs(
+        rc = launcher.run_with_tongs(
             _merged("sign", defn, source=tongs.USER), ANVIL_ARGV,
             _opts(workspace=self.worktree),
             docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
