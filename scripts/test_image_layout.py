@@ -70,6 +70,8 @@ class ImportRootAgreement(unittest.TestCase):
 
     def setUp(self):
         self.copies = dockerfile_copies()
+        with open(DOCKERFILE) as handle:
+            self.dockerfile = handle.read()
         with open(ENTRYPOINT) as handle:
             self.entrypoint = handle.read()
 
@@ -86,15 +88,20 @@ class ImportRootAgreement(unittest.TestCase):
 
         Yields (import root, flags, module). An absent PYTHONPATH gives a root
         of None, which is one of the failures this guards: the module ships in
-        the image but is not importable from it.
+        the image but is not importable from it. Comments are stripped first,
+        so prose about an invocation is not mistaken for one.
         """
+        code = "\n".join(
+            line for line in self.entrypoint.splitlines()
+            if not line.lstrip().startswith("#")
+        )
         return [
             (match.group("root"), (match.group("flags") or "").split(),
              match.group("module"))
             for match in re.finditer(
                 r"(?:PYTHONPATH=(?P<root>\S+) )?python3 (?P<flags>(?:-\S+ )*)"
                 r"-m (?P<module>\S+)",
-                self.entrypoint,
+                code,
             )
         ]
 
@@ -109,6 +116,20 @@ class ImportRootAgreement(unittest.TestCase):
         for _, flags, module in self.module_runs():
             self.assertIn(
                 "-P", flags, "%s runs with the workspace on sys.path" % module)
+
+    def test_the_image_python_understands_the_flags_the_entrypoint_passes(self):
+        """-P needs 3.11, and the image builds its own interpreter.
+
+        Lowering the pinned version would make every invocation exit 2 on an
+        unknown option: agent translation degrades to a warning and the config
+        merge takes the container down with it.
+        """
+        match = re.search(r"^ARG PYTHON_VERSION=(\S+)", self.dockerfile, re.M)
+        self.assertIsNotNone(match, "Dockerfile pins no PYTHON_VERSION")
+        version = tuple(int(part) for part in match.group(1).split(".")[:2])
+        if any("-P" in flags for _, flags, _ in self.module_runs()):
+            self.assertGreaterEqual(
+                version, (3, 11), "the image python does not support -P")
 
     def test_entrypoint_runs_only_modules_the_package_actually_ships(self):
         runs = self.module_runs()
@@ -126,25 +147,25 @@ class ImportRootAgreement(unittest.TestCase):
                 "%s runs without the import root on PYTHONPATH" % module,
             )
 
-    def test_the_translator_guard_points_inside_the_copied_package(self):
+    def test_the_translator_guard_covers_the_module_it_guards(self):
         """The entrypoint skips translation when the translator is missing.
 
-        The guard is a literal path, so it silently stops matching if the
-        module moves within the package -- and a guard that never fires reads
-        exactly like an image with no agents to translate.
+        The guard is a literal path while the run beside it names a module, so
+        the two can drift apart with nothing to catch it -- and a guard that
+        never fires reads exactly like an image with no agents to translate.
         """
         match = re.search(r'translator="([^"]+)"', self.entrypoint)
         self.assertIsNotNone(match, "entrypoint has no translator guard")
         guard = match.group(1)
-        prefix = self.package_dest() + "/"
+        import_root = posixpath.dirname(self.package_dest()) + "/"
         self.assertTrue(
-            guard.startswith(prefix),
-            "translator guard %s is not under %s" % (guard, prefix),
+            guard.startswith(import_root),
+            "translator guard %s is not under %s" % (guard, import_root),
         )
-        self.assertTrue(
-            os.path.isfile(os.path.join(REPO_ROOT, "swarmforge",
-                                        guard[len(prefix):])),
-            "translator guard points at no file in the package",
+        guarded = guard[len(import_root):].removesuffix(".py").replace("/", ".")
+        self.assertIn(
+            guarded, [module for _, _, module in self.module_runs()],
+            "translator guard covers %s, which the entrypoint never runs" % guarded,
         )
 
 
@@ -225,8 +246,11 @@ class ContainerImportLayout(unittest.TestCase):
         )
 
     def run_module(self, module, *args):
+        # -P mirrors the entrypoint, which uses it to keep the workspace off
+        # sys.path; here it also stops the scratch dir from becoming a second
+        # way for the import to resolve.
         return subprocess.run(
-            [sys.executable, "-m", module, *args],
+            [sys.executable, "-P", "-m", module, *args],
             # Only the staged import root, and a working directory outside the
             # checkout: nothing here may reach the repo's own swarmforge/.
             env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": self.libdir},
@@ -269,6 +293,34 @@ class ContainerImportLayout(unittest.TestCase):
             self.assertEqual(
                 json.load(handle),
                 {"model": "anthropic/sonnet", "share": "manual"},
+            )
+
+    def test_config_merge_accepts_the_flag_the_entrypoint_passes(self):
+        """The tong MCP layer merges with --replace-mcp-entries.
+
+        That call has no `|| continue` behind it, so an argv the module
+        rejects is not a degraded merge -- it is a container that never
+        starts.
+        """
+        dst = os.path.join(self.tmp, "opencode.json")
+        src = os.path.join(self.tmp, "tong-mcp.json")
+        with open(dst, "w") as handle:
+            handle.write('{"mcp": {"gh": {"type": "local", "enabled": true}}}')
+        with open(src, "w") as handle:
+            handle.write('{"mcp": {"gh": {"type": "remote", "url": "http://gh"}}}')
+
+        completed = self.run_module(
+            "swarmforge.config.merge_opencode", dst, src,
+            "--replace-mcp-entries")
+        self.assertEqual(
+            completed.returncode, 0,
+            "merge failed:\n%s" % completed.stderr,
+        )
+        # Whole-entry replacement: the local server's keys must not survive.
+        with open(dst) as handle:
+            self.assertEqual(
+                json.load(handle),
+                {"mcp": {"gh": {"type": "remote", "url": "http://gh"}}},
             )
 
 
