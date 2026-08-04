@@ -171,7 +171,7 @@ Unified agents live in harness-neutral `.swarmforge/agents/` directories across 
 Layers mount read-only under `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the in-container `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` env vars point at the layer roots); the entrypoint translates the stacked sources into each harness's native location (`~/.config/opencode/agents/` for OpenCode, the container-private `~/.claude/agents/` for Claude). Later layers override earlier ones by filename.
 Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude directly, outside this pipeline.
 
-Run the translator's tests with `python3 scripts/test_translate_agents.py`.
+The translator is covered by the unit suite; run it with `make test`.
 
 ## Commands
 
@@ -402,16 +402,24 @@ To enable it:
 
 The example definition is **not** auto-discovered from the checkout (it lives a directory below the layer root, and discovery reads only top-level `*.yaml`), so the broker stays off until you opt in. Because it requests the docker socket, a workspace-sourced copy is always called out in the approval prompt.
 
+## Unit Tests
+
+The launcher, the tongs layer, and the container-side translators are covered by stdlib `unittest` tests in `scripts/test_*.py`.
+
+- Run them: `make test`
+
+The target is `python3 -m unittest discover -s scripts -p 'test_*.py'`, and CI runs the same discovery. Nothing names test modules by hand, so a new `scripts/test_*.py` file runs the moment it lands. It needs only a host python — no Docker, no network, no model.
+
 ## Skill Tests
 
-A lightweight skill test harness runs scenario prompts against a chosen model and verifies expected behavior.
+A lightweight skill test harness runs scenario prompts against a chosen model and verifies expected behavior. It drives a real model inside the OpenCode image, which is why it is a separate target from the unit suite.
 
-- Run all skill tests: `make test MODEL=<provider/model>`
-- Run a single skill's tests: `make test MODEL=<provider/model> TEST_SKILL=<skill-name>`
-- Optional judge mode: `make test MODEL=<student> TEST_ENABLE_JUDGE=1 EVAL_MODEL=<judge>`
-- Timeout override: `make test MODEL=<provider/model> TEST_TIMEOUT_S=<seconds>`
+- Run all skill tests: `make test-skills MODEL=<provider/model>`
+- Run a single skill's tests: `make test-skills MODEL=<provider/model> TEST_SKILL=<skill-name>`
+- Optional judge mode: `make test-skills MODEL=<student> TEST_ENABLE_JUDGE=1 EVAL_MODEL=<judge>`
+- Timeout override: `make test-skills MODEL=<provider/model> TEST_TIMEOUT_S=<seconds>`
 
-Tests live in `skills/<skill-name>/tests/*.json`; the runner is `scripts/test_skills.py`.
+Tests live in `skills/<skill-name>/tests/*.json`; the runner is `scripts/skill_eval.py`.
 Assertions can be:
 
 - Output patterns: `expect.must_match` and `expect.must_not_match` (regex against formatted output)

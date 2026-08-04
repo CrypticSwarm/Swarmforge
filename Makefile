@@ -82,7 +82,7 @@ SWARMFORGE_REPO_TONGS_DIR ?= $(SWARMFORGE_DIR)/tongs
 SWARMFORGE_USER_DOTAGENTS_DIR ?= $(HOME)/.agents
 SWARMFORGE_ORG_DOTAGENTS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.agents,)
 
-# Host python used to run the anvil launcher (run_anvil.py).
+# Host python used to run the anvil launcher (run_anvil.py) and the unit tests.
 PYTHON ?= python3
 
 PROFILE_FLAG :=
@@ -149,7 +149,7 @@ CLAUDE_RUN_MOUNTS = \
 	$(SWARMFORGE_LAYER_MOUNTS)
 
 .PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
-	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test
+	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills
 
 # The workspace is mounted read-write, but the paths inside its git dir that
 # the *host's* git later obeys -- `config`, `hooks/`, and the pointers naming
@@ -358,9 +358,17 @@ run_qwen_3-5-35b:
 run_gemma4_26b:
 	docker exec -it ollama ollama run gemma4:26b
 
-test: opencode_network
+# The unit suite. Needs nothing but a host python -- no network, no image,
+# no model.
+test:
+	$(PYTHON) -m unittest discover -s "$(SWARMFORGE_DIR)/scripts" -p 'test_*.py'
+
+# Skill evaluation: runs scenario prompts from skills/<name>/tests/*.json
+# against a real model inside the opencode image and checks what came
+# back, so it needs a model and a running network.
+test-skills: opencode_network
 	@if [ -z "$(strip $(MODEL))" ]; then \
-		printf '%s\n' "MODEL is required (example: make test MODEL=ollama/llama3.1)"; \
+		printf '%s\n' "MODEL is required (example: make test-skills MODEL=ollama/llama3.1)"; \
 		exit 2; \
 	fi
 	@mkdir -p "$(TEST_DATA_DIR)"
@@ -370,7 +378,7 @@ test: opencode_network
 	  -v "$(PROJECT_DIR)":/workspace \
 	  -v "$(TEST_DATA_DIR)":/home/opencode/.local/share/opencode \
 	  --entrypoint python \
-	  $(OPENCODE_IMG) /workspace/scripts/test_skills.py \
+	  $(OPENCODE_IMG) /workspace/scripts/skill_eval.py \
 	    --model "$(MODEL)" \
 	    --eval-model "$(EVAL_MODEL)" \
 	    --timeout-s "$(TEST_TIMEOUT_S)" \
