@@ -31,7 +31,7 @@ Per-target rules:
             other providers dropped, aliases pass through), and drops
             OpenCode-only fields.
 
-Usage: translate_agents.py <target> <dest_dir> <src_dir>...
+Usage: python3 -m swarmforge.agents.translate <target> <dest_dir> <src_dir>...
 
 Later source directories override earlier ones by filename. Missing or
 empty source paths are skipped. Only top-level *.md files are read.
@@ -78,7 +78,7 @@ OPENCODE_ONLY_FIELDS = {
 
 
 def warn(message):
-    print("translate_agents: %s" % message, file=sys.stderr)
+    print("swarmforge.agents.translate: %s" % message, file=sys.stderr)
 
 
 PLAIN_SCALAR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.,()/+-]*$")

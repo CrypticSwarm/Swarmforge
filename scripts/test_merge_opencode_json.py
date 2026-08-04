@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 
 
-MERGE_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "anvil",
-    "merge_opencode_json.py",
-)
-_spec = importlib.util.spec_from_file_location("merge_opencode_json", MERGE_PATH)
-merge_opencode_json = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(merge_opencode_json)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The image puts the swarmforge package on PYTHONPATH; standing in for that
+# here keeps this file runnable on its own, not just under a discovery run
+# that already set it.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from swarmforge.config import merge_opencode
 
 
 def _write(path, value):
@@ -46,7 +47,7 @@ class MergeOpenCodeJsonTests(unittest.TestCase):
                 "permission": {"bash": {"git *": "allow"}},
             })
 
-            merge_opencode_json.merge_files(dst, src)
+            merge_opencode.merge_files(dst, src)
 
             self.assertEqual(_read(dst), {
                 "mcp": {
@@ -86,7 +87,7 @@ class MergeOpenCodeJsonTests(unittest.TestCase):
                 "permission": {"bash": {"git *": "allow"}},
             })
 
-            merge_opencode_json.merge_files(dst, src, replace_mcp_entries=True)
+            merge_opencode.merge_files(dst, src, replace_mcp_entries=True)
 
             self.assertEqual(_read(dst), {
                 "mcp": {

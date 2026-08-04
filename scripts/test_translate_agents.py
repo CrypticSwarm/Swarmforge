@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
-"""Unit tests for anvil/translate_agents.py. Run: python3 scripts/test_translate_agents.py"""
+"""Unit tests for swarmforge.agents.translate. Run: python3 scripts/test_translate_agents.py"""
 
-import importlib.util
 import os
 import sys
 import tempfile
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODULE_PATH = os.path.join(REPO_ROOT, "anvil", "translate_agents.py")
 
-# The module under test imports the shared swarmforge package, which the image
-# supplies through PYTHONPATH. Standing in for that here keeps this file
-# runnable on its own, not just under a discovery run that already set it.
+# The image puts the swarmforge package on PYTHONPATH; standing in for that
+# here keeps this file runnable on its own, not just under a discovery run
+# that already set it.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-spec = importlib.util.spec_from_file_location("translate_agents", MODULE_PATH)
-ta = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(ta)
+from swarmforge.agents import translate as ta
 
 UNIFIED = """---
 description: Reviews code for defects.

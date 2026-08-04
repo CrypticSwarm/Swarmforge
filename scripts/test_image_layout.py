@@ -2,16 +2,19 @@
 """Tests for how the harness image is assembled out of the repo.
 
 The images build from the repository root rather than from `anvil/`, so the
-Dockerfile can copy the shared `swarmforge` package in beside the
-container-side scripts that import it. Both halves of that arrangement are
-covered here: the argv the build recipes hand docker, and whether the
-translator still runs once it is laid out the way the Dockerfile lays it out.
+Dockerfile can copy the shared `swarmforge` package in; everything the
+entrypoint runs on the python side is a module inside it. Both halves of that
+arrangement are covered here: the argv the build recipes hand docker, and
+whether the container-side modules still run once they are laid out the way
+the Dockerfile lays them out.
 
 Run: python3 scripts/test_image_layout.py
 """
 
+import json
 import os
 import posixpath
+import re
 import shutil
 import subprocess
 import sys
@@ -60,9 +63,9 @@ class ImportRootAgreement(unittest.TestCase):
     """The Dockerfile's layout and the entrypoint's import root must agree.
 
     Where the package is copied and where the entrypoint tells python to look
-    for it are two strings in two files with nothing tying them together, and
-    a mismatch does not fail the build -- it surfaces as agents quietly not
-    being translated.
+    for it are strings in two files with nothing tying them together, and a
+    mismatch does not fail the build -- it surfaces as agents quietly not
+    being translated, or a config layer quietly not merged.
     """
 
     def setUp(self):
@@ -75,17 +78,73 @@ class ImportRootAgreement(unittest.TestCase):
             src, self.copies, "Dockerfile has no `COPY %s <dest>` line" % src)
         return self.copies[src]
 
-    def test_package_is_copied_beneath_the_import_root_the_translator_gets(self):
-        import_root = posixpath.dirname(self.copy_dest("swarmforge/").rstrip("/"))
-        self.assertIn(
-            'PYTHONPATH=%s python3 "${translator}"' % import_root,
-            self.entrypoint,
-        )
+    def package_dest(self):
+        return self.copy_dest("swarmforge/").rstrip("/")
 
-    def test_entrypoint_runs_the_translator_where_the_dockerfile_puts_it(self):
-        self.assertIn(
-            'translator="%s"' % self.copy_dest("anvil/translate_agents.py"),
-            self.entrypoint,
+    def module_runs(self):
+        """Every `python3 ... -m <module>` in the entrypoint, with its context.
+
+        Yields (import root, flags, module). An absent PYTHONPATH gives a root
+        of None, which is one of the failures this guards: the module ships in
+        the image but is not importable from it.
+        """
+        return [
+            (match.group("root"), (match.group("flags") or "").split(),
+             match.group("module"))
+            for match in re.finditer(
+                r"(?:PYTHONPATH=(?P<root>\S+) )?python3 (?P<flags>(?:-\S+ )*)"
+                r"-m (?P<module>\S+)",
+                self.entrypoint,
+            )
+        ]
+
+    def test_no_module_run_lets_the_workspace_onto_the_import_path(self):
+        """`python3 -m` puts the working directory first on sys.path.
+
+        The entrypoint's working directory is the workspace and these modules
+        run as root, before privileges are dropped -- so without -P a repo
+        containing its own swarmforge/ would shadow the image's copy and be
+        executed.
+        """
+        for _, flags, module in self.module_runs():
+            self.assertIn(
+                "-P", flags, "%s runs with the workspace on sys.path" % module)
+
+    def test_entrypoint_runs_only_modules_the_package_actually_ships(self):
+        runs = self.module_runs()
+        self.assertTrue(runs, "entrypoint runs no python modules")
+        for _, _, module in runs:
+            self.assertEqual(module.split(".")[0], "swarmforge", module)
+            path = os.path.join(REPO_ROOT, *module.split(".")) + ".py"
+            self.assertTrue(os.path.isfile(path), "no such module: %s" % module)
+
+    def test_every_module_run_names_the_import_root_the_package_lands_in(self):
+        import_root = posixpath.dirname(self.package_dest())
+        for root, _, module in self.module_runs():
+            self.assertEqual(
+                root, import_root,
+                "%s runs without the import root on PYTHONPATH" % module,
+            )
+
+    def test_the_translator_guard_points_inside_the_copied_package(self):
+        """The entrypoint skips translation when the translator is missing.
+
+        The guard is a literal path, so it silently stops matching if the
+        module moves within the package -- and a guard that never fires reads
+        exactly like an image with no agents to translate.
+        """
+        match = re.search(r'translator="([^"]+)"', self.entrypoint)
+        self.assertIsNotNone(match, "entrypoint has no translator guard")
+        guard = match.group(1)
+        prefix = self.package_dest() + "/"
+        self.assertTrue(
+            guard.startswith(prefix),
+            "translator guard %s is not under %s" % (guard, prefix),
+        )
+        self.assertTrue(
+            os.path.isfile(os.path.join(REPO_ROOT, "swarmforge",
+                                        guard[len(prefix):])),
+            "translator guard points at no file in the package",
         )
 
 
@@ -143,45 +202,46 @@ class BuildRecipeArgv(unittest.TestCase):
 
 
 class ContainerImportLayout(unittest.TestCase):
-    """The translator imports the shared package the way the image does.
+    """The container-side modules run the way the image runs them.
 
-    The Dockerfile puts the container-side scripts in one directory and the
-    package immediately below it, and the entrypoint names that directory as
-    the import root. This stages the same shape and translates an agent
-    through it, with the checkout deliberately off the path -- so it fails if
-    the translator only resolves its import because a developer happened to
-    run it from the repo.
+    The Dockerfile copies the package under an import root and the entrypoint
+    invokes modules out of it with `python3 -m`. This stages the same shape,
+    with the checkout deliberately off the path and off the working directory
+    -- so it fails if a module only resolves its imports because a developer
+    happened to run it from the repo.
     """
 
-    def test_translator_runs_against_the_staged_package(self):
-        tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-layout-"))
-        self.addCleanup(shutil.rmtree, tmp, True)
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-layout-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
 
         # Stands in for /usr/local/lib/swarmforge, the image's import root.
-        libdir = os.path.join(tmp, "lib")
-        os.makedirs(libdir)
-        shutil.copy(
-            os.path.join(REPO_ROOT, "anvil", "translate_agents.py"), libdir)
+        self.libdir = os.path.join(self.tmp, "lib")
+        os.makedirs(self.libdir)
         shutil.copytree(
             os.path.join(REPO_ROOT, "swarmforge"),
-            os.path.join(libdir, "swarmforge"),
+            os.path.join(self.libdir, "swarmforge"),
             ignore=shutil.ignore_patterns("__pycache__"),
         )
 
-        src = os.path.join(tmp, "agents")
+    def run_module(self, module, *args):
+        return subprocess.run(
+            [sys.executable, "-m", module, *args],
+            # Only the staged import root, and a working directory outside the
+            # checkout: nothing here may reach the repo's own swarmforge/.
+            env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": self.libdir},
+            cwd=self.tmp, capture_output=True, text=True,
+        )
+
+    def test_translator_runs_against_the_staged_package(self):
+        src = os.path.join(self.tmp, "agents")
         os.makedirs(src)
         with open(os.path.join(src, "reviewer.md"), "w") as handle:
             handle.write(AGENT_MD)
-        dest = os.path.join(tmp, "out")
+        dest = os.path.join(self.tmp, "out")
 
-        completed = subprocess.run(
-            [sys.executable, os.path.join(libdir, "translate_agents.py"),
-             "claude", dest, src],
-            # Only the staged import root, and a working directory outside the
-            # checkout: nothing here may reach the repo's own swarmforge/.
-            env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": libdir},
-            cwd=tmp, capture_output=True, text=True,
-        )
+        completed = self.run_module(
+            "swarmforge.agents.translate", "claude", dest, src)
         self.assertEqual(
             completed.returncode, 0,
             "translator failed:\n%s" % completed.stderr,
@@ -191,6 +251,25 @@ class ContainerImportLayout(unittest.TestCase):
         self.assertIn("name: reviewer", written)
         self.assertIn("model: claude-sonnet-4-6", written)
         self.assertIn("You are the reviewer agent.", written)
+
+    def test_config_merge_runs_against_the_staged_package(self):
+        dst = os.path.join(self.tmp, "opencode.json")
+        src = os.path.join(self.tmp, "layer.json")
+        with open(dst, "w") as handle:
+            handle.write('{"model": "anthropic/sonnet", "share": "disabled"}')
+        with open(src, "w") as handle:
+            handle.write('{"share": "manual"}')
+
+        completed = self.run_module("swarmforge.config.merge_opencode", dst, src)
+        self.assertEqual(
+            completed.returncode, 0,
+            "merge failed:\n%s" % completed.stderr,
+        )
+        with open(dst) as handle:
+            self.assertEqual(
+                json.load(handle),
+                {"model": "anthropic/sonnet", "share": "manual"},
+            )
 
 
 if __name__ == "__main__":
