@@ -359,9 +359,11 @@ run_gemma4_26b:
 	docker exec -it ollama ollama run gemma4:26b
 
 # The unit suite. Needs nothing but a host python -- no network, no image,
-# no model.
+# no model. PYTHONPATH makes the swarmforge package importable regardless of
+# where make was invoked from; the container-side modules under test import it
+# the same way the image does.
 test:
-	$(PYTHON) -m unittest discover -s "$(SWARMFORGE_DIR)/scripts" -p 'test_*.py'
+	PYTHONPATH="$(SWARMFORGE_DIR)" $(PYTHON) -m unittest discover -s "$(SWARMFORGE_DIR)/scripts" -p 'test_*.py'
 
 # Skill evaluation: runs scenario prompts from skills/<name>/tests/*.json
 # against a real model inside the opencode image and checks what came
