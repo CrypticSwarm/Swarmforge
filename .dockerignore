@@ -1,0 +1,9 @@
+# The harness image builds from the repository root so the Dockerfile can copy
+# the shared swarmforge package alongside the container-side scripts. Only
+# those two directories belong in the context: everything else here is host
+# state (ollama blobs, checkouts, editor droppings) that would slow the build
+# and invalidate its cache for unrelated reasons.
+*
+!anvil
+!swarmforge
+**/__pycache__

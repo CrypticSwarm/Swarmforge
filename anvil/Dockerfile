@@ -90,9 +90,14 @@ RUN set -eux; \
 
 WORKDIR /workspace
 
-COPY entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
-COPY merge_opencode_json.py /usr/local/lib/swarmforge/merge_opencode_json.py
-COPY translate_agents.py /usr/local/lib/swarmforge/translate_agents.py
+# Built from the repository root (docker build -f anvil/Dockerfile <repo>) so
+# the shared swarmforge package can be copied in alongside the scripts that
+# import it. /usr/local/lib/swarmforge is the import root, which is why the
+# package lands one level below it.
+COPY anvil/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
+COPY anvil/merge_opencode_json.py /usr/local/lib/swarmforge/merge_opencode_json.py
+COPY anvil/translate_agents.py /usr/local/lib/swarmforge/translate_agents.py
+COPY swarmforge/ /usr/local/lib/swarmforge/swarmforge/
 RUN chmod +x /usr/local/bin/opencode-entrypoint.sh
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/opencode-entrypoint.sh"]

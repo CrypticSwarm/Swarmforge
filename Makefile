@@ -257,7 +257,8 @@ build_opencode:
 	  --build-arg OPENCODE_VERSION=$(OPENCODE_VERSION) \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
 	  --build-arg OPENCODE_INSTALL_BUST=$(OPENCODE_INSTALL_BUST) \
-	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)/anvil"
+	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
+	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)"
 
 # Rebuild only from the OpenCode install step onward.
 update_opencode:
@@ -274,7 +275,8 @@ build_claude:
 	  --build-arg AGENT=claude \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
 	  --build-arg CLAUDE_INSTALL_BUST=$(CLAUDE_INSTALL_BUST) \
-	  -t $(CLAUDE_IMG) "$(SWARMFORGE_DIR)/anvil"
+	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
+	  -t $(CLAUDE_IMG) "$(SWARMFORGE_DIR)"
 
 # Rebuild only from the Claude install step onward.
 update_claude:
@@ -359,9 +361,11 @@ run_gemma4_26b:
 	docker exec -it ollama ollama run gemma4:26b
 
 # The unit suite. Needs nothing but a host python -- no network, no image,
-# no model.
+# no model. PYTHONPATH makes the swarmforge package importable regardless of
+# where make was invoked from; the container-side modules under test import it
+# the same way the image does.
 test:
-	$(PYTHON) -m unittest discover -s "$(SWARMFORGE_DIR)/scripts" -p 'test_*.py'
+	PYTHONPATH="$(SWARMFORGE_DIR)" $(PYTHON) -m unittest discover -s "$(SWARMFORGE_DIR)/scripts" -p 'test_*.py'
 
 # Skill evaluation: runs scenario prompts from skills/<name>/tests/*.json
 # against a real model inside the opencode image and checks what came

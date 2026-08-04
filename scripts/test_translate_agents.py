@@ -7,11 +7,15 @@ import sys
 import tempfile
 import unittest
 
-MODULE_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "anvil",
-    "translate_agents.py",
-)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODULE_PATH = os.path.join(REPO_ROOT, "anvil", "translate_agents.py")
+
+# The module under test imports the shared swarmforge package, which the image
+# supplies through PYTHONPATH. Standing in for that here keeps this file
+# runnable on its own, not just under a discovery run that already set it.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 spec = importlib.util.spec_from_file_location("translate_agents", MODULE_PATH)
 ta = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ta)
