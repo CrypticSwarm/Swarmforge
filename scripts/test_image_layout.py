@@ -89,6 +89,39 @@ class ImportRootAgreement(unittest.TestCase):
         )
 
 
+class StatusLineAgreement(unittest.TestCase):
+    """The status line the Claude image ships must be the one it turns on.
+
+    Three strings have to line up for a container to come up with a status
+    line: where the Dockerfile installs the script, where it installs the
+    seeder, and the two paths the entrypoint names. A mismatch is silent --
+    the entrypoint skips the seed when either path is missing, and Claude
+    starts with no status line rather than an error.
+    """
+
+    def setUp(self):
+        self.copies = dockerfile_copies()
+        with open(ENTRYPOINT) as handle:
+            self.entrypoint = handle.read()
+
+    def copy_dest(self, src):
+        self.assertIn(
+            src, self.copies, "Dockerfile has no `COPY %s <dest>` line" % src)
+        return self.copies[src]
+
+    def test_entrypoint_names_the_status_line_the_dockerfile_installs(self):
+        self.assertIn(
+            'statusline="%s"' % self.copy_dest("anvil/statusline.sh"),
+            self.entrypoint,
+        )
+
+    def test_entrypoint_runs_the_seeder_where_the_dockerfile_puts_it(self):
+        self.assertIn(
+            'seeder="%s"' % self.copy_dest("anvil/seed_claude_settings.py"),
+            self.entrypoint,
+        )
+
+
 class BuildRecipeArgv(unittest.TestCase):
     """`make build_*` pairs an explicit Dockerfile with a repo-root context.
 
