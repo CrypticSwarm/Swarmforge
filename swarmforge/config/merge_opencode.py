@@ -45,7 +45,8 @@ def merge_files(dst_path, src_path, *, replace_mcp_entries=False):
 def main(argv):
     if len(argv) not in (2, 3):
         print(
-            "usage: merge_opencode_json.py DST SRC [--replace-mcp-entries]",
+            "usage: python3 -m swarmforge.config.merge_opencode DST SRC"
+            " [--replace-mcp-entries]",
             file=sys.stderr,
         )
         return 2

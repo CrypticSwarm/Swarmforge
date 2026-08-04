@@ -111,8 +111,8 @@ copy_shared_assets() {
 # Unified definitions are markdown files whose YAML frontmatter is a superset
 # of the OpenCode agent schema (description, mode, model, temperature, tools)
 # plus optional per-harness override blocks (claude:, opencode:). One shared
-# translator (translate_agents.py) emits each harness's dialect, so adding a
-# new harness means adding an emitter there plus a case arm here.
+# translator (swarmforge.agents.translate) emits each harness's dialect, so
+# adding a new harness means adding an emitter there plus a case arm here.
 #
 # Unified Swarmforge agent definitions live under <dir>/agents in the
 # harness-neutral .swarmforge asset layers, mounted read-only via
@@ -130,7 +130,7 @@ copy_shared_assets() {
 # layers, then the workspace overlay. Only the destination differs.
 prepare_unified_agents() {
   workspace_dir="${1:-/workspace}"
-  translator="/usr/local/lib/swarmforge/translate_agents.py"
+  translator="/usr/local/lib/swarmforge/swarmforge/agents/translate.py"
 
   [ -f "${translator}" ] || return 0
 
@@ -146,7 +146,12 @@ prepare_unified_agents() {
       ;;
   esac
 
-  PYTHONPATH=/usr/local/lib/swarmforge python3 "${translator}" "${AGENT_BIN}" "${agents_dst}" \
+  # The container-side python is the swarmforge package the Dockerfile copies
+  # to /usr/local/lib/swarmforge; -P keeps the working directory off sys.path,
+  # so a workspace that happens to contain a swarmforge/ directory cannot
+  # shadow it. These run as root, before the drop to the invoking user.
+  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.agents.translate \
+    "${AGENT_BIN}" "${agents_dst}" \
     "${SWARMFORGE_ASSETS_USER_DIR:-}/agents" \
     "${SWARMFORGE_ASSETS_ORG_DIR:-}/agents" \
     "${SWARMFORGE_ASSETS_REPO_DIR:-}/agents" \
@@ -221,10 +226,10 @@ merge_opencode_json() {
   fi
 
   if [ "${replace_mcp_entries}" = "1" ]; then
-    python3 /usr/local/lib/swarmforge/merge_opencode_json.py \
+    PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_opencode \
       "${dst_file}" "${src_file}" --replace-mcp-entries
   else
-    python3 /usr/local/lib/swarmforge/merge_opencode_json.py \
+    PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_opencode \
       "${dst_file}" "${src_file}"
   fi
 }
