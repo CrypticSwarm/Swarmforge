@@ -1,0 +1,22 @@
+# Declares the swarmforge package so imports resolve for editors, type
+# checkers, and linters. It is not how the code is deployed: the launcher runs
+# straight from the checkout and the image copies the package in, so nothing
+# here needs to be installed for Swarmforge to work.
+#
+# `dependencies` is empty on purpose. The harness image installs no third-party
+# Python, and the launcher runs on whatever python3 the host already has, so
+# every module in this package must stay stdlib-only.
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swarmforge"
+version = "0.1.0"
+description = "Shared launcher and container-side Python for Swarmforge"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.setuptools]
+packages = ["swarmforge"]
