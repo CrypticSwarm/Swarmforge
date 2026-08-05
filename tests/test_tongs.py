@@ -789,6 +789,10 @@ class SecretDeliveryTests(unittest.TestCase):
                 entrypoint, command = tongs.secret_inject_argv(
                     ["/bin/sh", "-c", "printf target-ran"]
                 )
+                # The redirect has to reach the script. Without this the test
+                # also passes on the real FIFO path merely being absent, which
+                # is the failure mode redirecting the re-export produces.
+                self.assertIn(tmp, command[1])
                 completed = subprocess.run(
                     [entrypoint] + command,
                     stdout=subprocess.PIPE,
