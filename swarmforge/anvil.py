@@ -5,14 +5,14 @@ The Makefile resolves the docker-run argv for an anvil (`run_opencode` /
 `run_claude`) and the host paths of the four tong definition layers, then
 delegates the actual launch to this script:
 
-    run_anvil.py [--user-tongs DIR] [--org-tongs DIR] [--repo-tongs DIR]
-                 [--workspace-tongs DIR] [--workspace PATH] [--approvals PATH]
-                 [--anvil-image IMAGE] [--no-prompt] -- docker run -it --rm ... <image> ...
+    run-anvil [--user-tongs DIR] [--org-tongs DIR] [--repo-tongs DIR]
+              [--workspace-tongs DIR] [--workspace PATH] [--approvals PATH]
+              [--anvil-image IMAGE] [--no-prompt] -- docker run -it --rm ... <image> ...
 
 Tongs are sibling containers that must be orchestrated from the host (they are
 started alongside the anvil, not from inside it), which is why this wrapper sits
 between Make and `docker run`. It discovers tong definitions across the four
-layers using the pure core in `tongs.py`, then runs the anvil.
+layers using the pure core in `swarmforge.tongs`, then runs the anvil.
 
 Tong lifecycles
 ---------------
@@ -94,7 +94,6 @@ delivery, and `--rm` cleanup it had before.
 
 import collections
 import errno
-import importlib.util
 import json
 import os
 import shutil
@@ -103,26 +102,18 @@ import sys
 import tempfile
 import time
 
-# Load the pure core (layer discovery + name-based merge) by path, so the
-# launcher needs no package install and no assumptions about the current
-# working directory.
-_TONGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tongs.py")
-_spec = importlib.util.spec_from_file_location("tongs", _TONGS_PATH)
-tongs = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(tongs)
+# The pure core this launcher orchestrates: layer discovery and name-based
+# merge.
+from swarmforge import tongs
 
 # The git-dir guard the Makefile already runs for the anvil's workspace mount.
 # The launcher reuses it for tongs that mount the workspace, so a tong sees the
 # same git-dir mounts (and the same read-only guards) the anvil does.
-_GIT_GUARD_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "git_guard.py")
-_guard_spec = importlib.util.spec_from_file_location("git_guard", _GIT_GUARD_PATH)
-git_guard = importlib.util.module_from_spec(_guard_spec)
-_guard_spec.loader.exec_module(git_guard)
+from swarmforge import gitguard
 
 
 USAGE = (
-    "usage: run_anvil.py [--user-tongs DIR] [--org-tongs DIR] "
+    "usage: run-anvil [--user-tongs DIR] [--org-tongs DIR] "
     "[--repo-tongs DIR] [--workspace-tongs DIR] [--workspace PATH] "
     "[--approvals PATH] [--providers PATH] [--harness NAME] "
     "[--anvil-image IMAGE] [--no-prompt] -- <anvil command>"
@@ -810,7 +801,7 @@ def _workspace_git_dir_specs(defn, workspace, warn=None):
     """Git-dir mounts a workspace-mounting tong needs beyond the workspace bind.
 
     The anvil's workspace bind is always paired with the mounts
-    `git_guard.build_mounts` works out: read-only guards over the config and
+    `gitguard.build_mounts` works out: read-only guards over the config and
     hooks the *host's* git obeys, and -- when the workspace is a linked worktree
     or another checkout whose git dir lives outside it -- that git dir at its
     own absolute path, which is where the checkout's `.git` pointer file says to
@@ -832,7 +823,7 @@ def _workspace_git_dir_specs(defn, workspace, warn=None):
     placements = tongs.workspace_mount_placements(defn)
     if not placements:
         return []
-    specs = git_guard.build_mounts(
+    specs = gitguard.build_mounts(
         workspace, [destination for destination, _ in placements], warn=warn)
     if all(mode == "ro" for _, mode in placements):
         specs = [spec if spec.endswith(":ro") else spec + ":ro" for spec in specs]

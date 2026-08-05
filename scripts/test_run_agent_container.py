@@ -23,12 +23,12 @@ MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
 DOCKER_STUB = "#!/bin/sh\nexit 0\n"
 
 # Stands in for PYTHON in the recipe, which invokes it as
-# `$(PYTHON) scripts/run_anvil.py <launcher flags> -- docker run ...`. The
-# recipe also runs the git guard through PYTHON; that one is the code under
-# test, so it is passed through to a real interpreter rather than recorded.
+# `$(PYTHON) bin/run-anvil <launcher flags> -- docker run ...`. The recipe also
+# runs the git guard through PYTHON; that one is the code under test, so it is
+# passed through to a real interpreter rather than recorded.
 CAPTURE_STUB = """#!/bin/sh
 case "$1" in
-  *git_guard.py) exec "$PYTHON_REAL" "$@" ;;
+  */bin/git-guard) exec "$PYTHON_REAL" "$@" ;;
 esac
 : > "$CAPTURE_FILE"
 for arg in "$@"; do printf '%s\\0' "$arg" >> "$CAPTURE_FILE"; done
@@ -88,8 +88,8 @@ class MakeRecipeCase(unittest.TestCase):
         _git(path, "commit", "-q", "--allow-empty", "-m", "root")
         return path
 
-    def docker_argv(self, target, project_dir):
-        """The argv after the launcher's `--`, i.e. the anvil's `docker run`."""
+    def launcher_argv(self, target, project_dir):
+        """The whole argv the recipe handed PYTHON, launcher path included."""
         env = {
             "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
             "HOME": self.home,
@@ -110,7 +110,11 @@ class MakeRecipeCase(unittest.TestCase):
             "make failed:\n%s\n%s" % (completed.stdout, completed.stderr),
         )
         with open(self.capture_path) as handle:
-            recorded = handle.read().split("\0")[:-1]
+            return handle.read().split("\0")[:-1]
+
+    def docker_argv(self, target, project_dir):
+        """The argv after the launcher's `--`, i.e. the anvil's `docker run`."""
+        recorded = self.launcher_argv(target, project_dir)
         self.assertIn("--", recorded, "launcher argv had no `--` separator")
         return recorded[recorded.index("--") + 1:]
 
@@ -124,6 +128,19 @@ class MakeRecipeCase(unittest.TestCase):
             i for i, word in enumerate(argv) if word.endswith(":local"))
         return [argv[i + 1] for i, word in enumerate(argv[:image])
                 if word == "-v"]
+
+
+class LauncherEntryPoint(MakeRecipeCase):
+    """The recipe reaches the launcher through the shim, not a module path.
+
+    The shim is what puts the checkout's `swarmforge` package on the import
+    path, so a recipe that named a module file directly would fail to import
+    at launch -- and only on a machine where the package is not installed.
+    """
+
+    def test_recipe_invokes_the_run_anvil_shim(self):
+        argv = self.launcher_argv("run_opencode", self.make_repo())
+        self.assertEqual(argv[0], os.path.join(REPO_ROOT, "bin", "run-anvil"))
 
 
 class GitDirMounts(MakeRecipeCase):

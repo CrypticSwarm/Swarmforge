@@ -82,7 +82,7 @@ SWARMFORGE_REPO_TONGS_DIR ?= $(SWARMFORGE_DIR)/tongs
 SWARMFORGE_USER_DOTAGENTS_DIR ?= $(HOME)/.agents
 SWARMFORGE_ORG_DOTAGENTS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.agents,)
 
-# Host python used to run the anvil launcher (run_anvil.py) and the unit tests.
+# Host python used to run the anvil launcher (bin/run-anvil) and the unit tests.
 PYTHON ?= python3
 
 PROFILE_FLAG :=
@@ -153,7 +153,7 @@ CLAUDE_RUN_MOUNTS = \
 
 # The workspace is mounted read-write, but the paths inside its git dir that
 # the *host's* git later obeys -- `config`, `hooks/`, and the pointers naming
-# where those two live -- are not the agent's to write. scripts/git_guard.py
+# where those two live -- are not the agent's to write. bin/git-guard
 # works out which git dirs are reachable from the workspace and prints the
 # read-only mounts that cover them, one docker `-v` value per line, for each
 # container path the workspace is mounted at. Its module docstring has the
@@ -213,14 +213,14 @@ define run_agent_container
 	git_guard_flags=(--workspace "$$workspace_dir" --target "$(WORKSPACE_MOUNT)"); \
 	if [ -n "$${repo_mount_path:-}" ]; then git_guard_flags+=(--target "$$repo_mount_path"); fi; \
 	git_dir_mounts=(); \
-	git_guard_specs="$$($(PYTHON) "$(SWARMFORGE_DIR)/scripts/git_guard.py" "$${git_guard_flags[@]}")"; \
+	git_guard_specs="$$($(PYTHON) "$(SWARMFORGE_DIR)/bin/git-guard" "$${git_guard_flags[@]}")"; \
 	if [ -n "$$git_guard_specs" ]; then \
 		while IFS= read -r git_guard_spec; do \
 			git_dir_mounts+=(-v "$$git_guard_spec"); \
 		done <<< "$$git_guard_specs"; \
 	fi; \
 	set -x; \
-	$(PYTHON) "$(SWARMFORGE_DIR)/scripts/run_anvil.py" \
+	$(PYTHON) "$(SWARMFORGE_DIR)/bin/run-anvil" \
 	  $(TONGS_LAYER_ARGS) \
 	  --workspace-tongs "$$workspace_dir/.swarmforge/tongs" \
 	  --workspace "$$workspace_dir" \
