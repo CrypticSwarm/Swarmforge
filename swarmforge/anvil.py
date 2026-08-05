@@ -85,7 +85,7 @@ With **no tong definitions discovered across all four layers**, the launcher
 execs the anvil argv verbatim -- byte-identical to the direct `docker run` Make
 would otherwise have issued. Existing repos ship no tong layers, so discovery is
 empty, the approval gate sees nothing to gate, and this wrapper is a transparent
-exec. `scripts/test_run_anvil.py` asserts this byte-for-byte.
+exec. `tests/test_run_anvil.py` asserts this byte-for-byte.
 
 The anvil argv (everything after `--`) is forwarded to `os.execvp` unchanged, so
 the anvil process replaces this one and keeps the controlling tty, signal
