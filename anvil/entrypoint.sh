@@ -274,6 +274,25 @@ prepare_agent_config() {
     "${SWARMFORGE_CONFIG_RESET:-0}"
 }
 
+# Turn on the status line the image ships (model, directory, context and token
+# usage) by defaulting Claude's own settings.json to it.
+#
+# Runs after prepare_agent_config so a statusLine from any config layer is
+# already in place and kept; only a session that chose none gets the image's.
+# The seeder and the script it names are in the Claude image alone, and both
+# are optional here so nothing else has to care.
+seed_claude_settings() {
+  [ "${AGENT_BIN}" = "claude" ] || return 0
+
+  seeder="/usr/local/lib/swarmforge/seed_claude_settings.py"
+  statusline="/usr/local/bin/swarmforge-statusline"
+  [ -f "${seeder}" ] || return 0
+  [ -x "${statusline}" ] || return 0
+
+  python3 "${seeder}" "${OPENCODE_HOME}/.claude/settings.json" "${statusline}" \
+    || printf '%s\n' "Warning: could not apply Claude settings defaults; continuing" >&2
+}
+
 if [ ! -x "${AGENT_BIN_PATH}" ]; then
   printf '%s\n' "Agent binary not found: ${AGENT_BIN_PATH}" >&2
   exit 127
@@ -301,6 +320,7 @@ if ! getent passwd "${OPENCODE_UID}" >/dev/null 2>&1; then
 fi
 
 prepare_agent_config
+seed_claude_settings
 prepare_unified_agents
 copy_shared_assets
 
