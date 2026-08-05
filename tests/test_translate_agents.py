@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for swarmforge.agents.translate. Run: python3 scripts/test_translate_agents.py"""
+"""Unit tests for swarmforge.agents.translate. Run: python3 tests/test_translate_agents.py"""
 
 import os
 import sys

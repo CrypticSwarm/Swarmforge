@@ -365,7 +365,7 @@ run_gemma4_26b:
 # where make was invoked from; the container-side modules under test import it
 # the same way the image does.
 test:
-	PYTHONPATH="$(SWARMFORGE_DIR)" $(PYTHON) -m unittest discover -s "$(SWARMFORGE_DIR)/scripts" -p 'test_*.py'
+	PYTHONPATH="$(SWARMFORGE_DIR)" $(PYTHON) -m unittest discover -s "$(SWARMFORGE_DIR)/tests" -p 'test_*.py'
 
 # Skill evaluation: runs scenario prompts from skills/<name>/tests/*.json
 # against a real model inside the opencode image and checks what came
