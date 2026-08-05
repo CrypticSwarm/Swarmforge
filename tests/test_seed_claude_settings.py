@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for seeding image defaults into Claude Code's settings.json.
 
-Run: python3 scripts/test_seed_claude_settings.py
+Run: python3 tests/test_seed_claude_settings.py
 
 The seeder writes into a file the user owns and that persists across runs, so
 what it must not do carries as much weight as what it must: no key a config

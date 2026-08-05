@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for swarmforge.tongs. Run: python3 scripts/test_tongs.py"""
+"""Unit tests for swarmforge.tongs. Run: python3 tests/test_tongs.py"""
 
 import json
 import os

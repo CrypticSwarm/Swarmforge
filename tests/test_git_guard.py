@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for swarmforge.gitguard. Run: python3 scripts/test_git_guard.py"""
+"""Unit tests for swarmforge.gitguard. Run: python3 tests/test_git_guard.py"""
 
 import io
 import os

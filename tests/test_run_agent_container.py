@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the Makefile's run_agent_container docker argv.
 
-Run: python3 scripts/test_run_agent_container.py
+Run: python3 tests/test_run_agent_container.py
 
 These drive `make run_opencode` / `make run_claude` for real against throwaway
 git checkouts, with `docker` stubbed out on PATH and PYTHON pointed at a script

@@ -8,7 +8,7 @@ arrangement are covered here: the argv the build recipes hand docker, and
 whether the container-side modules still run once they are laid out the way
 the Dockerfile lays them out.
 
-Run: python3 scripts/test_image_layout.py
+Run: python3 tests/test_image_layout.py
 """
 
 import json

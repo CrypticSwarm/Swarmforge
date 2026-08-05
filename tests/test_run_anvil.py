@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for swarmforge.anvil. Run: python3 scripts/test_run_anvil.py"""
+"""Unit tests for swarmforge.anvil. Run: python3 tests/test_run_anvil.py"""
 
 import io
 import json

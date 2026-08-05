@@ -416,11 +416,11 @@ The example definition is **not** auto-discovered from the checkout (it lives a 
 
 ## Unit Tests
 
-The launcher, the tongs layer, and the container-side translators are covered by stdlib `unittest` tests in `scripts/test_*.py`.
+The launcher, the tongs layer, and the container-side translators are covered by stdlib `unittest` tests in `tests/test_*.py`.
 
 - Run them: `make test`
 
-The target is `python3 -m unittest discover -s scripts -p 'test_*.py'` with the repo root on `PYTHONPATH`, and CI runs the same discovery. Nothing names test modules by hand, so a new `scripts/test_*.py` file runs the moment it lands. It needs only a host python — no Docker, no network, no model.
+The target is `python3 -m unittest discover -s tests -p 'test_*.py'` with the repo root on `PYTHONPATH`, and CI runs the same discovery. Nothing names test modules by hand, so a new `tests/test_*.py` file runs the moment it lands. It needs only a host python — no Docker, no network, no model.
 
 ## Skill Tests
 
