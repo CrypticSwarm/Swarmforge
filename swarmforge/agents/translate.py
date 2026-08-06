@@ -42,7 +42,7 @@ import os
 import re
 import sys
 
-from swarmforge.yamlite import parse_map, parse_scalar, strip_inline_comment
+from swarmforge.yamlite import parse_map, parse_scalar
 
 HARNESS_OVERRIDE_KEYS = {"claude", "opencode"}
 

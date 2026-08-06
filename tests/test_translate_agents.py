@@ -14,6 +14,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from swarmforge import yamlite
 from swarmforge.agents import translate as ta
 
 UNIFIED = """---
@@ -209,34 +210,34 @@ class StripInlineCommentTests(unittest.TestCase):
         # emit_scalar writes values through json.dumps, so `\\"` is the escaping
         # this parser must read back. Miscounting it truncates the value.
         text = r'"a \" b # c"'
-        self.assertEqual(ta.strip_inline_comment(text), text)
+        self.assertEqual(yamlite.strip_inline_comment(text), text)
 
     def test_doubled_quote_does_not_end_the_quoted_run(self):
         # The single-quoted counterpart of the escape above.
         self.assertEqual(
-            ta.strip_inline_comment("'don''t # x'  # note"), "'don''t # x'  "
+            yamlite.strip_inline_comment("'don''t # x'  # note"), "'don''t # x'  "
         )
 
     def test_bracket_or_comma_in_prose_is_not_a_flow_list(self):
         self.assertEqual(
-            ta.strip_inline_comment("fixes [WIP], mostly  # note"), "fixes [WIP], mostly  "
+            yamlite.strip_inline_comment("fixes [WIP], mostly  # note"), "fixes [WIP], mostly  "
         )
 
     def test_quote_only_delimits_at_the_start_of_a_value(self):
-        self.assertEqual(ta.strip_inline_comment("it's here  # note"), "it's here  ")
-        self.assertEqual(ta.strip_inline_comment('"it # stays"  # note'), '"it # stays"  ')
+        self.assertEqual(yamlite.strip_inline_comment("it's here  # note"), "it's here  ")
+        self.assertEqual(yamlite.strip_inline_comment('"it # stays"  # note'), '"it # stays"  ')
 
     def test_quoted_hash_inside_a_flow_item(self):
         # Each `[` and `,` opens a fresh value, so the item's quotes count.
-        self.assertEqual(ta.strip_inline_comment('["a # b", c]  # note'), '["a # b", c]  ')
+        self.assertEqual(yamlite.strip_inline_comment('["a # b", c]  # note'), '["a # b", c]  ')
 
     def test_hash_needs_whitespace_before_it(self):
-        self.assertEqual(ta.strip_inline_comment("x@sha256:ab#cd"), "x@sha256:ab#cd")
-        self.assertEqual(ta.strip_inline_comment("#everything"), "")
+        self.assertEqual(yamlite.strip_inline_comment("x@sha256:ab#cd"), "x@sha256:ab#cd")
+        self.assertEqual(yamlite.strip_inline_comment("#everything"), "")
 
     def test_unterminated_quote_keeps_the_value(self):
         # Cut nothing: a missed comment beats a value truncated at the `#`.
-        self.assertEqual(ta.strip_inline_comment('"unclosed # x'), '"unclosed # x')
+        self.assertEqual(yamlite.strip_inline_comment('"unclosed # x'), '"unclosed # x')
 
 
 COMMENTED_AGENT = """---
