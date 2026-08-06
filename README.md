@@ -123,11 +123,13 @@ Override the `.agents` roots with `SWARMFORGE_USER_DOTAGENTS_DIR` / `SWARMFORGE_
 ### Claude config layering
 
 Three sources merge into `~/.claude` at startup (lowest to highest precedence):
+- `SWARMFORGE_REPO_CONFIG_DIR` (default `claude/`, if present)
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude`)
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude` when that root is set)
-- `SWARMFORGE_REPO_CONFIG_DIR` (default `claude/`, if present)
 
 Skills, commands, and `agents/` are excluded from this merge — they travel through the asset pipeline above.
+
+Note that config layers stack in the opposite order to the assets above: assets order by specificity, so a repo's own skill wins, while config orders by **trust**, because these files carry permissions, hooks, and env. A checkout is whatever repo you cloned and sits at the bottom; the org layer is installed deliberately and sits on top.
 
 ### Status line
 
@@ -203,12 +205,13 @@ The harness runs these and injects their output into the prompt context, so the 
 Skills live under `skills/` (harness-neutral, shared by every harness).
 OpenCode auto-discovers them using only the YAML frontmatter (`name` + `description`); the full `SKILL.md` body loads on demand when a skill is invoked, keeping the default context small.
 
-`make run_opencode` merges config into `/home/opencode/.config/opencode` from three sources (lowest to highest precedence):
+`make run_opencode` merges config into `/home/opencode/.config/opencode` from three sources (lowest to highest precedence — see the note on trust ordering under [Claude config layering](#claude-config-layering)):
+- `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/`)
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.config/opencode`)
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode` when that root is set)
-- `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/`)
 
 `opencode.json` is merged by key (not file overwrite), so org-level MCP servers survive even when the repo layer also defines `opencode.json`.
+Your own `~/.config/opencode/opencode.json` overrides the toolchain defaults this checkout ships in `opencode/opencode.json`.
 Skills and commands are excluded from this merge and travel through the asset pipeline described under [Claude Code](#claude-code).
 
 You can also define MCP servers in a project-local `.opencode/opencode.json` — often the cleanest place to attach them to a specific repo:

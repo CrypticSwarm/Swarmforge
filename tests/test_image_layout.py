@@ -191,6 +191,54 @@ class ImportRootAgreement(unittest.TestCase):
         )
 
 
+class ConfigLayerOrder(unittest.TestCase):
+    """The entrypoint stacks the config layers in order of trust.
+
+    Precedence here decides whose permissions, hooks, and env a session runs
+    under, and the only thing expressing it is the order of a handful of
+    calls in one shell function -- a reorder reads as a harmless tidy-up and
+    changes who is in charge. There is no way to run that function outside a
+    container, so the order is read back off the source.
+    """
+
+    LAYERS = ("repo", "user", "org")
+
+    def setUp(self):
+        with open(ENTRYPOINT) as handle:
+            self.entrypoint = handle.read()
+        body = self.entrypoint[self.entrypoint.index("prepare_layered_config() {"):]
+        self.body = body[:body.index("\n}\n")]
+
+    def merged_layers(self, function):
+        """The layer each `<function> "${<layer>_config_src}"...` call names."""
+        return re.findall(
+            r'%s "\$\{(\w+)_config_src\}' % re.escape(function), self.body)
+
+    def test_config_dirs_stack_lowest_trust_first(self):
+        self.assertEqual(self.merged_layers("merge_config_layer"), list(self.LAYERS))
+
+    def test_opencode_json_stacks_in_the_same_order_as_the_dirs(self):
+        """One file merged by key, the rest of the dir by whole files.
+
+        They travel through separate calls, so the two orders can disagree
+        -- and then `opencode.json` obeys one precedence while everything
+        beside it obeys another.
+        """
+        self.assertEqual(
+            self.merged_layers("merge_opencode_json"), list(self.LAYERS))
+
+    def test_the_generated_tong_servers_merge_after_every_layer(self):
+        """The sidecar MCP fragment describes containers this run started.
+
+        A config layer naming the same server is describing something else,
+        so the generated entry has to be the last word.
+        """
+        self.assertLess(
+            self.body.index('"${org_config_src}/opencode.json"'),
+            self.body.index("SWARMFORGE_TONG_MCP_FILE"),
+        )
+
+
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
