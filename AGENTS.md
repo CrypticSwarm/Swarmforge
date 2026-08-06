@@ -18,6 +18,7 @@
 - Prefer `make` variables and targets over ad-hoc scripts so contributors can compose workflows via the existing Makefile.
 - Keep Dockerfiles Debian-based (see `DEBIAN_TAG`) and avoid pinning GPU driver versions inside the image; rely on host NVIDIA tooling instead.
 - When editing skills under `skills/`, ensure YAML frontmatter only contains `name` and `description`, and keep the detailed guidance in the corresponding `SKILL.md` body.
+- `swarmforge/` is layered rather than a bag of modules: `yamlite` is a leaf both sides of the container boundary import, the `tongs` modules build on each other in one direction, and the `anvil` modules sit on top of `tongs`. The unit suite fails on an import cycle, and on any file outside `bin/` that loads python from a file path instead of importing it by name.
 - Subagent definitions under `agents/` use the unified agent format documented in `README.md` (`## Agents`); the entrypoint rewrites them per harness via `swarmforge/agents/translate.py`, so never hand-write harness-specific dialects there.
 
 ## Build, Test, and Run
