@@ -406,7 +406,7 @@ class SecretResolverTests(unittest.TestCase):
         self.assertEqual(resolve("echo", "op://Work/secret"), "op://Work/secret")
 
     def test_provider_stderr_inherits_terminal(self):
-        with mock.patch.object(launcher.subprocess, "run") as run:
+        with mock.patch.object(launcher.secretchan.subprocess, "run") as run:
             run.return_value = subprocess.CompletedProcess(["provider"], 0, stdout=b"secret\n")
             resolve = launcher.make_secret_resolver({"p": ["provider", "{ref}"]})
             self.assertEqual(resolve("p", "ref"), "secret")
@@ -594,7 +594,11 @@ class MainGateTests(unittest.TestCase):
                     "lifecycle: shared\nimage: x\ninterface:\n  kind: none\n"
                     "readiness:\n  mode: none\n"
                 )
-            with mock.patch.object(launcher, "run_with_tongs", side_effect=KeyboardInterrupt):
+            # Replaced on the module `main` calls it from: the package re-export
+            # is a second binding `main` never consults, so patching that one
+            # would run the real orchestration against a real docker.
+            with mock.patch.object(launcher.cli, "run_with_tongs",
+                                   side_effect=KeyboardInterrupt):
                 rc = launcher.main(["--repo-tongs", tongs_dir, "--", "/no/such/binary-xyz"])
             self.assertEqual(rc, 130)
 
@@ -1027,7 +1031,7 @@ class DockerCLITests(unittest.TestCase):
         rec = _RecordingRun()
         cli = launcher.DockerCLI(run=rec)
         argv = ["docker", "run", "-it", "--name", "anvil", "--network", "sess", "img"]
-        with mock.patch.object(launcher.subprocess, "Popen") as popen:
+        with mock.patch.object(launcher.docker.subprocess, "Popen") as popen:
             popen.return_value.wait.return_value = 7
             rc = cli.run_foreground_multi(argv, ["base-net"], "anvil")
         self.assertEqual(rc, 7)
@@ -1082,13 +1086,13 @@ class DockerCLITests(unittest.TestCase):
 
 class UidOfTests(unittest.TestCase):
     def test_bare_uid_parses(self):
-        self.assertEqual(launcher._uid_of("1000"), 1000)
-        self.assertEqual(launcher._uid_of("1000:1000"), 1000)
+        self.assertEqual(launcher.secretchan._uid_of("1000"), 1000)
+        self.assertEqual(launcher.secretchan._uid_of("1000:1000"), 1000)
 
     def test_name_or_empty_is_none(self):
-        self.assertIsNone(launcher._uid_of("appuser"))
-        self.assertIsNone(launcher._uid_of(""))
-        self.assertIsNone(launcher._uid_of(None))
+        self.assertIsNone(launcher.secretchan._uid_of("appuser"))
+        self.assertIsNone(launcher.secretchan._uid_of(""))
+        self.assertIsNone(launcher.secretchan._uid_of(None))
 
 
 class SecretChannelTests(unittest.TestCase):
@@ -1154,13 +1158,13 @@ class McpInjectionTests(unittest.TestCase):
 
     def test_empty_fragment_writes_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            pre, post = launcher._mcp_injection({}, "opencode", tmp)
+            pre, post = launcher.orchestrate._mcp_injection({}, "opencode", tmp)
             self.assertEqual((pre, post), ([], []))
             self.assertEqual(os.listdir(tmp), [])  # no file written
 
     def test_opencode_mounts_and_sets_env(self):
         with tempfile.TemporaryDirectory() as tmp:
-            pre, post = launcher._mcp_injection(self.FRAGMENT, "opencode", tmp)
+            pre, post = launcher.orchestrate._mcp_injection(self.FRAGMENT, "opencode", tmp)
             host_path = os.path.join(tmp, "tong-mcp.json")
             self.assertEqual(post, [])  # OpenCode reads it via the entrypoint
             self.assertEqual(
@@ -1173,7 +1177,7 @@ class McpInjectionTests(unittest.TestCase):
 
     def test_claude_mounts_and_appends_flag(self):
         with tempfile.TemporaryDirectory() as tmp:
-            pre, post = launcher._mcp_injection(self.FRAGMENT, "claude", tmp)
+            pre, post = launcher.orchestrate._mcp_injection(self.FRAGMENT, "claude", tmp)
             host_path = os.path.join(tmp, "tong-mcp.json")
             self.assertEqual(
                 pre, ["-v", "%s:%s:ro" % (host_path, launcher.MCP_CONFIG_CONTAINER_PATH)]
@@ -1777,40 +1781,40 @@ class WorkspaceGitDirSpecTests(unittest.TestCase):
 
     def test_no_workspace_path_is_empty(self):
         defn = {"mounts": ["workspace"]}
-        self.assertEqual(launcher._workspace_git_dir_specs(defn, None), [])
+        self.assertEqual(launcher.orchestrate._workspace_git_dir_specs(defn, None), [])
 
     def test_no_workspace_mount_never_calls_the_guard(self):
         defn = {"mounts": ["docker-socket"]}
-        with mock.patch.object(launcher.gitguard, "build_mounts") as guard:
-            self.assertEqual(launcher._workspace_git_dir_specs(defn, "/ws"), [])
+        with mock.patch.object(launcher.orchestrate.gitguard, "build_mounts") as guard:
+            self.assertEqual(launcher.orchestrate._workspace_git_dir_specs(defn, "/ws"), [])
         guard.assert_not_called()
 
     def test_guard_receives_every_workspace_destination(self):
         defn = {"mounts": ["workspace:/a", "workspace:/b:ro"]}
-        with mock.patch.object(launcher.gitguard, "build_mounts",
+        with mock.patch.object(launcher.orchestrate.gitguard, "build_mounts",
                                return_value=[]) as guard:
-            launcher._workspace_git_dir_specs(defn, "/ws")
+            launcher.orchestrate._workspace_git_dir_specs(defn, "/ws")
         guard.assert_called_once_with("/ws", ["/a", "/b"], warn=None)
 
     def test_read_write_workspace_keeps_guard_modes(self):
         defn = {"mounts": ["workspace"]}
         specs = ["/ws/.git:/workspace/.git",
                  "/ws/.git/config:/workspace/.git/config:ro"]
-        with mock.patch.object(launcher.gitguard, "build_mounts",
+        with mock.patch.object(launcher.orchestrate.gitguard, "build_mounts",
                                return_value=list(specs)):
-            self.assertEqual(launcher._workspace_git_dir_specs(defn, "/ws"), specs)
+            self.assertEqual(launcher.orchestrate._workspace_git_dir_specs(defn, "/ws"), specs)
 
     def test_read_only_workspace_forces_every_spec_read_only(self):
         # build_mounts emits the git-dir binds writable (the anvil's workspace is
         # writable); under a workspace:ro definition they must not open a write path.
         defn = {"mounts": ["workspace:ro"]}
         with mock.patch.object(
-            launcher.gitguard, "build_mounts",
+            launcher.orchestrate.gitguard, "build_mounts",
             return_value=["/ws/.git:/workspace/.git",
                           "/ws/.git/config:/workspace/.git/config:ro"],
         ):
             self.assertEqual(
-                launcher._workspace_git_dir_specs(defn, "/ws"),
+                launcher.orchestrate._workspace_git_dir_specs(defn, "/ws"),
                 ["/ws/.git:/workspace/.git:ro",
                  "/ws/.git/config:/workspace/.git/config:ro"],
             )
@@ -1818,10 +1822,10 @@ class WorkspaceGitDirSpecTests(unittest.TestCase):
     def test_mixed_modes_keep_guard_modes(self):
         # One writable workspace mount means the git dir must stay writable too.
         defn = {"mounts": ["workspace:/a:ro", "workspace:/b"]}
-        with mock.patch.object(launcher.gitguard, "build_mounts",
+        with mock.patch.object(launcher.orchestrate.gitguard, "build_mounts",
                                return_value=["/x/.git:/x/.git"]):
             self.assertEqual(
-                launcher._workspace_git_dir_specs(defn, "/ws"),
+                launcher.orchestrate._workspace_git_dir_specs(defn, "/ws"),
                 ["/x/.git:/x/.git"],
             )
 
