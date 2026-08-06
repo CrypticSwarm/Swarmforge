@@ -18,12 +18,14 @@
 - Prefer `make` variables and targets over ad-hoc scripts so contributors can compose workflows via the existing Makefile.
 - Keep Dockerfiles Debian-based (see `DEBIAN_TAG`) and avoid pinning GPU driver versions inside the image; rely on host NVIDIA tooling instead.
 - When editing skills under `skills/`, ensure YAML frontmatter only contains `name` and `description`, and keep the detailed guidance in the corresponding `SKILL.md` body.
+- `swarmforge/` is layered rather than a bag of modules: `yamlite` is a leaf both sides of the container boundary import, the `tongs` modules build on each other in one direction, and the `anvil` modules sit on top of `tongs`. The unit suite fails on an import cycle, and on any file outside `bin/` that loads python from a file path instead of importing it by name.
 - Subagent definitions under `agents/` use the unified agent format documented in `README.md` (`## Agents`); the entrypoint rewrites them per harness via `swarmforge/agents/translate.py`, so never hand-write harness-specific dialects there.
 
 ## Build, Test, and Run
 - Build the OpenCode image with `make build_opencode` after changing anything under `anvil/` or `swarmforge/`.
 - Launch a development session via `make run_opencode PROFILE=<name> DATA_DIR=<path?>` (defaults are fine for local work). The target automatically mounts project files and skills.
 - Run the Python unit tests with `make test`. They are stdlib `unittest` collected by discovery over `tests/test_*.py`, so add a test file and it runs — never wire one up by name. A test module is named for the source module it covers: `tests/test_tongs_<module>.py`, `tests/test_anvil_<module>.py`. Fixtures more than one of them needs live in `tests/tongs_fixtures.py` / `tests/anvil_fixtures.py`, which the glob deliberately skips.
+- Lint the Python with `make lint` (`ruff check`, configured in `pyproject.toml`). It is a linter only — never run `ruff format`, which would reflow files the change did not touch. Ruff is the one tool outside the stdlib this repo asks for, and it is a contributor tool: no image installs it and nothing under `swarmforge/` imports it.
 - Run the skill eval harness via `make test-skills MODEL=<provider/model>`. It drives a real model in the OpenCode image, so it is a separate target from the unit suite.
 - Filter skill evals with `TEST_SKILL=<skill-name>` and adjust timeouts with `TEST_TIMEOUT_S=<seconds>`.
 - Start the local Ollama service with `make run_ollama` when testing models; pair it with `make stop_ollama` and `make clean` to tear everything down.

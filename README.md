@@ -418,9 +418,19 @@ The example definition is **not** auto-discovered from the checkout (it lives a 
 
 The launcher, the tongs layer, and the container-side translators are covered by stdlib `unittest` tests in `tests/test_*.py`. A test module is named for the source module it covers — `tests/test_tongs_<module>.py` for `swarmforge/tongs/<module>.py`, `tests/test_anvil_<module>.py` for `swarmforge/anvil/<module>.py` — so the file that covers a change is the one named after it. Two modules have no namesake file because they have nothing to assert on their own: `swarmforge/anvil/readiness.py` is exercised through `run_with_tongs`, and `swarmforge/anvil/errors.py` holds one exception class. Fixtures that more than one test module needs live in `tests/tongs_fixtures.py` and `tests/anvil_fixtures.py`, which the discovery glob skips.
 
+Two files assert on the shape of the repo rather than on any one module. `tests/test_image_layout.py` holds the Dockerfile and the entrypoint to the same import root, and `tests/test_package_layering.py` keeps the package's imports acyclic and keeps loading a module from a file path out of everything but the `bin/` shims. Both fail the way a build should — before anything reaches a container.
+
 - Run them: `make test`
 
 The target is `python3 -m unittest discover -s tests -p 'test_*.py'` with the repo root on `PYTHONPATH`, and CI runs the same discovery. Nothing names test modules by hand, so a new `tests/test_*.py` file runs the moment it lands. It needs only a host python — no Docker, no network, no model.
+
+## Lint
+
+- Run it: `make lint`
+
+`ruff check` over every Python file in the repo, configured in `pyproject.toml` — including the extensionless commands in `bin/`, which ruff would otherwise skip. The rule set is ruff's default — the pycodestyle checks that catch mistakes plus all of pyflakes — and stops there on purpose: line length, import order, and whitespace are left to the author, so turning the linter on does not reflow files a change never touched. Only `ruff check` is ever run; `ruff format` is not part of this repo. Install ruff with `pipx install ruff` (CI pins the version), or point the target at another copy with `make lint RUFF=<path>`.
+
+Ruff is a contributor tool, not a dependency: the harness image installs no third-party Python, and every module under `swarmforge/` stays stdlib-only.
 
 ## Skill Tests
 
