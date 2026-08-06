@@ -342,7 +342,7 @@ class ContainerImportLayout(unittest.TestCase):
         with open(src, "w") as handle:
             handle.write('{"share": "manual"}')
 
-        completed = self.run_module("swarmforge.config.merge_opencode", dst, src)
+        completed = self.run_module("swarmforge.config.merge_json", dst, src)
         self.assertEqual(
             completed.returncode, 0,
             "merge failed:\n%s" % completed.stderr,
@@ -368,7 +368,7 @@ class ContainerImportLayout(unittest.TestCase):
             handle.write('{"mcp": {"gh": {"type": "remote", "url": "http://gh"}}}')
 
         completed = self.run_module(
-            "swarmforge.config.merge_opencode", dst, src,
+            "swarmforge.config.merge_json", dst, src,
             "--replace-mcp-entries")
         self.assertEqual(
             completed.returncode, 0,

@@ -226,10 +226,10 @@ merge_opencode_json() {
   fi
 
   if [ "${replace_mcp_entries}" = "1" ]; then
-    PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_opencode \
+    PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_json \
       "${dst_file}" "${src_file}" --replace-mcp-entries
   else
-    PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_opencode \
+    PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_json \
       "${dst_file}" "${src_file}"
   fi
 }

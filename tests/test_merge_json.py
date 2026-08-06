@@ -14,7 +14,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from swarmforge.config import merge_opencode
+from swarmforge.config import merge_json
 
 
 def _write(path, value):
@@ -27,7 +27,7 @@ def _read(path):
         return json.load(handle)
 
 
-class MergeOpenCodeJsonTests(unittest.TestCase):
+class MergeFilesTests(unittest.TestCase):
     def test_normal_layers_deep_merge_mcp_entries(self):
         with tempfile.TemporaryDirectory() as tmp:
             dst = os.path.join(tmp, "dst.json")
@@ -47,7 +47,7 @@ class MergeOpenCodeJsonTests(unittest.TestCase):
                 "permission": {"bash": {"git *": "allow"}},
             })
 
-            merge_opencode.merge_files(dst, src)
+            merge_json.merge_files(dst, src)
 
             self.assertEqual(_read(dst), {
                 "mcp": {
@@ -87,7 +87,7 @@ class MergeOpenCodeJsonTests(unittest.TestCase):
                 "permission": {"bash": {"git *": "allow"}},
             })
 
-            merge_opencode.merge_files(dst, src, replace_mcp_entries=True)
+            merge_json.merge_files(dst, src, replace_mcp_entries=True)
 
             self.assertEqual(_read(dst), {
                 "mcp": {

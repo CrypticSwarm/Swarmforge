@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Merge OpenCode ``opencode.json`` layers."""
+"""Merge layered JSON config files.
+
+Nothing here is specific to one harness: both OpenCode's ``opencode.json`` and
+Claude's ``settings.json`` are layered JSON objects, and the deep merge below
+is the whole of what they share.
+"""
 
 import json
 import sys
@@ -45,7 +50,7 @@ def merge_files(dst_path, src_path, *, replace_mcp_entries=False):
 def main(argv):
     if len(argv) not in (2, 3):
         print(
-            "usage: python3 -m swarmforge.config.merge_opencode DST SRC"
+            "usage: python3 -m swarmforge.config.merge_json DST SRC"
             " [--replace-mcp-entries]",
             file=sys.stderr,
         )
