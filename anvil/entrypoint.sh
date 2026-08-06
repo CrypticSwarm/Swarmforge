@@ -193,10 +193,16 @@ merge_config_layer() {
   # entrypoint logic) from reappearing. For OpenCode the merged config dir
   # is the harness's own native discovery, so native agents/ in user/org
   # layers still merge through.
+  #
+  # settings.json is excluded for Claude for the same reason opencode.json is
+  # excluded everywhere: it is merged by key rather than replaced by file.
+  # Left in, the highest layer that ships one would write straight over the
+  # merged result and take every lower layer's keys with it.
   exclude_args="--exclude=./opencode.json --exclude=./.swarmforge"
   case "${AGENT_BIN:-}" in
     claude)
       exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./agents"
+      exclude_args="${exclude_args} --exclude=./settings.json"
       ;;
     opencode)
       exclude_args="${exclude_args} --exclude=./skills --exclude=./command"
@@ -231,6 +237,51 @@ merge_opencode_json() {
   else
     PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_json \
       "${dst_file}" "${src_file}"
+  fi
+}
+
+# Generate Claude's settings.json from the config layers, lowest first: the
+# image's own defaults, then the same repo -> user -> org stack as the rest of
+# the config. Every layer path is passed whether or not it exists; a layer
+# that ships no settings.json contributes nothing.
+#
+# Generated, not merged into. Claude's config destination is the persistent
+# home, and that directory is shared by every container for this user -- so a
+# settings.json merged in place carries an org layer's permissions, hooks, and
+# env forward into later runs that no longer mount that layer, and a container
+# started under a second org rewrites the file while the first container is
+# still reading it. Building the file from the layers alone closes the first;
+# the host mounting a per-container file over this path closes the second.
+#
+# The tar overlay would undo both, so settings.json is excluded from it above.
+#
+# Claude only: no other harness reads this file, and the image defaults ship
+# in the Claude image alone.
+build_claude_settings() {
+  settings_dst="${1}"
+  settings_repo_src="${2:-}"
+  settings_user_src="${3:-}"
+  settings_org_src="${4:-}"
+
+  [ "${AGENT_BIN}" = "claude" ] || return 0
+
+  image_defaults="/usr/local/share/swarmforge/claude-settings.json"
+
+  # A failed build leaves whatever the destination already held, and that is
+  # the one outcome this must not have: the host file is keyed by container
+  # name and survives the container, so the content left behind is the last
+  # session's -- possibly merged under an org layer this run does not mount.
+  # An empty object is the safe reading of "no layer could be applied": the
+  # harness falls back to its own defaults instead of another run's policy.
+  if ! PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_json \
+    --build "${settings_dst}" \
+    "${image_defaults}" \
+    "${settings_repo_src}/settings.json" \
+    "${settings_user_src}/settings.json" \
+    "${settings_org_src}/settings.json"
+  then
+    printf '%s\n' "Warning: could not build Claude settings.json; continuing" >&2
+    printf '%s\n' '{}' > "${settings_dst}" || true
   fi
 }
 
@@ -270,6 +321,12 @@ prepare_layered_config() {
   # for OpenCode sessions that discovered an MCP-interface tong; otherwise this
   # is a no-op (merge_opencode_json ignores an empty or missing source).
   merge_opencode_json "${SWARMFORGE_TONG_MCP_FILE:-}" "${config_dst}/opencode.json" 1
+
+  build_claude_settings \
+    "${config_dst}/settings.json" \
+    "${repo_config_src}" \
+    "${user_config_src}" \
+    "${org_config_src}"
 }
 
 prepare_agent_config() {
@@ -282,25 +339,6 @@ prepare_agent_config() {
     "${SWARMFORGE_CONFIG_ORG_DIR:-}" \
     "${SWARMFORGE_CONFIG_REPO_DIR:-}" \
     "${SWARMFORGE_CONFIG_RESET:-0}"
-}
-
-# Turn on the status line the image ships (model, directory, context and token
-# usage) by defaulting Claude's own settings.json to it.
-#
-# Runs after prepare_agent_config so a statusLine from any config layer is
-# already in place and kept; only a session that chose none gets the image's.
-# The seeder and the script it names are in the Claude image alone, and both
-# are optional here so nothing else has to care.
-seed_claude_settings() {
-  [ "${AGENT_BIN}" = "claude" ] || return 0
-
-  seeder="/usr/local/lib/swarmforge/seed_claude_settings.py"
-  statusline="/usr/local/bin/swarmforge-statusline"
-  [ -f "${seeder}" ] || return 0
-  [ -x "${statusline}" ] || return 0
-
-  python3 "${seeder}" "${OPENCODE_HOME}/.claude/settings.json" "${statusline}" \
-    || printf '%s\n' "Warning: could not apply Claude settings defaults; continuing" >&2
 }
 
 if [ ! -x "${AGENT_BIN_PATH}" ]; then
@@ -330,7 +368,6 @@ if ! getent passwd "${OPENCODE_UID}" >/dev/null 2>&1; then
 fi
 
 prepare_agent_config
-seed_claude_settings
 prepare_unified_agents
 copy_shared_assets
 

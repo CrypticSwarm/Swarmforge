@@ -206,8 +206,16 @@ class ConfigLayerOrder(unittest.TestCase):
     def setUp(self):
         with open(ENTRYPOINT) as handle:
             self.entrypoint = handle.read()
-        body = self.entrypoint[self.entrypoint.index("prepare_layered_config() {"):]
-        self.body = body[:body.index("\n}\n")]
+        self.body = self.function_body("prepare_layered_config")
+
+    def function_body(self, name):
+        """The text of the entrypoint shell function called `name`.
+
+        Entrypoint functions are `name() {` with the closing brace at column
+        zero, which is what delimits the slice.
+        """
+        body = self.entrypoint[self.entrypoint.index("%s() {" % name):]
+        return body[:body.index("\n}\n")]
 
     def merged_layers(self, function):
         """The layer each `<function> "${<layer>_config_src}"...` call names."""
@@ -238,15 +246,58 @@ class ConfigLayerOrder(unittest.TestCase):
             self.body.index("SWARMFORGE_TONG_MCP_FILE"),
         )
 
+    def test_claude_settings_stack_the_image_defaults_below_every_layer(self):
+        """The image's defaults are a layer, and the bottom one.
+
+        Anything else and a session that chose its own statusLine, or its own
+        anything, would be overruled by the image.
+        """
+        body = self.function_body("build_claude_settings")
+        sources = re.findall(r'"\$\{settings_(\w+)_src\}/settings\.json"', body)
+        self.assertEqual(sources, list(self.LAYERS))
+        self.assertLess(
+            body.index('"${image_defaults}"'),
+            body.index('"${settings_%s_src}/settings.json"' % self.LAYERS[0]),
+        )
+
+    def test_the_settings_build_is_handed_the_layers_in_that_order(self):
+        """The order inside the function is only half of it.
+
+        The caller decides which directory arrives as which argument, and
+        swapping two there is invisible from the function itself.
+        """
+        call = self.body[self.body.index("build_claude_settings"):]
+        self.assertEqual(
+            re.findall(r"\$\{(\w+)_config_src\}", call), list(self.LAYERS))
+
+    def test_claude_settings_are_built_after_every_layer_has_landed(self):
+        """A layer's own settings.json has to be on disk to be read."""
+        self.assertLess(
+            self.body.rindex("merge_config_layer"),
+            self.body.index("build_claude_settings"),
+        )
+
+    def test_claude_excludes_the_built_settings_from_the_file_overlay(self):
+        """The overlay replaces whole files; settings.json is merged by key.
+
+        Left in, the highest layer that ships one is written straight over
+        the built file and takes every lower layer's keys -- and the image
+        defaults -- with it.
+        """
+        body = self.function_body("merge_config_layer")
+        claude = body[body.index("claude)"):body.index("opencode)")]
+        self.assertIn("--exclude=./settings.json", claude)
+
 
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
     Three strings have to line up for a container to come up with a status
     line: where the Dockerfile installs the script, where it installs the
-    seeder, and the two paths the entrypoint names. A mismatch is silent --
-    the entrypoint skips the seed when either path is missing, and Claude
-    starts with no status line rather than an error.
+    defaults naming it, and the path the entrypoint reads those defaults
+    from. A mismatch is silent -- a defaults file that is not there is a
+    layer contributing nothing, so Claude starts with no status line rather
+    than an error.
     """
 
     def setUp(self):
@@ -259,15 +310,17 @@ class StatusLineAgreement(unittest.TestCase):
             src, self.copies, "Dockerfile has no `COPY %s <dest>` line" % src)
         return self.copies[src]
 
-    def test_entrypoint_names_the_status_line_the_dockerfile_installs(self):
-        self.assertIn(
-            'statusline="%s"' % self.copy_dest("anvil/statusline.sh"),
-            self.entrypoint,
+    def test_image_defaults_name_the_status_line_the_dockerfile_installs(self):
+        with open(os.path.join(REPO_ROOT, "anvil", "claude-settings.json")) as handle:
+            defaults = json.load(handle)
+        self.assertEqual(
+            defaults.get("statusLine"),
+            {"type": "command", "command": self.copy_dest("anvil/statusline.sh")},
         )
 
-    def test_entrypoint_runs_the_seeder_where_the_dockerfile_puts_it(self):
+    def test_entrypoint_reads_the_defaults_where_the_dockerfile_installs_them(self):
         self.assertIn(
-            'seeder="%s"' % self.copy_dest("anvil/seed_claude_settings.py"),
+            'image_defaults="%s"' % self.copy_dest("anvil/claude-settings.json"),
             self.entrypoint,
         )
 
@@ -427,6 +480,41 @@ class ContainerImportLayout(unittest.TestCase):
             self.assertEqual(
                 json.load(handle),
                 {"mcp": {"gh": {"type": "remote", "url": "http://gh"}}},
+            )
+
+    def test_settings_build_runs_the_way_the_entrypoint_calls_it(self):
+        """The Claude settings build, argv and all, against the staged copy.
+
+        The entrypoint passes a path for every layer whether or not it
+        exists, and the image's own defaults below them. A run that rejected
+        that argv would leave the container with the empty settings.json the
+        host mounted in and no status line.
+        """
+        dst = os.path.join(self.tmp, "settings.json")
+        with open(dst, "w") as handle:
+            handle.write('{"stale": true}')
+        defaults = os.path.join(self.tmp, "image-defaults.json")
+        with open(defaults, "w") as handle:
+            handle.write('{"statusLine": {"type": "command", "command": "/sl"}}')
+        user = os.path.join(self.tmp, "user.json")
+        with open(user, "w") as handle:
+            handle.write('{"model": "sonnet"}')
+        absent = os.path.join(self.tmp, "no-such-layer", "settings.json")
+
+        completed = self.run_module(
+            "swarmforge.config.merge_json", "--build", dst,
+            defaults, absent, user, absent)
+        self.assertEqual(
+            completed.returncode, 0,
+            "settings build failed:\n%s" % completed.stderr,
+        )
+        with open(dst) as handle:
+            self.assertEqual(
+                json.load(handle),
+                {
+                    "statusLine": {"type": "command", "command": "/sl"},
+                    "model": "sonnet",
+                },
             )
 
 
