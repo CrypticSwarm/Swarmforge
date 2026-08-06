@@ -31,7 +31,7 @@ has to redirect it on the module that owns it, not on this one.
 
 Every function is side-effect free (aside from the small JSON/YAML file readers)
 so it can be unit-tested exactly like `swarmforge/agents/translate.py` -- see
-`tests/test_tongs.py`.
+`tests/test_tongs_<module>.py`, one per module above.
 
 It performs no orchestration: no docker, no networks, no exec-based secret
 resolution, no prompting. Secret resolution is driven by a caller-injected
