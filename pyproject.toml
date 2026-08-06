@@ -19,4 +19,10 @@ requires-python = ">=3.9"
 dependencies = []
 
 [tool.setuptools]
-packages = ["swarmforge", "swarmforge.agents", "swarmforge.config", "swarmforge.tongs"]
+packages = [
+    "swarmforge",
+    "swarmforge.agents",
+    "swarmforge.anvil",
+    "swarmforge.config",
+    "swarmforge.tongs",
+]
