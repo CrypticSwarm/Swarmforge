@@ -778,13 +778,21 @@ class SecretDeliveryTests(unittest.TestCase):
         self.assertEqual(command[2:], ["swarmforge-tong", "node", "server.js"])
 
     def test_secret_inject_argv_does_not_exec_target_when_fifo_read_fails(self):
-        old_target = tongs.SECRET_FIFO_TARGET
+        # Redirected on the module `secret_inject_argv` reads its global from:
+        # the package re-export is a second binding the function never consults,
+        # so pointing that one at the temp path would leave the real FIFO path
+        # baked into the script and the test asserting nothing.
+        old_target = tongs.secrets.SECRET_FIFO_TARGET
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                tongs.SECRET_FIFO_TARGET = os.path.join(tmp, "missing")
+                tongs.secrets.SECRET_FIFO_TARGET = os.path.join(tmp, "missing")
                 entrypoint, command = tongs.secret_inject_argv(
                     ["/bin/sh", "-c", "printf target-ran"]
                 )
+                # The redirect has to reach the script. Without this the test
+                # also passes on the real FIFO path merely being absent, which
+                # is the failure mode redirecting the re-export produces.
+                self.assertIn(tmp, command[1])
                 completed = subprocess.run(
                     [entrypoint] + command,
                     stdout=subprocess.PIPE,
@@ -792,7 +800,7 @@ class SecretDeliveryTests(unittest.TestCase):
                     check=False,
                 )
         finally:
-            tongs.SECRET_FIFO_TARGET = old_target
+            tongs.secrets.SECRET_FIFO_TARGET = old_target
         self.assertNotEqual(completed.returncode, 0)
         self.assertEqual(completed.stdout, b"")
 
