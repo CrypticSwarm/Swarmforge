@@ -18,6 +18,29 @@ description = "Shared launcher and container-side Python for Swarmforge"
 requires-python = ">=3.9"
 dependencies = []
 
+[tool.ruff]
+# Ruff finds files by extension, which would skip the launcher entry points in
+# bin/ -- they are commands rather than modules, so they carry none. They are
+# also the files that do the sys.path work, so they are the last python in the
+# repo that should go unchecked.
+extend-include = ["bin/*"]
+
+[tool.ruff.lint]
+# Ruff's default rules: the pycodestyle checks that catch mistakes (E4 import
+# placement, E7 statement shape, E9 syntax and IO errors) plus all of pyflakes.
+# Deliberately absent are the whitespace, line-length, and import-order rules --
+# those are formatter territory, and turning them on would rewrite files nobody
+# is touching. Ruff runs here as a linter only; `ruff format` is never invoked.
+#
+# The target python comes from `requires-python` above, so the two cannot drift.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test modules put the repo root on sys.path before importing the package, so
+# each one runs on its own as well as under a discovery run that already set
+# PYTHONPATH. The imports that bootstrap depends on cannot come first.
+"tests/*" = ["E402"]
+
 [tool.setuptools]
 packages = [
     "swarmforge",

@@ -422,6 +422,14 @@ The launcher, the tongs layer, and the container-side translators are covered by
 
 The target is `python3 -m unittest discover -s tests -p 'test_*.py'` with the repo root on `PYTHONPATH`, and CI runs the same discovery. Nothing names test modules by hand, so a new `tests/test_*.py` file runs the moment it lands. It needs only a host python — no Docker, no network, no model.
 
+## Lint
+
+- Run it: `make lint`
+
+`ruff check` over every Python file in the repo, configured in `pyproject.toml` — including the extensionless commands in `bin/`, which ruff would otherwise skip. The rule set is ruff's default — the pycodestyle checks that catch mistakes plus all of pyflakes — and stops there on purpose: line length, import order, and whitespace are left to the author, so turning the linter on does not reflow files a change never touched. Only `ruff check` is ever run; `ruff format` is not part of this repo. Install ruff with `pipx install ruff` (CI pins the version), or point the target at another copy with `make lint RUFF=<path>`.
+
+Ruff is a contributor tool, not a dependency: the harness image installs no third-party Python, and every module under `swarmforge/` stays stdlib-only.
+
 ## Skill Tests
 
 A lightweight skill test harness runs scenario prompts against a chosen model and verifies expected behavior. It drives a real model inside the OpenCode image, which is why it is a separate target from the unit suite.

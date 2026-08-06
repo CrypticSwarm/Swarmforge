@@ -85,6 +85,11 @@ SWARMFORGE_ORG_DOTAGENTS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SW
 # Host python used to run the anvil launcher (bin/run-anvil) and the unit tests.
 PYTHON ?= python3
 
+# Ruff is the one tool outside the stdlib this repo asks a contributor to have,
+# and only for `make lint` -- nothing under swarmforge/ imports it and no image
+# installs it. CI pins a version; locally whatever is on PATH will do.
+RUFF ?= ruff
+
 PROFILE_FLAG :=
 ifneq ($(strip $(PROFILE)),)
 PROFILE_FLAG := --profile $(PROFILE)
@@ -149,7 +154,7 @@ CLAUDE_RUN_MOUNTS = \
 	$(SWARMFORGE_LAYER_MOUNTS)
 
 .PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
-	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills
+	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills lint
 
 # The workspace is mounted read-write, but the paths inside its git dir that
 # the *host's* git later obeys -- `config`, `hooks/`, and the pointers naming
@@ -366,6 +371,12 @@ run_gemma4_26b:
 # the same way the image does.
 test:
 	PYTHONPATH="$(SWARMFORGE_DIR)" $(PYTHON) -m unittest discover -s "$(SWARMFORGE_DIR)/tests" -p 'test_*.py'
+
+# Lint every python file in the repo. Rules and exemptions live in
+# pyproject.toml; `check` never edits a file, so this is safe to run over a
+# dirty tree and never reflows code the change did not touch.
+lint:
+	$(RUFF) check "$(SWARMFORGE_DIR)"
 
 # Skill evaluation: runs scenario prompts from skills/<name>/tests/*.json
 # against a real model inside the opencode image and checks what came

@@ -15,6 +15,17 @@ jobs:
       - name: Check entrypoint syntax
         run: sh -n anvil/entrypoint.sh
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned: an unpinned linter turns a green branch red on someone else's
+      # release. Raising the pin is a deliberate change with its own diff.
+      - name: Install ruff
+        run: pipx install ruff==0.16.1
+      - name: Lint
+        run: make lint
+
   docker-broker:
     runs-on: ubuntu-latest
     steps:
