@@ -239,7 +239,7 @@ A credential-holding tong runs as a sibling container exposing an **MCP server**
 Tongs can also be plain network services (a throwaway Postgres, a fixture server), volume providers, or background side-effect processes.
 
 Tongs are YAML files discovered across the **same four layers** as agents.
-The host-side launcher (`swarmforge/anvil.py`, run through `bin/run-anvil`) discovers, approves, starts, and tears them down; `make run_opencode` / `make run_claude` already delegate to it.
+The host-side launcher (`swarmforge/anvil/`, run through `bin/run-anvil`) discovers, approves, starts, and tears them down; `make run_opencode` / `make run_claude` already delegate to it.
 
 ### Quick start: run a tong
 
