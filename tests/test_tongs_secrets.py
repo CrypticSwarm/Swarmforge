@@ -8,13 +8,20 @@ import sys
 import tempfile
 import unittest
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(HERE)
 
 # The launcher's entry-point shim puts the repo root on the path; standing in
 # for it here keeps this file runnable on its own, not just under a discovery
 # run that already set it.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
 from swarmforge import tongs
 

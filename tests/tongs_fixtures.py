@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tong definitions shared by more than one swarmforge.tongs test module."""
+"""Fixtures shared by more than one swarmforge.tongs test module."""
 
 import os
 import sys

@@ -3,7 +3,6 @@
 
 import io
 import os
-import shutil
 import sys
 import tempfile
 import unittest
@@ -16,6 +15,12 @@ REPO_ROOT = os.path.dirname(HERE)
 # run that already set it.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
 # Aliased because `anvil` is already these tests' word for the container
 # the launcher wraps.
