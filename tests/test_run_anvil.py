@@ -1086,13 +1086,13 @@ class DockerCLITests(unittest.TestCase):
 
 class UidOfTests(unittest.TestCase):
     def test_bare_uid_parses(self):
-        self.assertEqual(launcher.secretchan._uid_of("1000"), 1000)
-        self.assertEqual(launcher.secretchan._uid_of("1000:1000"), 1000)
+        self.assertEqual(launcher.secretchan.uid_of("1000"), 1000)
+        self.assertEqual(launcher.secretchan.uid_of("1000:1000"), 1000)
 
     def test_name_or_empty_is_none(self):
-        self.assertIsNone(launcher.secretchan._uid_of("appuser"))
-        self.assertIsNone(launcher.secretchan._uid_of(""))
-        self.assertIsNone(launcher.secretchan._uid_of(None))
+        self.assertIsNone(launcher.secretchan.uid_of("appuser"))
+        self.assertIsNone(launcher.secretchan.uid_of(""))
+        self.assertIsNone(launcher.secretchan.uid_of(None))
 
 
 class SecretChannelTests(unittest.TestCase):

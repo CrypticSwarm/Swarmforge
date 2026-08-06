@@ -32,7 +32,7 @@ from swarmforge import gitguard
 
 from .errors import OrchestrationError
 from .readiness import wait_ready
-from .secretchan import _uid_of, make_secret_resolver, open_secret_channel
+from .secretchan import make_secret_resolver, open_secret_channel, uid_of
 
 
 def _mounts_workspace(defn):
@@ -191,7 +191,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     entrypoint, command = tongs.secret_inject_argv(target)
     payload = tongs.render_secret_exports(secrets)
 
-    channel = make_channel(_uid_of(image_user))
+    channel = make_channel(uid_of(image_user))
     try:
         # Assembled before the teardown guard below: a refused definition starts
         # nothing, so it must remove nothing (for a `shared` tong, that would be

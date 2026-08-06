@@ -169,7 +169,7 @@ def open_secret_channel(uid=None):
     return SecretChannel(directory, host_path)
 
 
-def _uid_of(image_user):
+def uid_of(image_user):
     """Numeric uid from an image's configured user, or None if not a bare uid.
 
     `docker inspect`'s `.Config.User` may be empty, a numeric `uid[:gid]`, or a
