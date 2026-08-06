@@ -23,7 +23,7 @@
 ## Build, Test, and Run
 - Build the OpenCode image with `make build_opencode` after changing anything under `anvil/` or `swarmforge/`.
 - Launch a development session via `make run_opencode PROFILE=<name> DATA_DIR=<path?>` (defaults are fine for local work). The target automatically mounts project files and skills.
-- Run the Python unit tests with `make test`. They are stdlib `unittest` collected by discovery over `tests/test_*.py`, so add a test file and it runs — never wire one up by name.
+- Run the Python unit tests with `make test`. They are stdlib `unittest` collected by discovery over `tests/test_*.py`, so add a test file and it runs — never wire one up by name. A test module is named for the source module it covers: `tests/test_tongs_<module>.py`, `tests/test_anvil_<module>.py`. Fixtures more than one of them needs live in `tests/tongs_fixtures.py` / `tests/anvil_fixtures.py`, which the glob deliberately skips.
 - Run the skill eval harness via `make test-skills MODEL=<provider/model>`. It drives a real model in the OpenCode image, so it is a separate target from the unit suite.
 - Filter skill evals with `TEST_SKILL=<skill-name>` and adjust timeouts with `TEST_TIMEOUT_S=<seconds>`.
 - Start the local Ollama service with `make run_ollama` when testing models; pair it with `make stop_ollama` and `make clean` to tear everything down.

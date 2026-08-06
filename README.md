@@ -416,7 +416,7 @@ The example definition is **not** auto-discovered from the checkout (it lives a 
 
 ## Unit Tests
 
-The launcher, the tongs layer, and the container-side translators are covered by stdlib `unittest` tests in `tests/test_*.py`.
+The launcher, the tongs layer, and the container-side translators are covered by stdlib `unittest` tests in `tests/test_*.py`. A test module is named for the source module it covers — `tests/test_tongs_<module>.py` for `swarmforge/tongs/<module>.py`, `tests/test_anvil_<module>.py` for `swarmforge/anvil/<module>.py` — so the file that covers a change is the one named after it. Two modules have no namesake file because they have nothing to assert on their own: `swarmforge/anvil/readiness.py` is exercised through `run_with_tongs`, and `swarmforge/anvil/errors.py` holds one exception class. Fixtures that more than one test module needs live in `tests/tongs_fixtures.py` and `tests/anvil_fixtures.py`, which the discovery glob skips.
 
 - Run them: `make test`
 
