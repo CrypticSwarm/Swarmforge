@@ -194,11 +194,11 @@ class ImportRootAgreement(unittest.TestCase):
 class ConfigLayerOrder(unittest.TestCase):
     """The entrypoint stacks the config layers in order of trust.
 
-    Precedence here decides whose permissions, hooks, and env a session runs
-    under, and the only thing expressing it is the order of a handful of
-    calls in one shell function -- a reorder reads as a harmless tidy-up and
-    changes who is in charge. There is no way to run that function outside a
-    container, so the order is read back off the source.
+    Precedence decides whose permissions, hooks, and env a session runs
+    under, and nothing expresses it but the order of a few calls in one
+    shell function -- where a reorder reads as a harmless tidy-up. That
+    function cannot run outside a container, so the order is read off the
+    source instead.
     """
 
     LAYERS = ("repo", "user", "org")
@@ -226,21 +226,14 @@ class ConfigLayerOrder(unittest.TestCase):
         self.assertEqual(self.merged_layers("merge_config_layer"), list(self.LAYERS))
 
     def test_opencode_json_stacks_in_the_same_order_as_the_dirs(self):
-        """One file merged by key, the rest of the dir by whole files.
-
-        They travel through separate calls, so the two orders can disagree
-        -- and then `opencode.json` obeys one precedence while everything
-        beside it obeys another.
-        """
+        """The key-wise merge and the file overlay travel through separate
+        calls, so one file can end up obeying a precedence the rest do not."""
         self.assertEqual(
             self.merged_layers("merge_opencode_json"), list(self.LAYERS))
 
     def test_the_generated_tong_servers_merge_after_every_layer(self):
-        """The sidecar MCP fragment describes containers this run started.
-
-        A config layer naming the same server is describing something else,
-        so the generated entry has to be the last word.
-        """
+        """The fragment describes containers this run started, so a layer
+        naming the same server is describing something else."""
         self.assertLess(
             self.body.index('"${org_config_src}/opencode.json"'),
             self.body.index("SWARMFORGE_TONG_MCP_FILE"),
@@ -249,8 +242,7 @@ class ConfigLayerOrder(unittest.TestCase):
     def test_claude_settings_stack_the_image_defaults_below_every_layer(self):
         """The image's defaults are a layer, and the bottom one.
 
-        Anything else and a session that chose its own statusLine, or its own
-        anything, would be overruled by the image.
+        Any higher and the image would overrule a key a session chose.
         """
         body = self.function_body("build_claude_settings")
         sources = re.findall(r'"\$\{settings_(\w+)_src\}/settings\.json"', body)
@@ -261,11 +253,8 @@ class ConfigLayerOrder(unittest.TestCase):
         )
 
     def test_the_settings_build_is_handed_the_layers_in_that_order(self):
-        """The order inside the function is only half of it.
-
-        The caller decides which directory arrives as which argument, and
-        swapping two there is invisible from the function itself.
-        """
+        """The caller decides which directory arrives as which argument, so
+        swapping two there is invisible from the function itself."""
         call = self.body[self.body.index("build_claude_settings"):]
         self.assertEqual(
             re.findall(r"\$\{(\w+)_config_src\}", call), list(self.LAYERS))
@@ -278,12 +267,7 @@ class ConfigLayerOrder(unittest.TestCase):
         )
 
     def test_claude_excludes_the_built_settings_from_the_file_overlay(self):
-        """The overlay replaces whole files; settings.json is merged by key.
-
-        Left in, the highest layer that ships one is written straight over
-        the built file and takes every lower layer's keys -- and the image
-        defaults -- with it.
-        """
+        """The overlay replaces whole files, so it would undo the build."""
         body = self.function_body("merge_config_layer")
         claude = body[body.index("claude)"):body.index("opencode)")]
         self.assertIn("--exclude=./settings.json", claude)
@@ -292,12 +276,10 @@ class ConfigLayerOrder(unittest.TestCase):
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
-    Three strings have to line up for a container to come up with a status
-    line: where the Dockerfile installs the script, where it installs the
-    defaults naming it, and the path the entrypoint reads those defaults
-    from. A mismatch is silent -- a defaults file that is not there is a
-    layer contributing nothing, so Claude starts with no status line rather
-    than an error.
+    Three strings have to line up: where the Dockerfile installs the script,
+    where it installs the defaults naming it, and where the entrypoint reads
+    those defaults from. A mismatch is silent -- a defaults file that is not
+    there is just a layer contributing nothing.
     """
 
     def setUp(self):
@@ -486,9 +468,8 @@ class ContainerImportLayout(unittest.TestCase):
         """The Claude settings build, argv and all, against the staged copy.
 
         The entrypoint passes a path for every layer whether or not it
-        exists, and the image's own defaults below them. A run that rejected
-        that argv would leave the container with the empty settings.json the
-        host mounted in and no status line.
+        exists. A run that rejected that argv would leave the container on
+        the empty settings.json the host mounted in.
         """
         dst = os.path.join(self.tmp, "settings.json")
         with open(dst, "w") as handle:

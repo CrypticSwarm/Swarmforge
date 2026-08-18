@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Merge layered JSON config files.
-
-Nothing here is specific to one harness: both OpenCode's ``opencode.json`` and
-Claude's ``settings.json`` are layered JSON objects, and the deep merge below
-is the whole of what they share.
-"""
+"""Merge layered JSON config files."""
 
 import json
 import os
@@ -57,10 +52,8 @@ def merge_files(dst_path, src_path, *, replace_mcp_entries=False):
 def read_layer(path, *, err=sys.stderr):
     """The JSON object a layer contributes, or None when it contributes none.
 
-    A layer that ships no such file is not an error -- most layers ship none,
-    and the callers pass a path for every layer whether or not it exists. One
-    that ships a file it cannot contribute is reported and dropped, so a
-    single malformed layer costs its own keys rather than the whole build.
+    Callers pass a path for every layer, so an absent file is the normal case
+    rather than an error. A malformed one costs its own keys, not the build.
     """
     if not os.path.isfile(path):
         return None
@@ -79,15 +72,12 @@ def read_layer(path, *, err=sys.stderr):
 def build_file(dst_path, src_paths, *, err=sys.stderr):
     """Write ``dst_path`` as the merge of ``src_paths``, lowest layer first.
 
-    The destination is an output only: it is never read, so a key it holds
-    that no layer sets is gone after the write. That is what makes the result
-    a function of the layers alone, rather than of every run that came before.
+    The destination is an output only, never an input: a key it holds that no
+    layer sets is gone after the write.
 
-    The write truncates the destination in place. It is a bind-mounted file,
-    and writing a temporary beside it to rename over would fail on the mount.
-    That rules out the usual way to keep a half-written file from being read,
-    so the text is serialised in full before the destination is opened: the
-    window where the path holds partial JSON is one write, not one per key.
+    It is truncated in place rather than renamed over, which would fail on the
+    bind mount the caller puts there. Serialising in full before opening keeps
+    the window where the path holds partial JSON to a single write.
     """
     merged = {}
     for path in src_paths:
@@ -106,9 +96,8 @@ def main(argv, err=sys.stderr):
         if len(argv) < 2:
             print(USAGE, file=err)
             return 2
-        # Every remaining argument is a layer path, and a layer path is never
-        # an option. Without this a misspelled flag reads as a layer that
-        # happens not to exist, and is dropped as quietly as a real one.
+        # A layer path is never an option, and an absent layer is skipped
+        # quietly -- so without this a misspelled flag is dropped silently.
         for argument in argv[2:]:
             if argument.startswith("--"):
                 print("unknown argument %r" % argument, file=err)

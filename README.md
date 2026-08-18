@@ -135,11 +135,11 @@ Note that config layers stack in the opposite order to the assets above: assets 
 
 `settings.json` is the exception to the file-replacement rule above: like `opencode.json`, it is merged **by key**, and it is rebuilt from scratch on every run rather than merged into whatever the last run left behind. Below the three layers sits a fourth the image ships (`anvil/claude-settings.json`), which is where the status line default comes from.
 
-The result lands in a per-container host file under `$(CLAUDE_DATA_DIR)/settings/` that is mounted over `~/.claude/settings.json` — override the path with `CLAUDE_SETTINGS_FILE`. `$(CLAUDE_HOME_DIR)` is one directory shared by every container, so a `settings.json` written there would both outlive the layers that produced it and reach a session already running under a different `SWARMFORGE_ORG_CONFIG_ROOT`. Two consequences worth knowing:
+The result lands in a per-container host file under `$(CLAUDE_DATA_DIR)/settings/` that is mounted over `~/.claude/settings.json` — override the path with `CLAUDE_SETTINGS_FILE`. `$(CLAUDE_HOME_DIR)` is one directory shared by every container, so a `settings.json` written there would both outlive the layers that produced it and reach a session already running under a different `SWARMFORGE_ORG_CONFIG_ROOT`. Three consequences worth knowing:
 
-- A key edited from inside a session (`/config`, the statusline-setup skill) does not survive the next run — the mount is read-write so the edit works, it just is not an input to the rebuild, and the next run overwrites it. Put it in a config layer to keep it.
+- A key edited from inside a session (`/config`, the statusline-setup skill) does not survive. The mount is read-write so the edit works, it is just not an input to the rebuild. Put it in a config layer to keep it.
 - Under `CLAUDE_HOME_DIR=$HOME`, your real `~/.claude/settings.json` is read as the user layer and never written.
-- The host file stays on disk after the container exits, holding whatever the layers merged (including any `env` from an org layer). Nothing reaps it; each run overwrites it before the container starts.
+- The host file stays on disk after the container exits, holding whatever the layers merged — including any `env` from an org layer. Nothing reaps it.
 
 A layer whose `settings.json` is not valid JSON, or not a JSON object, is skipped with a message on stderr; the rest of the layers still apply.
 

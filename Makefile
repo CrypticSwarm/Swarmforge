@@ -19,17 +19,9 @@ DATA_DIR     ?= $(HOME)/.local/share/opencode
 OPENCODE_ARGS ?=
 CLAUDE_DATA_DIR ?= $(HOME)/.local/share/claude
 CLAUDE_HOME_DIR ?= $(CLAUDE_DATA_DIR)/home
-# Claude's settings.json is regenerated from the config layers on every run, so
-# it gets a host file of its own rather than a place in the shared persistent
-# home: one directory serves every container, and a file written there both
-# outlives the layers that produced it and crosses between concurrent sessions.
-#
-# Keyed by container name, which is what docker already treats as a session's
-# identity -- two checkouts sharing a basename share this file, but they also
-# share the container name, and starting one removes the other.
-#
-# The file stays on the host after the container exits, holding whatever the
-# layers merged, and nothing reaps it.
+# Backs the settings.json mount below, one file per container. It stays on the
+# host after the container exits, holding whatever the layers merged, and
+# nothing reaps it -- run_claude overwrites it before each run instead.
 CLAUDE_SETTINGS_FILE ?= $(CLAUDE_DATA_DIR)/settings/$(CLAUDE_CTR).json
 CLAUDE_ARGS ?=
 CLAUDE_REPO_SLUG ?=
@@ -161,12 +153,10 @@ CLAUDE_RUN_ENV = \
 #
 # settings.json is the same idea for a file rather than a directory, so it
 # takes a host file instead of a tmpfs. Read-write, so /config still works
-# inside a session -- the edit is simply not an input to the next run, which
-# rebuilds the file from the config layers and overwrites it.
-#
-# The destination follows SWARMFORGE_CONFIG_DEST because that is where the
-# entrypoint writes the rebuilt file. Naming the path twice would let the two
-# drift, and the container would then read a file nothing ever wrote.
+# inside a session; the edit is just not an input to the next rebuild. The
+# destination follows SWARMFORGE_CONFIG_DEST because that is where the
+# entrypoint writes the rebuilt file -- naming the path twice would let the
+# two drift, leaving the container reading a file nothing ever wrote.
 CLAUDE_RUN_MOUNTS = \
 	-v "$(CLAUDE_HOME_DIR)":/home/opencode \
 	--tmpfs /home/opencode/.claude/skills:exec \

@@ -291,8 +291,8 @@ class BuildCommandLineTests(BuildFileCase):
         self.assertFalse(os.path.exists(self.dst), "destination was written")
 
     def test_a_bare_merge_still_takes_two_paths(self):
-        """The other mode keeps its argv: the entrypoint merges opencode.json
-        one layer at a time through it."""
+        """The other mode keeps its argv: the entrypoint still merges a
+        config file into a destination one layer at a time through it."""
         _write(self.dst, {"model": "opus"})
         src = self.layer("src.json", {"theme": "light"})
 

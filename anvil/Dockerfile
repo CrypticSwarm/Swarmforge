@@ -139,10 +139,9 @@ FROM agent-runtime AS opencode-runtime
 FROM agent-runtime AS claude-runtime
 
 # The status line and the settings that turn it on ship only in this image:
-# no other harness reads Claude's settings.json. The defaults are an ordinary
-# config layer, the lowest one -- so a layer that sets statusLine wins, and a
-# session that sets none gets this. They name a path only the image has, which
-# is why they are baked in here rather than shipped from the checkout.
+# no other harness reads Claude's settings.json. The defaults are the lowest
+# config layer, and they are baked in here rather than shipped from the
+# checkout because they name a path only the image has.
 COPY anvil/statusline.sh /usr/local/bin/swarmforge-statusline
 COPY anvil/claude-settings.json /usr/local/share/swarmforge/claude-settings.json
 RUN chmod +x /usr/local/bin/swarmforge-statusline

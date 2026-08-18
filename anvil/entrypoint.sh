@@ -194,10 +194,9 @@ merge_config_layer() {
   # is the harness's own native discovery, so native agents/ in user/org
   # layers still merge through.
   #
-  # settings.json is excluded for Claude for the same reason opencode.json is
-  # excluded everywhere: it is merged by key rather than replaced by file.
-  # Left in, the highest layer that ships one would write straight over the
-  # merged result and take every lower layer's keys with it.
+  # settings.json is excluded for Claude for the reason opencode.json is
+  # excluded everywhere: it is merged by key, so a whole-file copy of the
+  # top layer's would drop every lower layer's keys.
   exclude_args="--exclude=./opencode.json --exclude=./.swarmforge"
   case "${AGENT_BIN:-}" in
     claude)
@@ -240,23 +239,12 @@ merge_opencode_json() {
   fi
 }
 
-# Generate Claude's settings.json from the config layers, lowest first: the
-# image's own defaults, then the same repo -> user -> org stack as the rest of
-# the config. Every layer path is passed whether or not it exists; a layer
-# that ships no settings.json contributes nothing.
-#
-# Generated, not merged into. Claude's config destination is the persistent
-# home, and that directory is shared by every container for this user -- so a
-# settings.json merged in place carries an org layer's permissions, hooks, and
-# env forward into later runs that no longer mount that layer, and a container
-# started under a second org rewrites the file while the first container is
-# still reading it. Building the file from the layers alone closes the first;
-# the host mounting a per-container file over this path closes the second.
-#
-# The tar overlay would undo both, so settings.json is excluded from it above.
-#
-# Claude only: no other harness reads this file, and the image defaults ship
-# in the Claude image alone.
+# Derived from the layers on every run; the destination is never read. It sits
+# in the persistent home, one directory shared by every container for this
+# user, so merging in place would carry an org layer's permissions, hooks, and
+# env into later runs that do not mount that layer. The host mounts a
+# per-container file over the path to stop one rebuild reaching another's
+# session.
 build_claude_settings() {
   settings_dst="${1}"
   settings_repo_src="${2:-}"
@@ -267,12 +255,10 @@ build_claude_settings() {
 
   image_defaults="/usr/local/share/swarmforge/claude-settings.json"
 
-  # A failed build leaves whatever the destination already held, and that is
-  # the one outcome this must not have: the host file is keyed by container
-  # name and survives the container, so the content left behind is the last
-  # session's -- possibly merged under an org layer this run does not mount.
-  # An empty object is the safe reading of "no layer could be applied": the
-  # harness falls back to its own defaults instead of another run's policy.
+  # The destination survives the container, so a failed build would leave the
+  # last session's settings in place -- possibly merged under an org layer
+  # this run does not mount. An empty object is the safe reading of "no layer
+  # could be applied".
   if ! PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_json \
     --build "${settings_dst}" \
     "${image_defaults}" \
@@ -300,15 +286,11 @@ prepare_layered_config() {
 
   # Merge order (lowest to highest precedence): repo -> user -> org.
   #
-  # Config is ordered by trust, not by specificity, because these files carry
-  # permissions, hooks, and env. A checkout is the least trusted of the three
-  # -- it is whatever repo you cloned -- and it ships toolchain defaults a
-  # person should be able to override from their own config, so it goes at
-  # the bottom. The org layer is installed deliberately and sits on top.
-  #
-  # This is the opposite of the order the asset pipelines use for skills,
-  # commands, and agents, where a repo's own definitions are the most
-  # specific thing available and rightly win.
+  # Ordered by trust, not by specificity, because these files carry
+  # permissions, hooks, and env: a checkout is whatever repo you cloned, and
+  # the org layer is installed deliberately. That inverts the order the asset
+  # pipelines use for skills, commands, and agents, where a repo's own
+  # definitions are the most specific thing available and rightly win.
   merge_config_layer "${repo_config_src}" "${config_dst}"
   merge_opencode_json "${repo_config_src}/opencode.json" "${config_dst}/opencode.json"
   merge_config_layer "${user_config_src}" "${config_dst}"

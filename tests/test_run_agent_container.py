@@ -188,12 +188,9 @@ class GitDirMounts(MakeRecipeCase):
 class ClaudeSettingsMount(MakeRecipeCase):
     """Claude's settings.json belongs to the container, not to the home.
 
-    `CLAUDE_HOME_DIR` is one directory shared by every container this user
-    starts, and the entrypoint rebuilds settings.json from the config layers
-    on every run. Written into the shared home, that rebuild would reach a
-    session already running under a different org's layer. The recipe mounts
-    a per-container host file over the path so the write cannot leave the
-    container it belongs to.
+    The entrypoint rebuilds it from the config layers every run, and
+    `CLAUDE_HOME_DIR` is one directory every container shares -- so the
+    recipe mounts a per-container host file over the path.
     """
 
     DEST = "/home/opencode/.claude/settings.json"
@@ -211,10 +208,8 @@ class ClaudeSettingsMount(MakeRecipeCase):
     def test_the_mount_lands_where_the_entrypoint_writes(self):
         """The recipe names the path twice and they have to agree.
 
-        The entrypoint builds settings.json under SWARMFORGE_CONFIG_DEST,
-        which the same recipe exports. A mount pointed anywhere else is not
-        an error anyone sees -- the container simply reads a file nothing
-        ever wrote, and comes up with none of its layers applied.
+        Pointed anywhere else, the container reads a file nothing ever wrote
+        and comes up with none of its layers -- with nothing reporting it.
         """
         spec, argv = self.settings_mount_and_argv(self.make_repo())
         config_dest = next(
@@ -226,10 +221,8 @@ class ClaudeSettingsMount(MakeRecipeCase):
     def test_the_file_handed_to_docker_is_valid_json(self):
         """An empty file is not.
 
-        Every path that skips the rebuild -- an entrypoint that never runs as
-        root, a build that fails -- leaves the container reading exactly what
-        the recipe put here. Absent would be fine; Claude treats it as no
-        settings. Present and unparseable is the one state to avoid.
+        Any path that skips the rebuild leaves the container reading what the
+        recipe put here. Absent is fine; present and unparseable is not.
         """
         source = self.settings_mount(self.make_repo()).split(":")[0]
         with open(source) as handle:
@@ -238,9 +231,8 @@ class ClaudeSettingsMount(MakeRecipeCase):
     def test_a_previous_runs_settings_do_not_reach_the_next_container(self):
         """The host file outlives the container it was built for.
 
-        It is keyed by container name and nothing reaps it, so a second run
-        would otherwise start on the first's merged result -- including an
-        org layer's permissions and env that this run does not mount.
+        Nothing reaps it, so a second run would otherwise start on the
+        first's merged result, org layer and all.
         """
         repo = self.make_repo()
         source = self.settings_mount(repo).split(":")[0]
