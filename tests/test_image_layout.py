@@ -225,11 +225,11 @@ class ConfigLayerOrder(unittest.TestCase):
     def test_config_dirs_stack_lowest_trust_first(self):
         self.assertEqual(self.merged_layers("merge_config_layer"), list(self.LAYERS))
 
-    def test_opencode_json_stacks_in_the_same_order_as_the_dirs(self):
+    def test_the_key_wise_file_merge_stacks_in_the_same_order(self):
         """The key-wise merge and the file overlay travel through separate
         calls, so one file can end up obeying a precedence the rest do not."""
         self.assertEqual(
-            self.merged_layers("merge_opencode_json"), list(self.LAYERS))
+            self.merged_layers("merge_config_file"), list(self.LAYERS))
 
     def test_the_generated_tong_servers_merge_after_every_layer(self):
         """The fragment describes containers this run started, so a layer
