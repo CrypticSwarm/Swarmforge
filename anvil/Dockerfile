@@ -95,11 +95,11 @@ WORKDIR /workspace
 # runs on the python side lives in that package and is invoked with `python3
 # -m`, so /usr/local/lib/swarmforge is the import root and the package lands
 # one level below it.
-COPY anvil/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
+COPY anvil/entrypoint.sh /usr/local/bin/anvil-entrypoint.sh
 COPY swarmforge/ /usr/local/lib/swarmforge/swarmforge/
-RUN chmod +x /usr/local/bin/opencode-entrypoint.sh
+RUN chmod +x /usr/local/bin/anvil-entrypoint.sh
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/opencode-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/anvil-entrypoint.sh"]
 
 FROM runtime-base AS agent-runtime
 

@@ -22,7 +22,7 @@ from swarmforge import tongs
 ANVIL_ARGV = [
     "docker", "run", "-it", "--rm", "--name", "claude-myproject",
     "--network", "opencode-net",
-    "-e", "OPENCODE_UID=1000",
+    "-e", "SWARMFORGE_UID=1000",
     "-e", "TZ=Etc/UTC",
     "-v", "/home/me/proj:/workspace",
     # A path with a space exercises that a single argv word is forwarded whole,

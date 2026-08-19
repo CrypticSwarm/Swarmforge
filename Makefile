@@ -55,6 +55,8 @@ PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
 # it is a variable so the workspace mount and the git-dir guard that overlays
 # paths inside it cannot drift apart.
 WORKSPACE_MOUNT := /workspace
+# The entrypoint hardcodes this same path, so no overrides.
+ANVIL_HOME := /home/anvil
 OPENCODE_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode
 SHARED_SKILLS_DIR ?= $(SWARMFORGE_DIR)/skills
 SHARED_COMMAND_DIR ?= $(SWARMFORGE_DIR)/commands
@@ -104,8 +106,8 @@ SWARMFORGE_LAYER_MOUNTS = \
 	$(if $(and $(strip $(SWARMFORGE_REPO_AGENTS_DIR)),$(wildcard $(SWARMFORGE_REPO_AGENTS_DIR))),-v "$(SWARMFORGE_REPO_AGENTS_DIR)":/tmp/swarmforge-assets/repo/agents:ro,) \
 	$(if $(and $(strip $(SWARMFORGE_USER_DOTAGENTS_DIR)),$(wildcard $(SWARMFORGE_USER_DOTAGENTS_DIR))),-v "$(SWARMFORGE_USER_DOTAGENTS_DIR)":/tmp/swarmforge-dotagents/user:ro,) \
 	$(if $(and $(strip $(SWARMFORGE_ORG_DOTAGENTS_DIR)),$(wildcard $(SWARMFORGE_ORG_DOTAGENTS_DIR))),-v "$(SWARMFORGE_ORG_DOTAGENTS_DIR)":/tmp/swarmforge-dotagents/org:ro,) \
-	-v "$(SHARED_SKILLS_DIR)":/home/opencode/.swarmforge/skills:ro \
-	-v "$(SHARED_COMMAND_DIR)":/home/opencode/.swarmforge/command:ro
+	-v "$(SHARED_SKILLS_DIR)":$(ANVIL_HOME)/.swarmforge/skills:ro \
+	-v "$(SHARED_COMMAND_DIR)":$(ANVIL_HOME)/.swarmforge/command:ro
 
 SWARMFORGE_LAYER_ENV = \
 	-e SWARMFORGE_CONFIG_USER_DIR=/tmp/swarmforge-config/user \
@@ -118,8 +120,8 @@ SWARMFORGE_LAYER_ENV = \
 	-e SWARMFORGE_DOTAGENTS_ORG_DIR=/tmp/swarmforge-dotagents/org \
 	-e SWARMFORGE_CONFIG_DEST=$(SWARMFORGE_CONFIG_DEST) \
 	-e SWARMFORGE_CONFIG_RESET=$(SWARMFORGE_CONFIG_RESET) \
-	-e SWARMFORGE_SKILLS_DIR=/home/opencode/.swarmforge/skills \
-	-e SWARMFORGE_COMMAND_DIR=/home/opencode/.swarmforge/command
+	-e SWARMFORGE_SKILLS_DIR=$(ANVIL_HOME)/.swarmforge/skills \
+	-e SWARMFORGE_COMMAND_DIR=$(ANVIL_HOME)/.swarmforge/command
 
 # Host directories for the tong definition layers, passed to the launcher only
 # when present (same wildcard guard as the asset mounts above). The launcher
@@ -132,7 +134,7 @@ TONGS_LAYER_ARGS = \
 
 OPENCODE_RUN_MOUNTS = \
 	$(SWARMFORGE_LAYER_MOUNTS) \
-	-v "$(DATA_DIR)":/home/opencode/.local/share/opencode
+	-v "$(DATA_DIR)":$(ANVIL_HOME)/.local/share/opencode
 
 OPENCODE_RUN_ENV = \
 	$(SWARMFORGE_LAYER_ENV)
@@ -147,10 +149,10 @@ CLAUDE_RUN_ENV = \
 # CLAUDE_HOME_DIR or leak into other repos' sessions. skills mounts with exec
 # because skill packages may ship executable scripts.
 CLAUDE_RUN_MOUNTS = \
-	-v "$(CLAUDE_HOME_DIR)":/home/opencode \
-	--tmpfs /home/opencode/.claude/skills:exec \
-	--tmpfs /home/opencode/.claude/commands \
-	--tmpfs /home/opencode/.claude/agents \
+	-v "$(CLAUDE_HOME_DIR)":$(ANVIL_HOME) \
+	--tmpfs $(ANVIL_HOME)/.claude/skills:exec \
+	--tmpfs $(ANVIL_HOME)/.claude/commands \
+	--tmpfs $(ANVIL_HOME)/.claude/agents \
 	$(SWARMFORGE_LAYER_MOUNTS)
 
 .PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
@@ -168,7 +170,7 @@ define run_agent_container
 	@set -euo pipefail; \
 	workspace_dir="$$(git -C "$(PROJECT_DIR)" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$(PROJECT_DIR)")"; \
 	if [ -f "$(GITCONFIG_FILE)" ]; then \
-		gitconfig_mount=(-v "$(GITCONFIG_FILE)":/home/opencode/.gitconfig:ro); \
+		gitconfig_mount=(-v "$(GITCONFIG_FILE)":$(ANVIL_HOME)/.gitconfig:ro); \
 	else \
 		gitconfig_mount=(); \
 	fi; \
@@ -236,8 +238,8 @@ define run_agent_container
 	  -- \
 	  docker run -it --rm --name "$(1)" \
 	  --network "$(NETWORK)" \
-	  -e OPENCODE_UID="$(UID)" \
-	  -e OPENCODE_GID="$(GID)" \
+	  -e SWARMFORGE_UID="$(UID)" \
+	  -e SWARMFORGE_GID="$(GID)" \
 	  -e TZ="$(TIMEZONE)" \
 	  $(2) \
 	  -v "$$workspace_dir":"$(WORKSPACE_MOUNT)" \
@@ -290,7 +292,7 @@ update_claude:
 run_opencode: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.config/opencode
 run_opencode: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode,)
 run_opencode: SWARMFORGE_REPO_CONFIG_DIR ?= $(OPENCODE_CONFIG_DIR)
-run_opencode: SWARMFORGE_CONFIG_DEST ?= /home/opencode/.config/opencode
+run_opencode: SWARMFORGE_CONFIG_DEST ?= $(ANVIL_HOME)/.config/opencode
 run_opencode: SWARMFORGE_CONFIG_RESET ?= 1
 run_opencode: opencode_network
 	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
@@ -304,7 +306,7 @@ stop_opencode:
 run_claude: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.claude
 run_claude: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude,)
 run_claude: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/claude
-run_claude: SWARMFORGE_CONFIG_DEST ?= /home/opencode/.claude
+run_claude: SWARMFORGE_CONFIG_DEST ?= $(ANVIL_HOME)/.claude
 run_claude: SWARMFORGE_CONFIG_RESET ?= 0
 run_claude: opencode_network
 	@mkdir -p "$(CLAUDE_HOME_DIR)"
@@ -389,9 +391,9 @@ test-skills: opencode_network
 	@mkdir -p "$(TEST_DATA_DIR)"
 	docker run --rm \
 	  --network $(NETWORK) \
-	  -e HOME=/home/opencode \
+	  -e HOME=$(ANVIL_HOME) \
 	  -v "$(PROJECT_DIR)":/workspace \
-	  -v "$(TEST_DATA_DIR)":/home/opencode/.local/share/opencode \
+	  -v "$(TEST_DATA_DIR)":$(ANVIL_HOME)/.local/share/opencode \
 	  --entrypoint python \
 	  $(OPENCODE_IMG) /workspace/scripts/skill_eval.py \
 	    --model "$(MODEL)" \
