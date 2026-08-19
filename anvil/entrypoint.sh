@@ -3,8 +3,8 @@ set -eu
 
 # Entrypoint: create a user matching host UID/GID at runtime, then drop privileges.
 
-ANVIL_UID="${SWARMFORGE_UID:-${OPENCODE_UID:-1000}}"
-ANVIL_GID="${SWARMFORGE_GID:-${OPENCODE_GID:-1000}}"
+ANVIL_UID="${SWARMFORGE_UID:-1000}"
+ANVIL_GID="${SWARMFORGE_GID:-1000}"
 ANVIL_USER="anvil"
 ANVIL_GROUP="anvil"
 ANVIL_HOME="/home/${ANVIL_USER}"
