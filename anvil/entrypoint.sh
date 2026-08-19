@@ -11,6 +11,13 @@ ANVIL_HOME="/home/${ANVIL_USER}"
 AGENT_BIN="${SWARMFORGE_AGENT_BIN:-opencode}"
 AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
+CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
+
+# State only: nothing claude loads as configuration or code belongs here.
+CLAUDE_STATE_DIRS="projects sessions file-history session-env shell-snapshots
+plans tasks todos backups cache paste-cache plugins"
+CLAUDE_STATE_FILES="history.jsonl stats-cache.json keybindings.json
+.credentials.json .last-cleanup .last-update-result.json scheduled_tasks.lock"
 
 configure_timezone() {
   timezone="${TZ:-}"
@@ -53,6 +60,35 @@ copy_dir_entries() {
   done
 }
 
+# Only the allowlisted state outlives the run: claude loads configuration and
+# code out of this dir, and a shared one would hand a session's writes to the
+# next container. Symlinks rather than bind mounts survive the atomic rename
+# some entries are written with; a directory must exist before it is linked,
+# or claude's own mkdir fails on the link. Runs after the config merge, which
+# wipes this destination under SWARMFORGE_CONFIG_RESET.
+link_claude_state() {
+  shared="${ANVIL_HOME}/.claude"
+
+  mkdir -p "${CLAUDE_CONFIG_HOME}"
+
+  # The one piece of state claude keeps beside its config dir, not inside it.
+  link_claude_entry "${ANVIL_HOME}/.claude.json" ".claude.json"
+
+  for entry in ${CLAUDE_STATE_DIRS}; do
+    mkdir -p "${shared}/${entry}" 2>/dev/null || true
+    link_claude_entry "${shared}/${entry}" "${entry}"
+  done
+
+  for entry in ${CLAUDE_STATE_FILES}; do
+    link_claude_entry "${shared}/${entry}" "${entry}"
+  done
+}
+
+link_claude_entry() {
+  rm -rf "${CLAUDE_CONFIG_HOME}/${2}"
+  ln -s "${1}" "${CLAUDE_CONFIG_HOME}/${2}"
+}
+
 # Populate the harness's native skills and commands locations from the
 # shared Swarmforge assets (skills and commands are portable across
 # harnesses, so copying is the whole translation).
@@ -72,16 +108,15 @@ copy_dir_entries() {
 # never consumed for skills/commands; those formats are portable and live under
 # the .agents convention instead.
 #
-# For Claude the destinations are container-private tmpfs mounts masking the
-# shared persistent home, so each container starts empty and sees only the
-# layers for this run; nothing persists across runs or leaks between repos.
+# Claude's destinations live in the container-local config dir: each run
+# starts empty, and per-repo assets never leak between repos.
 copy_shared_assets() {
   workspace_dir="${1:-/workspace}"
 
   case "${AGENT_BIN}" in
     claude)
-      skills_dst="${ANVIL_HOME}/.claude/skills"
-      commands_dst="${ANVIL_HOME}/.claude/commands"
+      skills_dst="${CLAUDE_CONFIG_HOME}/skills"
+      commands_dst="${CLAUDE_CONFIG_HOME}/commands"
       ;;
     opencode)
       config_dest="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}"
@@ -137,7 +172,7 @@ prepare_unified_agents() {
 
   case "${AGENT_BIN}" in
     claude)
-      agents_dst="${ANVIL_HOME}/.claude/agents"
+      agents_dst="${CLAUDE_CONFIG_HOME}/agents"
       ;;
     opencode)
       agents_dst="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}/agents"
@@ -187,13 +222,9 @@ merge_config_layer() {
   # package, never file-merges into it). The tar merge would instead union
   # layers file-by-file.
   #
-  # agents/ is additionally excluded for Claude only: there the destination
-  # is a container-private tmpfs mask over the shared persistent home,
-  # populated solely by prepare_unified_agents, and excluding it keeps
-  # host-side strays (for example user-layer agents accumulated by older
-  # entrypoint logic) from reappearing. For OpenCode the merged config dir
-  # is the harness's own native discovery, so native agents/ in user/org
-  # layers still merge through.
+  # agents/ is excluded for Claude only -- prepare_unified_agents is its
+  # sole source. OpenCode's merged config dir is native discovery, so layer
+  # agents/ still merge through.
   #
   # settings.json is excluded for Claude for the same reason opencode.json
   # is excluded everywhere: it merges by key, through build_claude_settings.
@@ -313,6 +344,11 @@ prepare_layered_config() {
 
 prepare_agent_config() {
   config_dest="${SWARMFORGE_CONFIG_DEST:-}"
+
+  # Not the caller's to choose: a merged layer landing in the shared home
+  # would outlive the container.
+  [ "${AGENT_BIN}" != "claude" ] || config_dest="${CLAUDE_CONFIG_HOME}"
+
   [ -n "${config_dest}" ] || return 0
 
   prepare_layered_config \
@@ -353,7 +389,12 @@ prepare_agent_config
 prepare_unified_agents
 copy_shared_assets
 
+if [ "${AGENT_BIN}" = "claude" ]; then
+  link_claude_state
+fi
+
 chown -R "${ANVIL_UID}:${ANVIL_GID}" "${ANVIL_HOME}" 2>/dev/null || true
+chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CLAUDE_CONFIG_HOME}" 2>/dev/null || true
 chown -R "${ANVIL_UID}:${ANVIL_GID}" /workspace 2>/dev/null || true
 
 if [ "${AGENT_BIN}" = "claude" ]; then
@@ -410,12 +451,15 @@ WRAPPER_EOF
   install_git_worktree_wrapper
 fi
 
-# Command-line settings outrank every settings file, so the org layer beats
-# even the checkout's own .claude/settings.json; dropping user keeps claude
-# off the shared home's settings.json, which nothing rebuilds. The file is
-# only there when config layering built it -- without it claude runs bare.
+# Command-line settings outrank every file, so the org layer beats even the
+# checkout's own .claude/settings.json. `user` stays in the sources: that
+# scope carries skills, commands, and agents discovery.
 if [ "${AGENT_BIN}" = "claude" ] && [ -f "${CLAUDE_SETTINGS_FILE}" ]; then
-  set -- --settings "${CLAUDE_SETTINGS_FILE}" --setting-sources project,local "$@"
+  set -- --settings "${CLAUDE_SETTINGS_FILE}" --setting-sources user,project,local "$@"
+fi
+
+if [ "${AGENT_BIN}" = "claude" ]; then
+  export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_HOME}"
 fi
 
 export HOME="${ANVIL_HOME}"

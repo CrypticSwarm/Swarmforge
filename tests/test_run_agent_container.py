@@ -211,6 +211,29 @@ class WorktreeGitDirMounts(MakeRecipeCase):
         self.assertNotIn("%s/.git:/workspace/.git" % self.worktree, mounts)
 
 
+class ClaudeSharedHomeMounts(MakeRecipeCase):
+    """Nothing under the shared .claude is mounted except plugins/, read-only:
+    a session must not rewrite what the next container executes."""
+
+    def shared(self, *parts):
+        return os.path.join(
+            self.home, ".local", "share", "claude", "home", ".claude", *parts)
+
+    def test_plugins_are_bound_read_only(self):
+        mounts = self.mounts(self.docker_argv("run_claude", self.make_repo()))
+        self.assertIn(
+            "%s:/home/anvil/.claude/plugins:ro" % self.shared("plugins"),
+            mounts)
+
+    def test_nothing_else_under_the_shared_claude_dir_reaches_the_container(self):
+        argv = self.docker_argv("run_claude", self.make_repo())
+        targets = [m.split(":")[1] for m in self.mounts(argv)]
+        self.assertEqual(
+            [t for t in targets if t.startswith("/home/anvil/.claude")],
+            ["/home/anvil/.claude/plugins"])
+        self.assertNotIn("--tmpfs", argv)
+
+
 if __name__ == "__main__":
     if shutil.which("make") is None or shutil.which("git") is None:
         sys.stderr.write("make and git are required for these tests\n")

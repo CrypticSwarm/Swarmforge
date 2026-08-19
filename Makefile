@@ -143,16 +143,12 @@ CLAUDE_RUN_ENV = \
 	-e SWARMFORGE_AGENT_BIN=claude \
 	$(SWARMFORGE_LAYER_ENV)
 
-# skills/, commands/, and agents/ under ~/.claude are container-private tmpfs
-# masks over the shared persistent home. The entrypoint repopulates them from
-# this repo's sources on every run, so per-repo assets never accumulate in
-# CLAUDE_HOME_DIR or leak into other repos' sessions. skills mounts with exec
-# because skill packages may ship executable scripts.
+# Claude's config dir is container-local (see the entrypoint), so nothing
+# under .claude here is loaded as config. plugins/ remounts read-only: a
+# session must not rewrite what the next container executes.
 CLAUDE_RUN_MOUNTS = \
 	-v "$(CLAUDE_HOME_DIR)":$(ANVIL_HOME) \
-	--tmpfs $(ANVIL_HOME)/.claude/skills:exec \
-	--tmpfs $(ANVIL_HOME)/.claude/commands \
-	--tmpfs $(ANVIL_HOME)/.claude/agents \
+	-v "$(CLAUDE_HOME_DIR)/.claude/plugins":$(ANVIL_HOME)/.claude/plugins:ro \
 	$(SWARMFORGE_LAYER_MOUNTS)
 
 .PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
@@ -306,7 +302,6 @@ stop_opencode:
 run_claude: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.claude
 run_claude: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude,)
 run_claude: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/claude
-run_claude: SWARMFORGE_CONFIG_DEST ?= $(ANVIL_HOME)/.claude
 run_claude: SWARMFORGE_CONFIG_RESET ?= 0
 run_claude: opencode_network
 	@mkdir -p "$(CLAUDE_HOME_DIR)"
@@ -314,9 +309,7 @@ run_claude: opencode_network
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/skills"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/command"
-	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/skills"
-	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/commands"
-	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/agents"
+	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/plugins"
 	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS),repo-slug,claude)
 
 stop_claude:

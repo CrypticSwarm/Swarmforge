@@ -276,10 +276,8 @@ class ConfigLayerOrder(unittest.TestCase):
 class ClaudeSettingsDelivery(unittest.TestCase):
     """The built settings reach claude as arguments, not as a file in the home.
 
-    The build writes one path and the exec names one path, tied together only
-    by a shell variable; and the argv must drop `user` from the setting
-    sources, or claude reads the shared home's settings.json underneath --
-    the exact file the command-line delivery exists to retire.
+    The build and the exec share a path only through a shell variable; `user`
+    stays in the sources because that scope carries asset discovery.
     """
 
     def setUp(self):
@@ -317,13 +315,13 @@ class ClaudeSettingsDelivery(unittest.TestCase):
             self.entrypoint)
         self.assertIn('--settings "${CLAUDE_SETTINGS_FILE}"', self.injection())
 
-    def test_the_setting_sources_drop_user_and_nothing_else(self):
-        """Without the sources flag claude reads the shared home's file;
-        dropping more than `user` would turn off the workspace's own
-        .claude settings, which load natively today."""
+    def test_the_setting_sources_name_every_scope(self):
+        """`user` carries claude's skills, commands, and agents discovery;
+        project and local carry the workspace's own .claude settings."""
         match = re.search(r"--setting-sources (\S+)", self.injection())
         self.assertIsNotNone(match, "claude is not told which sources to load")
-        self.assertEqual(match.group(1).split(","), ["project", "local"])
+        self.assertEqual(
+            match.group(1).split(","), ["user", "project", "local"])
 
     def test_only_claude_is_handed_the_flags(self):
         """The same exec starts every harness, and the flags are claude's."""
@@ -333,6 +331,66 @@ class ClaudeSettingsDelivery(unittest.TestCase):
             '[ "${AGENT_BIN}" = "claude" ]',
             self.entrypoint[guard:at],
         )
+
+
+class ClaudeConfigHome(unittest.TestCase):
+    """Claude's config dir dies with the container; state is linked back in.
+
+    Only the state allowlist survives, so a path claude learns to load in a
+    later release stays inert until listed.
+    """
+
+    LOADED = ("settings.json", "CLAUDE.md", "rules", "workflows",
+              "output-styles", "routines", "skills", "commands", "agents")
+
+    def setUp(self):
+        with open(ENTRYPOINT) as handle:
+            self.entrypoint = handle.read()
+
+    def literal(self, name):
+        """The value of a top-level `name="..."` assignment."""
+        match = re.search(
+            r'^%s="([^"]*)"$' % name, self.entrypoint, re.M | re.S)
+        self.assertIsNotNone(match, "entrypoint defines no literal %s" % name)
+        return match.group(1)
+
+    def test_the_config_home_is_outside_every_host_mount(self):
+        """/home/anvil is the shared persistent home and /workspace is the
+        checkout; a config dir in either outlives the container."""
+        path = self.literal("CLAUDE_CONFIG_HOME")
+        for mounted in ("/home/", "/workspace"):
+            self.assertFalse(
+                path.startswith(mounted),
+                "claude config dir lands in a host mount: %s" % path)
+
+    def test_the_state_allowlist_carries_nothing_claude_loads(self):
+        listed = (self.literal("CLAUDE_STATE_DIRS").split()
+                  + self.literal("CLAUDE_STATE_FILES").split())
+        for name in self.LOADED:
+            self.assertNotIn(name, listed)
+
+    def test_the_asset_pipeline_installs_into_the_config_home(self):
+        """The destinations and the config dir are one guarantee: assets in
+        the shared home would be read from nowhere and kept forever."""
+        dests = re.findall(
+            r'_dst="\$\{(\w+)\}/(skills|commands|agents)"', self.entrypoint)
+        self.assertEqual(
+            sorted(name for home, name in dests
+                   if home == "CLAUDE_CONFIG_HOME"),
+            ["agents", "commands", "skills"])
+
+    def test_claude_is_told_where_its_config_lives(self):
+        self.assertIn(
+            'export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_HOME}"', self.entrypoint)
+
+    def test_state_is_linked_after_the_config_home_is_built(self):
+        """The merge wipes its destination under SWARMFORGE_CONFIG_RESET; a
+        link removed there costs the run its history and credentials."""
+        call = self.entrypoint.rindex("link_claude_state")
+        for earlier in ("prepare_agent_config", "prepare_unified_agents",
+                        "copy_shared_assets"):
+            self.assertLess(
+                self.entrypoint.rindex("\n%s\n" % earlier), call)
 
 
 class StatusLineAgreement(unittest.TestCase):
