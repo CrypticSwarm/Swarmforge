@@ -19,10 +19,6 @@ DATA_DIR     ?= $(HOME)/.local/share/opencode
 OPENCODE_ARGS ?=
 CLAUDE_DATA_DIR ?= $(HOME)/.local/share/claude
 CLAUDE_HOME_DIR ?= $(CLAUDE_DATA_DIR)/home
-# Backs the settings.json mount below, one file per container. It stays on the
-# host after the container exits, holding whatever the layers merged, and
-# nothing reaps it -- run_claude overwrites it before each run instead.
-CLAUDE_SETTINGS_FILE ?= $(CLAUDE_DATA_DIR)/settings/$(CLAUDE_CTR).json
 CLAUDE_ARGS ?=
 CLAUDE_REPO_SLUG ?=
 CLAUDE_REMOTE_NAME ?= origin
@@ -150,19 +146,11 @@ CLAUDE_RUN_ENV = \
 # this repo's sources on every run, so per-repo assets never accumulate in
 # CLAUDE_HOME_DIR or leak into other repos' sessions. skills mounts with exec
 # because skill packages may ship executable scripts.
-#
-# settings.json is the same idea for a file rather than a directory, so it
-# takes a host file instead of a tmpfs. Read-write, so /config still works
-# inside a session; the edit is just not an input to the next rebuild. The
-# destination follows SWARMFORGE_CONFIG_DEST because that is where the
-# entrypoint writes the rebuilt file -- naming the path twice would let the
-# two drift, leaving the container reading a file nothing ever wrote.
 CLAUDE_RUN_MOUNTS = \
 	-v "$(CLAUDE_HOME_DIR)":/home/opencode \
 	--tmpfs /home/opencode/.claude/skills:exec \
 	--tmpfs /home/opencode/.claude/commands \
 	--tmpfs /home/opencode/.claude/agents \
-	-v "$(CLAUDE_SETTINGS_FILE)":"$(SWARMFORGE_CONFIG_DEST)/settings.json" \
 	$(SWARMFORGE_LAYER_MOUNTS)
 
 .PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
@@ -327,8 +315,6 @@ run_claude: opencode_network
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/skills"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/commands"
 	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/agents"
-	@mkdir -p "$$(dirname "$(CLAUDE_SETTINGS_FILE)")"
-	@printf '%s\n' '{}' >"$(CLAUDE_SETTINGS_FILE)"
 	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS),repo-slug,claude)
 
 stop_claude:

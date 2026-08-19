@@ -74,10 +74,6 @@ def build_file(dst_path, src_paths, *, err=sys.stderr):
 
     The destination is an output only, never an input: a key it holds that no
     layer sets is gone after the write.
-
-    It is truncated in place rather than renamed over, which would fail on the
-    bind mount the caller puts there. Serialising in full before opening keeps
-    the window where the path holds partial JSON to a single write.
     """
     merged = {}
     for path in src_paths:

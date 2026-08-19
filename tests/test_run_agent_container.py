@@ -9,7 +9,6 @@ that records the argv the recipe hands the launcher. Nothing is started; the
 assertions are about which `-v` flags the recipe builds.
 """
 
-import json
 import os
 import shutil
 import subprocess
@@ -183,114 +182,6 @@ class GitDirMounts(MakeRecipeCase):
         mounts = self.mounts(self.docker_argv("run_opencode", plain))
         self.assertIn("%s:/workspace" % plain, mounts)
         self.assertEqual([m for m in mounts if "/.git" in m], [])
-
-
-class ClaudeSettingsMount(MakeRecipeCase):
-    """Claude's settings.json belongs to the container, not to the home.
-
-    The entrypoint rebuilds it from the config layers every run, and
-    `CLAUDE_HOME_DIR` is one directory every container shares -- so the
-    recipe mounts a per-container host file over the path.
-    """
-
-    DEST = "/home/opencode/.claude/settings.json"
-
-    def settings_mount(self, project_dir):
-        """The one `-v` spec whose destination is Claude's settings.json."""
-        return self.settings_mount_and_argv(project_dir)[0]
-
-    def settings_mount_and_argv(self, project_dir):
-        argv = self.docker_argv("run_claude", project_dir)
-        found = [m for m in self.mounts(argv) if m.split(":")[1] == self.DEST]
-        self.assertEqual(len(found), 1, "settings mounts: %r" % found)
-        return found[0], argv
-
-    def test_the_mount_lands_where_the_entrypoint_writes(self):
-        """The recipe names the path twice and they have to agree.
-
-        Pointed anywhere else, the container reads a file nothing ever wrote
-        and comes up with none of its layers -- with nothing reporting it.
-        """
-        spec, argv = self.settings_mount_and_argv(self.make_repo())
-        config_dest = next(
-            word.split("=", 1)[1] for i, word in enumerate(argv)
-            if word.startswith("SWARMFORGE_CONFIG_DEST=") and argv[i - 1] == "-e"
-        )
-        self.assertEqual(spec.split(":")[1], config_dest + "/settings.json")
-
-    def test_the_file_handed_to_docker_is_valid_json(self):
-        """An empty file is not.
-
-        Any path that skips the rebuild leaves the container reading what the
-        recipe put here. Absent is fine; present and unparseable is not.
-        """
-        source = self.settings_mount(self.make_repo()).split(":")[0]
-        with open(source) as handle:
-            self.assertEqual(json.load(handle), {})
-
-    def test_a_previous_runs_settings_do_not_reach_the_next_container(self):
-        """The host file outlives the container it was built for.
-
-        Nothing reaps it, so a second run would otherwise start on the
-        first's merged result, org layer and all.
-        """
-        repo = self.make_repo()
-        source = self.settings_mount(repo).split(":")[0]
-        with open(source, "w") as handle:
-            handle.write('{"env": {"LEAKED": "from the last run"}}')
-
-        self.settings_mount(repo)
-
-        with open(source) as handle:
-            self.assertEqual(json.load(handle), {})
-
-    def test_settings_file_is_mounted_over_the_persistent_home(self):
-        spec = self.settings_mount(self.make_repo())
-        source = spec.split(":")[0]
-        self.assertTrue(
-            source.startswith(os.path.join(self.home, ".local", "share", "claude")),
-            "settings file is not under CLAUDE_DATA_DIR: %s" % source,
-        )
-        self.assertNotIn(
-            os.path.join("share", "claude", "home"), source,
-            "settings file is inside the shared persistent home: %s" % source,
-        )
-
-    def test_the_recipe_creates_the_file_before_docker_is_handed_it(self):
-        """Docker makes a *directory* out of a missing bind source.
-
-        Claude expects a file at that path, so the container would come up
-        unable to read or write its settings at all -- and nothing in the
-        recipe would have failed.
-        """
-        source = self.settings_mount(self.make_repo()).split(":")[0]
-        self.assertTrue(os.path.isfile(source), "%s was not created" % source)
-
-    def test_the_settings_mount_is_writable(self):
-        """Read-only would break editing settings from inside a session.
-
-        The point is that the edit does not outlive the container, not that
-        it cannot be made.
-        """
-        spec = self.settings_mount(self.make_repo())
-        self.assertEqual(
-            spec.count(":"), 1, "settings mount carries mount options: %s" % spec)
-
-    def test_two_containers_do_not_share_one_settings_file(self):
-        """The leak the mount exists for, stated as two projects.
-
-        Concurrent sessions under different org layers each rebuild this
-        file; sharing one path means the second rewrites what the first is
-        reading.
-        """
-        first = self.settings_mount(self.make_repo("alpha")).split(":")[0]
-        second = self.settings_mount(self.make_repo("beta")).split(":")[0]
-        self.assertNotEqual(first, second)
-
-    def test_opencode_gets_no_settings_mount(self):
-        """settings.json is Claude's file; nothing else reads it."""
-        mounts = self.mounts(self.docker_argv("run_opencode", self.make_repo()))
-        self.assertEqual([m for m in mounts if "settings.json" in m], [])
 
 
 class WorktreeGitDirMounts(MakeRecipeCase):

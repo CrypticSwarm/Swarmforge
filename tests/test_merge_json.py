@@ -181,22 +181,6 @@ class BuildFileTests(BuildFileCase):
 
         self.assertEqual(_read(self.dst), {})
 
-    def test_the_destination_is_rewritten_in_place(self):
-        """The destination is a bind-mounted file in the container.
-
-        Building a temporary beside it and renaming over the path would
-        detach the mount at best and fail outright at worst, and nothing in
-        the result would show which way it was written -- so the inode is
-        what gets asserted.
-        """
-        _write(self.dst, {})
-        before = os.stat(self.dst).st_ino
-        layer = self.layer("layer.json", {"model": "sonnet"})
-
-        self.build(layer)
-
-        self.assertEqual(os.stat(self.dst).st_ino, before)
-
     def test_a_layer_that_ships_no_file_contributes_nothing_quietly(self):
         """Most layers ship no file, and callers pass a path regardless."""
         present = self.layer("present.json", {"model": "sonnet"})

@@ -10,6 +10,7 @@ OPENCODE_GROUP="opencode"
 OPENCODE_HOME="/home/${OPENCODE_USER}"
 AGENT_BIN="${SWARMFORGE_AGENT_BIN:-opencode}"
 AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
+CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
 
 configure_timezone() {
   timezone="${TZ:-}"
@@ -194,9 +195,8 @@ merge_config_layer() {
   # is the harness's own native discovery, so native agents/ in user/org
   # layers still merge through.
   #
-  # settings.json is excluded for Claude for the reason opencode.json is
-  # excluded everywhere: it is merged by key, so a whole-file copy of the
-  # top layer's would drop every lower layer's keys.
+  # settings.json is excluded for Claude for the same reason opencode.json
+  # is excluded everywhere: it merges by key, through build_claude_settings.
   exclude_args="--exclude=./opencode.json --exclude=./.swarmforge"
   case "${AGENT_BIN:-}" in
     claude)
@@ -239,12 +239,11 @@ merge_config_file() {
   fi
 }
 
-# Derived from the layers on every run; the destination is never read. It sits
-# in the persistent home, one directory shared by every container for this
-# user, so merging in place would carry an org layer's permissions, hooks, and
-# env into later runs that do not mount that layer. The host mounts a
-# per-container file over the path to stop one rebuild reaching another's
-# session.
+# Derived from the layers on every run; the destination is never read. The
+# result stays off the persistent home -- one directory shared by every
+# container for this user, where it would carry an org layer's permissions,
+# hooks, and env into later runs that do not mount that layer -- and rides
+# claude's command line instead (see the exec at the bottom).
 build_claude_settings() {
   settings_dst="${1}"
   settings_repo_src="${2:-}"
@@ -255,10 +254,11 @@ build_claude_settings() {
 
   image_defaults="/usr/local/share/swarmforge/claude-settings.json"
 
-  # The destination survives the container, so a failed build would leave the
-  # last session's settings in place -- possibly merged under an org layer
-  # this run does not mount. An empty object is the safe reading of "no layer
-  # could be applied".
+  mkdir -p "$(dirname "${settings_dst}")"
+
+  # A failed build must still leave valid JSON at the path the exec hands
+  # claude. An empty object is the safe reading of "no layer could be
+  # applied".
   if ! PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_json \
     --build "${settings_dst}" \
     "${image_defaults}" \
@@ -305,7 +305,7 @@ prepare_layered_config() {
   merge_config_file "${SWARMFORGE_TONG_MCP_FILE:-}" "${config_dst}/opencode.json" 1
 
   build_claude_settings \
-    "${config_dst}/settings.json" \
+    "${CLAUDE_SETTINGS_FILE}" \
     "${repo_config_src}" \
     "${user_config_src}" \
     "${org_config_src}"
@@ -408,6 +408,14 @@ WRAPPER_EOF
     export PATH="${wrapper_dir}:${PATH}"
   }
   install_git_worktree_wrapper
+fi
+
+# Command-line settings outrank every settings file, so the org layer beats
+# even the checkout's own .claude/settings.json; dropping user keeps claude
+# off the shared home's settings.json, which nothing rebuilds. The file is
+# only there when config layering built it -- without it claude runs bare.
+if [ "${AGENT_BIN}" = "claude" ] && [ -f "${CLAUDE_SETTINGS_FILE}" ]; then
+  set -- --settings "${CLAUDE_SETTINGS_FILE}" --setting-sources project,local "$@"
 fi
 
 export HOME="${OPENCODE_HOME}"

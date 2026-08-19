@@ -273,6 +273,68 @@ class ConfigLayerOrder(unittest.TestCase):
         self.assertIn("--exclude=./settings.json", claude)
 
 
+class ClaudeSettingsDelivery(unittest.TestCase):
+    """The built settings reach claude as arguments, not as a file in the home.
+
+    The build writes one path and the exec names one path, tied together only
+    by a shell variable; and the argv must drop `user` from the setting
+    sources, or claude reads the shared home's settings.json underneath --
+    the exact file the command-line delivery exists to retire.
+    """
+
+    def setUp(self):
+        with open(ENTRYPOINT) as handle:
+            self.entrypoint = handle.read()
+
+    def settings_path(self):
+        match = re.search(
+            r'^CLAUDE_SETTINGS_FILE="([^"$]+)"$', self.entrypoint, re.M)
+        self.assertIsNotNone(
+            match, "entrypoint defines no literal CLAUDE_SETTINGS_FILE")
+        return match.group(1)
+
+    def injection(self):
+        """The argv rewrite handing claude the settings flags, as one line."""
+        at = self.entrypoint.index("--settings ")
+        return self.entrypoint[
+            self.entrypoint.rindex("\n", 0, at) + 1:self.entrypoint.index("\n", at)
+        ]
+
+    def test_the_built_file_lives_outside_every_host_mount(self):
+        """/home/opencode is the persistent home every container for this
+        user shares, and /workspace is the checkout; a build landing in
+        either is the leak the command-line delivery exists to end."""
+        path = self.settings_path()
+        for mounted in ("/home/", "/workspace"):
+            self.assertFalse(
+                path.startswith(mounted),
+                "settings build lands in a host mount: %s" % path)
+
+    def test_the_exec_hands_claude_the_file_the_build_writes(self):
+        """Two sites name the path; the shared variable is what ties them."""
+        self.assertIn(
+            'build_claude_settings \\\n    "${CLAUDE_SETTINGS_FILE}"',
+            self.entrypoint)
+        self.assertIn('--settings "${CLAUDE_SETTINGS_FILE}"', self.injection())
+
+    def test_the_setting_sources_drop_user_and_nothing_else(self):
+        """Without the sources flag claude reads the shared home's file;
+        dropping more than `user` would turn off the workspace's own
+        .claude settings, which load natively today."""
+        match = re.search(r"--setting-sources (\S+)", self.injection())
+        self.assertIsNotNone(match, "claude is not told which sources to load")
+        self.assertEqual(match.group(1).split(","), ["project", "local"])
+
+    def test_only_claude_is_handed_the_flags(self):
+        """The same exec starts every harness, and the flags are claude's."""
+        at = self.entrypoint.index(self.injection())
+        guard = self.entrypoint.rindex("if ", 0, at)
+        self.assertIn(
+            '[ "${AGENT_BIN}" = "claude" ]',
+            self.entrypoint[guard:at],
+        )
+
+
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
