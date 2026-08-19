@@ -1,0 +1,6 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/usr/local/bin/swarmforge-statusline"
+  }
+}

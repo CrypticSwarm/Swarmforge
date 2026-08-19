@@ -48,13 +48,11 @@ PATH_LOADER = "spec_from_file_location"
 # them imports by name.
 SHIM_DIR = os.path.join(REPO_ROOT, "bin")
 
-# The Claude status-line seeder is installed into the image as a standalone
-# script rather than shipped inside the package, so there is no module path to
-# import it by and its test loads the file. Landing the seeder in the package
-# would retire this entry -- and the test below fails if it goes stale.
-PATH_LOADING_ALLOWED = {
-    os.path.join(REPO_ROOT, "tests", "test_seed_claude_settings.py"),
-}
+# Files outside bin/ that may still load python from a file path. Empty, and
+# meant to stay that way: everything the repo ships is a module with a name to
+# import it by. An entry here is a standing exception, so the test below fails
+# on one that has gone stale rather than letting it sit.
+PATH_LOADING_ALLOWED = set()
 
 
 def is_python(path):
@@ -414,10 +412,10 @@ class PathLoadingStaysInTheShims(unittest.TestCase):
     def test_the_scan_reaches_the_files_the_rule_is_about(self):
         """The rule is only as wide as the walk that feeds it.
 
-        Every use in the repo today sits in the one exempt file, so an empty
-        result reads exactly like a clean one -- a pruned directory or a file
-        the shebang check stopped recognising would pass silently. These three
-        stand for the three shapes the walk has to keep finding.
+        Nothing in the repo loads by path today outside the shims, so an
+        empty result reads exactly like a clean one -- a pruned directory or
+        a file the shebang check stopped recognising would pass silently.
+        These three stand for the three shapes the walk has to keep finding.
         """
         scanned = {
             os.path.relpath(path, REPO_ROOT) for path in python_files(REPO_ROOT)
@@ -425,7 +423,7 @@ class PathLoadingStaysInTheShims(unittest.TestCase):
         for expected in (
             os.path.join("bin", "run-anvil"),  # a command, no extension
             os.path.join("swarmforge", "tongs", "discovery.py"),
-            os.path.join("tests", "test_seed_claude_settings.py"),
+            os.path.join("tests", "test_merge_json.py"),
         ):
             self.assertIn(expected, scanned)
 

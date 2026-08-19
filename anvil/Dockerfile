@@ -138,11 +138,12 @@ FROM agent-runtime AS opencode-runtime
 
 FROM agent-runtime AS claude-runtime
 
-# The status line and the code that turns it on ship only in this image: no
-# other harness reads Claude's settings.json. The entrypoint is shared, so it
-# guards on both being present.
+# The status line and the settings that turn it on ship only in this image:
+# no other harness reads Claude's settings.json. The defaults are the lowest
+# config layer, and they are baked in here rather than shipped from the
+# checkout because they name a path only the image has.
 COPY anvil/statusline.sh /usr/local/bin/swarmforge-statusline
-COPY anvil/seed_claude_settings.py /usr/local/lib/swarmforge/seed_claude_settings.py
+COPY anvil/claude-settings.json /usr/local/share/swarmforge/claude-settings.json
 RUN chmod +x /usr/local/bin/swarmforge-statusline
 
 FROM opencode-runtime AS default

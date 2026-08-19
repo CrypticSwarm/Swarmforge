@@ -123,17 +123,33 @@ Override the `.agents` roots with `SWARMFORGE_USER_DOTAGENTS_DIR` / `SWARMFORGE_
 ### Claude config layering
 
 Three sources merge into `~/.claude` at startup (lowest to highest precedence):
+- `SWARMFORGE_REPO_CONFIG_DIR` (default `claude/`, if present)
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude`)
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude` when that root is set)
-- `SWARMFORGE_REPO_CONFIG_DIR` (default `claude/`, if present)
 
 Skills, commands, and `agents/` are excluded from this merge — they travel through the asset pipeline above.
 
+Note that config layers stack in the opposite order to the assets above: assets order by specificity, so a repo's own skill wins, while config orders by **trust**, because these files carry permissions, hooks, and env. A checkout is whatever repo you cloned and sits at the bottom; the org layer is installed deliberately and sits on top.
+
+#### settings.json
+
+`settings.json` is the exception to the file-replacement rule above: like `opencode.json`, it is merged **by key**, and it is rebuilt from scratch on every run rather than merged into whatever the last run left behind. Below the three layers sits a fourth the image ships (`anvil/claude-settings.json`), which is where the status line default comes from.
+
+The result never touches the host or the shared home: the entrypoint writes it to a container-local path and starts claude with `--settings <path> --setting-sources project,local`. `$(CLAUDE_HOME_DIR)` is one directory shared by every container, so a `settings.json` written there would both outlive the layers that produced it and reach a session already running under a different `SWARMFORGE_ORG_CONFIG_ROOT`; dropping `user` from the setting sources keeps Claude from reading that file, and the built file rides the command line instead, dying with the container. Three consequences worth knowing:
+
+- The built file sits at command-line precedence, above the workspace's own `.claude/settings.json` and `settings.local.json` (both still load natively) — a key an org layer sets cannot be overridden from a checkout.
+- A key edited from inside a session (`/config`, the statusline-setup skill) lands in the user-level `settings.json` Claude is told not to read, so it never takes effect. Put it in a config layer instead.
+- Under `CLAUDE_HOME_DIR=$HOME`, your real `~/.claude/settings.json` is read as the user config layer and never written.
+
+A layer whose `settings.json` is not valid JSON, or not a JSON object, is skipped with a message on stderr; the rest of the layers still apply.
+
+This covers `settings.json` only. Every other file an org or repo layer ships — a `CLAUDE.md`, a hooks script, anything under `plugins/`, and `settings.local.json` — still lands in the shared persistent home, where it accumulates across runs and is visible to concurrent containers.
+
 ### Status line
 
-`make build_claude` bakes `anvil/statusline.sh` into the image at `/usr/local/bin/swarmforge-statusline` and the entrypoint turns it on, so a container shows the model, directory, turn count, context percentage, and session token/cost totals with no host setup. It reads the session JSON on stdin and the transcript.
+`make build_claude` bakes `anvil/statusline.sh` into the image at `/usr/local/bin/swarmforge-statusline`, and the image defaults layer points `statusLine` at it — so a container shows the model, directory, turn count, context percentage, and session token/cost totals with no host setup. It reads the session JSON on stdin and the transcript.
 
-Claude has no settings layer below `~/.claude/settings.json`, so the entrypoint seeds the default into that file (`anvil/seed_claude_settings.py`) after the config layers have merged, and only when no layer set `statusLine`. To use your own, set one in any config layer:
+Being the lowest layer, its `statusLine` is overridden key by key — a layer that sets both `type` and `command`, as any real one does, replaces it entirely:
 
 ```json
 {
@@ -203,12 +219,13 @@ The harness runs these and injects their output into the prompt context, so the 
 Skills live under `skills/` (harness-neutral, shared by every harness).
 OpenCode auto-discovers them using only the YAML frontmatter (`name` + `description`); the full `SKILL.md` body loads on demand when a skill is invoked, keeping the default context small.
 
-`make run_opencode` merges config into `/home/opencode/.config/opencode` from three sources (lowest to highest precedence):
+`make run_opencode` merges config into `/home/opencode/.config/opencode` from three sources (lowest to highest precedence — see the note on trust ordering under [Claude config layering](#claude-config-layering)):
+- `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/`)
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.config/opencode`)
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode` when that root is set)
-- `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/`)
 
 `opencode.json` is merged by key (not file overwrite), so org-level MCP servers survive even when the repo layer also defines `opencode.json`.
+Your own `~/.config/opencode/opencode.json` overrides the toolchain defaults this checkout ships in `opencode/opencode.json`.
 Skills and commands are excluded from this merge and travel through the asset pipeline described under [Claude Code](#claude-code).
 
 You can also define MCP servers in a project-local `.opencode/opencode.json` — often the cleanest place to attach them to a specific repo:
