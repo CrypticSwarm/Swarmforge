@@ -301,7 +301,7 @@ class ClaudeSettingsDelivery(unittest.TestCase):
         ]
 
     def test_the_built_file_lives_outside_every_host_mount(self):
-        """/home/opencode is the persistent home every container for this
+        """/home/anvil is the persistent home every container for this
         user shares, and /workspace is the checkout; a build landing in
         either is the leak the command-line delivery exists to end."""
         path = self.settings_path()

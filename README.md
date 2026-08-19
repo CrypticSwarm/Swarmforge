@@ -97,7 +97,7 @@ A coding-agent harness that exposes a standard set of code-editing tools to the 
 ## Claude Code
 
 `make run_claude` starts a Claude Code container with the same workspace and git-worktree mounting as `make run_opencode`.
-Claude state persists by mounting `$(CLAUDE_HOME_DIR)` to `/home/opencode`, keeping account/session files like `~/.claude/` and `~/.claude.json`.
+Claude state persists by mounting `$(CLAUDE_HOME_DIR)` to `/home/anvil`, keeping account/session files like `~/.claude/` and `~/.claude.json`.
 The repo is mounted at a stable path derived from the git remote slug (with `/workspace` still mounted for compatibility), which groups sessions consistently across worktrees without host-specific absolute paths.
 
 - To reuse existing host-native Claude sessions directly, run with `CLAUDE_HOME_DIR=$HOME`.
@@ -219,7 +219,7 @@ The harness runs these and injects their output into the prompt context, so the 
 Skills live under `skills/` (harness-neutral, shared by every harness).
 OpenCode auto-discovers them using only the YAML frontmatter (`name` + `description`); the full `SKILL.md` body loads on demand when a skill is invoked, keeping the default context small.
 
-`make run_opencode` merges config into `/home/opencode/.config/opencode` from three sources (lowest to highest precedence — see the note on trust ordering under [Claude config layering](#claude-config-layering)):
+`make run_opencode` merges config into `/home/anvil/.config/opencode` from three sources (lowest to highest precedence — see the note on trust ordering under [Claude config layering](#claude-config-layering)):
 - `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/`)
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.config/opencode`)
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode` when that root is set)

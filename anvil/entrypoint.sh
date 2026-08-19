@@ -3,11 +3,11 @@ set -eu
 
 # Entrypoint: create a user matching host UID/GID at runtime, then drop privileges.
 
-OPENCODE_UID="${OPENCODE_UID:-${SWARMFORGE_UID:-1000}}"
-OPENCODE_GID="${OPENCODE_GID:-${SWARMFORGE_GID:-1000}}"
-OPENCODE_USER="opencode"
-OPENCODE_GROUP="opencode"
-OPENCODE_HOME="/home/${OPENCODE_USER}"
+ANVIL_UID="${SWARMFORGE_UID:-${OPENCODE_UID:-1000}}"
+ANVIL_GID="${SWARMFORGE_GID:-${OPENCODE_GID:-1000}}"
+ANVIL_USER="anvil"
+ANVIL_GROUP="anvil"
+ANVIL_HOME="/home/${ANVIL_USER}"
 AGENT_BIN="${SWARMFORGE_AGENT_BIN:-opencode}"
 AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
@@ -80,11 +80,11 @@ copy_shared_assets() {
 
   case "${AGENT_BIN}" in
     claude)
-      skills_dst="${OPENCODE_HOME}/.claude/skills"
-      commands_dst="${OPENCODE_HOME}/.claude/commands"
+      skills_dst="${ANVIL_HOME}/.claude/skills"
+      commands_dst="${ANVIL_HOME}/.claude/commands"
       ;;
     opencode)
-      config_dest="${SWARMFORGE_CONFIG_DEST:-${OPENCODE_HOME}/.config/opencode}"
+      config_dest="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}"
       skills_dst="${config_dest}/skills"
       commands_dst="${config_dest}/command"
       ;;
@@ -137,10 +137,10 @@ prepare_unified_agents() {
 
   case "${AGENT_BIN}" in
     claude)
-      agents_dst="${OPENCODE_HOME}/.claude/agents"
+      agents_dst="${ANVIL_HOME}/.claude/agents"
       ;;
     opencode)
-      agents_dst="${SWARMFORGE_CONFIG_DEST:-${OPENCODE_HOME}/.config/opencode}/agents"
+      agents_dst="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}/agents"
       ;;
     *)
       return 0
@@ -336,25 +336,25 @@ fi
 configure_timezone
 
 # Ensure group exists for the target GID
-if ! getent group "${OPENCODE_GID}" >/dev/null 2>&1; then
-  addgroup --gid "${OPENCODE_GID}" "${OPENCODE_GROUP}" >/dev/null 2>&1 || true
+if ! getent group "${ANVIL_GID}" >/dev/null 2>&1; then
+  addgroup --gid "${ANVIL_GID}" "${ANVIL_GROUP}" >/dev/null 2>&1 || true
 fi
 
 # Ensure user exists for the target UID
-if ! getent passwd "${OPENCODE_UID}" >/dev/null 2>&1; then
+if ! getent passwd "${ANVIL_UID}" >/dev/null 2>&1; then
   adduser --disabled-password --comment "" \
-    --uid "${OPENCODE_UID}" \
-    --gid "${OPENCODE_GID}" \
-    --home "${OPENCODE_HOME}" \
-    "${OPENCODE_USER}" >/dev/null 2>&1 || true
+    --uid "${ANVIL_UID}" \
+    --gid "${ANVIL_GID}" \
+    --home "${ANVIL_HOME}" \
+    "${ANVIL_USER}" >/dev/null 2>&1 || true
 fi
 
 prepare_agent_config
 prepare_unified_agents
 copy_shared_assets
 
-chown -R "${OPENCODE_UID}:${OPENCODE_GID}" "${OPENCODE_HOME}" 2>/dev/null || true
-chown -R "${OPENCODE_UID}:${OPENCODE_GID}" /workspace 2>/dev/null || true
+chown -R "${ANVIL_UID}:${ANVIL_GID}" "${ANVIL_HOME}" 2>/dev/null || true
+chown -R "${ANVIL_UID}:${ANVIL_GID}" /workspace 2>/dev/null || true
 
 if [ "${AGENT_BIN}" = "claude" ]; then
   # Fix git worktree path resolution for bare-repo + worktree setups.
@@ -418,6 +418,6 @@ if [ "${AGENT_BIN}" = "claude" ] && [ -f "${CLAUDE_SETTINGS_FILE}" ]; then
   set -- --settings "${CLAUDE_SETTINGS_FILE}" --setting-sources project,local "$@"
 fi
 
-export HOME="${OPENCODE_HOME}"
+export HOME="${ANVIL_HOME}"
 
-exec gosu "${OPENCODE_UID}:${OPENCODE_GID}" "${AGENT_BIN_PATH}" "$@"
+exec gosu "${ANVIL_UID}:${ANVIL_GID}" "${AGENT_BIN_PATH}" "$@"
