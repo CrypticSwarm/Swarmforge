@@ -106,8 +106,8 @@ The repo is mounted at a stable path derived from the git remote slug (with `/wo
 ### Shared assets (skills, commands, agents)
 
 Both harnesses mount this repo's `skills/` and `commands/` into the container, exported as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
-The entrypoint copies them into each harness's native location — `~/.claude/skills/` and `~/.claude/commands/` for Claude, the merged config dir (`~/.config/opencode/skills/`, `~/.config/opencode/command/`) for OpenCode.
-For Claude these dirs (plus `~/.claude/agents/`) are container-private tmpfs mounts that mask the persistent home and are repopulated each run, so per-repo assets never accumulate in `CLAUDE_HOME_DIR` or leak into other repos' sessions.
+The entrypoint copies them into each harness's native location — the container-local config dir for Claude (see [The config directory](#the-config-directory)), the merged config dir (`~/.config/opencode/skills/`, `~/.config/opencode/command/`) for OpenCode.
+For Claude that dir is rebuilt each run and dies with the container, so per-repo assets never accumulate in `CLAUDE_HOME_DIR` or leak into other repos' sessions.
 
 Skills, commands, and agents come from four layers, lowest to highest precedence — later layers override same-named entries wholesale (never file-merged):
 
@@ -122,7 +122,7 @@ Override the `.agents` roots with `SWARMFORGE_USER_DOTAGENTS_DIR` / `SWARMFORGE_
 
 ### Claude config layering
 
-Three sources merge into `~/.claude` at startup (lowest to highest precedence):
+Three sources merge into Claude's config dir at startup (lowest to highest precedence):
 - `SWARMFORGE_REPO_CONFIG_DIR` (default `claude/`, if present)
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude`)
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude` when that root is set)
@@ -131,19 +131,27 @@ Skills, commands, and `agents/` are excluded from this merge — they travel thr
 
 Note that config layers stack in the opposite order to the assets above: assets order by specificity, so a repo's own skill wins, while config orders by **trust**, because these files carry permissions, hooks, and env. A checkout is whatever repo you cloned and sits at the bottom; the org layer is installed deliberately and sits on top.
 
+#### The config directory
+
+Claude runs with `CLAUDE_CONFIG_DIR` pointed at a container-local path, rebuilt from the config layers and the asset pipeline on every run. Everything Claude reads as configuration or code lives in that directory, so a shared one would hand a session's writes to the next container and to any running alongside it.
+
+State that must outlive the run (`projects/`, `history.jsonl`, `.credentials.json`, …) is symlinked back in from the shared home; the allowlist is `CLAUDE_STATE_DIRS`/`CLAUDE_STATE_FILES` in `anvil/entrypoint.sh`. It fails safe — a directory Claude learns to load in a later release stays inert until listed — at the cost that an unlisted new state directory dies with the container.
+
+`plugins/` is linked but mounted read-only: marketplace clones are worth keeping, but a session must not rewrite what the next container executes, so plugin installs happen host-side.
+
 #### settings.json
 
 `settings.json` is the exception to the file-replacement rule above: like `opencode.json`, it is merged **by key**, and it is rebuilt from scratch on every run rather than merged into whatever the last run left behind. Below the three layers sits a fourth the image ships (`anvil/claude-settings.json`), which is where the status line default comes from.
 
-The result never touches the host or the shared home: the entrypoint writes it to a container-local path and starts claude with `--settings <path> --setting-sources project,local`. `$(CLAUDE_HOME_DIR)` is one directory shared by every container, so a `settings.json` written there would both outlive the layers that produced it and reach a session already running under a different `SWARMFORGE_ORG_CONFIG_ROOT`; dropping `user` from the setting sources keeps Claude from reading that file, and the built file rides the command line instead, dying with the container. Three consequences worth knowing:
+The result never touches the host or the shared home: the entrypoint writes it to a container-local path and starts claude with `--settings <path> --setting-sources user,project,local`. `user` stays in the sources because that scope carries skills, commands, and agents discovery. Three consequences worth knowing:
 
 - The built file sits at command-line precedence, above the workspace's own `.claude/settings.json` and `settings.local.json` (both still load natively) — a key an org layer sets cannot be overridden from a checkout.
-- A key edited from inside a session (`/config`, the statusline-setup skill) lands in the user-level `settings.json` Claude is told not to read, so it never takes effect. Put it in a config layer instead.
+- A key edited from inside a session (`/config`, the statusline-setup skill) lands in the container-local `settings.json` and dies with the container. Put it in a config layer instead.
 - Under `CLAUDE_HOME_DIR=$HOME`, your real `~/.claude/settings.json` is read as the user config layer and never written.
 
 A layer whose `settings.json` is not valid JSON, or not a JSON object, is skipped with a message on stderr; the rest of the layers still apply.
 
-This covers `settings.json` only. Every other file an org or repo layer ships — a `CLAUDE.md`, a hooks script, anything under `plugins/`, and `settings.local.json` — still lands in the shared persistent home, where it accumulates across runs and is visible to concurrent containers.
+This covers `settings.json` only. Every other layer file — a `CLAUDE.md`, a hooks script, `settings.local.json` — is replaced wholesale in the container-local config dir and dies with it.
 
 ### Status line
 
