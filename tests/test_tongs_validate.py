@@ -131,12 +131,13 @@ class ValidationTests(unittest.TestCase):
         errors = tongs.validate_tong("t", self._base(mounts=["workspace:z"]))
         self.assertTrue(any("neither an absolute target path" in e for e in errors))
 
-    def test_target_overlapping_the_secret_fifo_rejected(self):
-        # A secret-bearing tong gets the FIFO bind-mounted in and its wrapper execs
-        # /bin/sh; a target over either shadows it or has docker create the
-        # launcher's mountpoint inside the user's workspace. `//run` is the same
-        # destination as `/run`, so it goes the same way.
-        for target in ("/run/swarmforge/secret-env", "/run", "//run", "/bin", "/bin/sh/x"):
+    def test_target_overlapping_the_secret_wiring_rejected(self):
+        # A secret-bearing tong gets a tmpfs at /run/swarmforge for its wrapper's
+        # FIFO and execs /bin/sh; a target over either buries that wiring. The
+        # whole tmpfs directory is reserved, so anything inside it is refused
+        # too. `//run` is the same destination as `/run`, so it goes the same way.
+        for target in ("/run/swarmforge", "/run/swarmforge/secret-env",
+                       "/run/swarmforge/other", "/run", "//run", "/bin", "/bin/sh/x"):
             defn = self._base(mounts=["workspace:" + target])
             defn["env"] = {"TOKEN": "${secret:op:op://Work/t}"}
             errors = tongs.validate_tong("t", defn)
@@ -157,7 +158,7 @@ class ValidationTests(unittest.TestCase):
 
     def test_target_beside_a_launcher_path_accepted(self):
         # Only overlap is refused: a sibling of a reserved path is left alone.
-        defn = self._base(mounts=["workspace:/run/swarmforge/other"])
+        defn = self._base(mounts=["workspace:/run/other"])
         defn["env"] = {"TOKEN": "${secret:op:op://Work/t}"}
         self.assertEqual(tongs.validate_tong("t", defn), [])
         self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:/runner"])), [])
