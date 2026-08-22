@@ -4,7 +4,6 @@
 import os
 import subprocess
 import sys
-import threading
 import unittest
 from unittest import mock
 
@@ -108,71 +107,77 @@ class SecretResolverTests(unittest.TestCase):
         self.assertEqual(plan["secrets"], {"TOKEN": "s3cr3t"})
 
 
-class UidOfTests(unittest.TestCase):
-    def test_bare_uid_parses(self):
-        self.assertEqual(launcher.secretchan.uid_of("1000"), 1000)
-        self.assertEqual(launcher.secretchan.uid_of("1000:1000"), 1000)
+class _ExecStdinDocker:
+    """A docker seam for SecretChannel: canned exec_stdin results, recorded calls."""
 
-    def test_name_or_empty_is_none(self):
-        self.assertIsNone(launcher.secretchan.uid_of("appuser"))
-        self.assertIsNone(launcher.secretchan.uid_of(""))
-        self.assertIsNone(launcher.secretchan.uid_of(None))
+    def __init__(self, codes, stderr=""):
+        self._codes = iter(codes)
+        self._stderr = stderr
+        self.calls = []
+
+    def exec_stdin(self, container, command, payload, timeout=None):
+        self.calls.append((container, list(command), payload, timeout))
+        return next(self._codes), self._stderr
 
 
 class SecretChannelTests(unittest.TestCase):
-    def test_times_out_when_no_reader_opens(self):
-        # No reader ever opens the FIFO, so the non-blocking write open keeps
-        # getting ENXIO; once the (fake) clock passes the deadline it fails closed
-        # rather than hanging the launcher.
-        channel = launcher.open_secret_channel()
-        try:
-            clock = iter([0.0, 1.0, 2.0, 99.0])
-            with self.assertRaises(launcher.OrchestrationError):
-                channel.deliver(
-                    "export X='y'\n", timeout=5.0, poll=0.0,
-                    sleep=lambda _s: None, monotonic=lambda: next(clock),
-                )
-        finally:
-            channel.cleanup()
+    def test_retries_until_fifo_exists_then_delivers(self):
+        # The wrapper has not run `mkfifo` yet on the first two attempts (the
+        # deliver command exits SECRET_FIFO_ABSENT_EXIT); the channel polls until
+        # it appears, then the payload goes through.
+        docker = _ExecStdinDocker([tongs.SECRET_FIFO_ABSENT_EXIT,
+                                   tongs.SECRET_FIFO_ABSENT_EXIT, 0])
+        channel = launcher.SecretChannel(docker, "ctr")
+        channel.deliver("export TOKEN='s3cr3t'\n", timeout=5.0, poll=0.0,
+                        sleep=lambda _s: None, monotonic=lambda: 0.0)
+        self.assertEqual(len(docker.calls), 3)
+        container, command, payload, _timeout = docker.calls[-1]
+        self.assertEqual(container, "ctr")
+        self.assertEqual(command, tongs.secret_deliver_command())
+        self.assertEqual(payload, b"export TOKEN='s3cr3t'\n")
 
-    def test_delivers_payload_to_a_reader(self):
-        # With a reader attached, the payload is written and the reader sees it
-        # followed by EOF -- the real FIFO round-trip, no docker involved.
-        channel = launcher.open_secret_channel()
-        received = []
+    def test_times_out_when_fifo_never_appears(self):
+        # A tong that never reaches its wrapper keeps answering "no FIFO"; once
+        # the (fake) clock passes the deadline it fails closed rather than
+        # hanging the launcher.
+        docker = _ExecStdinDocker([tongs.SECRET_FIFO_ABSENT_EXIT] * 3)
+        channel = launcher.SecretChannel(docker, "ctr")
+        clock = iter([0.0, 1.0, 2.0, 99.0])
+        with self.assertRaisesRegex(launcher.OrchestrationError, "did not open"):
+            channel.deliver("export X='y'\n", timeout=5.0, poll=0.0,
+                            sleep=lambda _s: None, monotonic=lambda: next(clock))
 
-        def reader():
-            with open(channel.host_path, "r") as handle:
-                received.append(handle.read())
+    def test_times_out_when_payload_never_accepted(self):
+        # exec_stdin returning None means the exec ran past its deadline: the
+        # wrapper never opened the FIFO's read side, or opened it and stopped
+        # draining.
+        docker = _ExecStdinDocker([None])
+        channel = launcher.SecretChannel(docker, "ctr")
+        with self.assertRaisesRegex(launcher.OrchestrationError, "did not accept"):
+            channel.deliver("export X='y'\n", timeout=5.0, poll=0.0,
+                            sleep=lambda _s: None, monotonic=lambda: 0.0)
 
-        thread = threading.Thread(target=reader)
-        thread.start()
-        try:
-            channel.deliver("export TOKEN='s3cr3t'\n")
-        finally:
-            thread.join(timeout=5)
-            channel.cleanup()
-        self.assertEqual(received, ["export TOKEN='s3cr3t'\n"])
+    def test_other_exec_failure_raises_immediately_with_stderr(self):
+        # Any exit other than "FIFO absent" (say, the container already exited)
+        # is not retried -- it fails at once, carrying the exit code and docker's
+        # own stderr so the user sees which failure it was.
+        docker = _ExecStdinDocker([1], stderr="container ctr is not running")
+        channel = launcher.SecretChannel(docker, "ctr")
+        with self.assertRaisesRegex(launcher.OrchestrationError,
+                                    "exit 1.*is not running"):
+            channel.deliver("export X='y'\n", timeout=5.0, poll=0.0,
+                            sleep=lambda _s: None, monotonic=lambda: 0.0)
+        self.assertEqual(len(docker.calls), 1)
 
-    def test_delivers_payload_larger_than_pipe_buffer(self):
-        # A payload bigger than the pipe capacity (~64 KiB) forces several writes
-        # and a full buffer; every byte must still arrive (no silent truncation).
-        channel = launcher.open_secret_channel()
-        payload = "export BIG='" + ("x" * 200000) + "'\n"
-        received = []
-
-        def reader():
-            with open(channel.host_path, "r") as handle:
-                received.append(handle.read())
-
-        thread = threading.Thread(target=reader)
-        thread.start()
-        try:
-            channel.deliver(payload)
-        finally:
-            thread.join(timeout=10)
-            channel.cleanup()
-        self.assertEqual(received, [payload])
+    def test_remaining_deadline_bounds_the_exec(self):
+        # The exec's own timeout shrinks with the elapsed clock, so retry
+        # attempts cannot outlive the overall delivery deadline.
+        docker = _ExecStdinDocker([tongs.SECRET_FIFO_ABSENT_EXIT, 0])
+        channel = launcher.SecretChannel(docker, "ctr")
+        clock = iter([0.0, 1.0, 3.0])
+        channel.deliver("export X='y'\n", timeout=5.0, poll=0.0,
+                        sleep=lambda _s: None, monotonic=lambda: next(clock))
+        self.assertEqual([call[3] for call in docker.calls], [4.0, 2.0])
 
 
 if __name__ == "__main__":

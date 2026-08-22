@@ -32,7 +32,7 @@ from swarmforge import gitguard
 
 from .errors import OrchestrationError
 from .readiness import wait_ready
-from .secretchan import make_secret_resolver, open_secret_channel, uid_of
+from .secretchan import SecretChannel, make_secret_resolver
 
 
 def _mounts_workspace(defn):
@@ -140,12 +140,13 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     env into plain (`-e`) and secret. With no secret env the image's own entrypoint
     runs unchanged. With secret env, the tong's entrypoint is overridden with a
     `/bin/sh` wrapper (built from the image's real entrypoint+command, read via
-    `docker inspect` or declared on the tong) that reads a bind-mounted host FIFO,
-    exports each `NAME=value` into its environment, then execs the real process. The
-    launcher writes the resolved values into the FIFO only once the wrapper has
-    opened the read end, so the secrets are present in the environment before the
-    real process starts, while the bytes live only in the kernel pipe buffer --
-    never `-e`, argv, or disk.
+    `docker inspect` or declared on the tong) that creates a FIFO on an
+    in-container tmpfs, exports each `NAME=value` it reads from it into its
+    environment, then execs the real process. The launcher streams the resolved
+    values into the FIFO through `docker exec -i` (see `SecretChannel`), so the
+    secrets are present in the environment before the real process starts, while
+    the bytes live only in docker's API stream and the container kernel's pipe
+    buffer -- never `-e`, argv, or disk.
 
     Once the argv is assembled, any existing container of the same name is removed
     so a stale or stopped one is replaced cleanly -- but a definition the argv
@@ -153,7 +154,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     after the container starts -- a docker error, a delivery timeout, or a Ctrl-C --
     the container is removed before re-raising, so a half-configured `shared` tong
     (stamped with its config-hash label) is not reused on the next session despite
-    missing its secret. The FIFO is always cleaned up.
+    missing its secret.
     """
     plan = tongs.plan_tong_secrets(defn.get("env"), resolver)
     plain_env = plan["env"]
@@ -183,7 +184,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
         docker.run_detached(argv)
         return
 
-    image_entrypoint, image_cmd, image_user = docker.image_exec_config(defn["image"])
+    image_entrypoint, image_cmd = docker.image_exec_config(defn["image"])
     try:
         target = tongs.resolve_exec_target(defn, image_entrypoint, image_cmd)
     except ValueError as exc:
@@ -191,30 +192,26 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     entrypoint, command = tongs.secret_inject_argv(target)
     payload = tongs.render_secret_exports(secrets)
 
-    channel = make_channel(uid_of(image_user))
+    # Assembled before the teardown guard below: a refused definition starts
+    # nothing, so it must remove nothing (for a `shared` tong, that would be
+    # another session's running container).
     try:
-        # Assembled before the teardown guard below: a refused definition starts
-        # nothing, so it must remove nothing (for a `shared` tong, that would be
-        # another session's running container).
-        try:
-            argv = tongs.tong_run_argv(
-                name, defn,
-                container_name=container, network=network, alias=alias,
-                env=plain_env, label_hash=label_hash, workspace=workspace,
-                fifo_host_path=channel.host_path, entrypoint=entrypoint, command=command,
-                extra_mount_specs=git_dir_specs,
-            )
-        except ValueError as exc:
-            raise OrchestrationError("tong '%s': %s" % (name, exc))
-        try:
-            docker.rm_force(container)
-            docker.run_detached(argv)
-            channel.deliver(payload)
-        except BaseException:
-            docker.rm_force(container)
-            raise
-    finally:
-        channel.cleanup()
+        argv = tongs.tong_run_argv(
+            name, defn,
+            container_name=container, network=network, alias=alias,
+            env=plain_env, label_hash=label_hash, workspace=workspace,
+            secret_channel=True, entrypoint=entrypoint, command=command,
+            extra_mount_specs=git_dir_specs,
+        )
+    except ValueError as exc:
+        raise OrchestrationError("tong '%s': %s" % (name, exc))
+    try:
+        docker.rm_force(container)
+        docker.run_detached(argv)
+        make_channel(docker, container).deliver(payload)
+    except BaseException:
+        docker.rm_force(container)
+        raise
 
 
 def _ensure_shared_tong(docker, name, defn, *, container, network, alias,
@@ -287,7 +284,7 @@ def _mcp_injection(mcp_config, harness, mcp_dir):
 
 
 def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
-                   make_channel=open_secret_channel,
+                   make_channel=SecretChannel,
                    sleep=time.sleep, monotonic=time.monotonic):
     """Start the discovered tongs, run the anvil, and tear down session state.
 
@@ -295,9 +292,9 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     (the empty case stays a direct exec; unsupported tongs are refused earlier).
 
     Each tong's secret references are resolved through the provider CLIs in
-    `providers` (the user-layer table) and delivered as env over a FIFO (created by
-    `make_channel`) as the tong starts; a tong without secrets gets none of that
-    machinery. `shared` tongs are ensured
+    `providers` (the user-layer table) and delivered as env over the tong's
+    in-container FIFO (via `make_channel`) as the tong starts; a tong without
+    secrets gets none of that machinery. `shared` tongs are ensured
     on the anvil's base network, reusing a running one whose config hash still
     matches (which never re-resolves its secrets). When any `session` tong exists a
     per-session network is created: the `session` tongs start on it under their
