@@ -138,7 +138,7 @@ class FakeDocker:
     results, so orchestration is tested without a docker daemon."""
 
     def __init__(self, states=None, ready=True, anvil_rc=0,
-                 image_config=(["app"], [], "")):
+                 image_config=(["app"], [])):
         self.calls = []
         self._states = states or {}      # container -> inspect_state dict
         self._ready = ready
@@ -199,37 +199,27 @@ class FakeDocker:
 
 
 class FakeChannels:
-    """A `make_channel` stand-in that records secret deliveries without a FIFO.
+    """A `make_channel` stand-in that records secret deliveries without docker.
 
-    Records the uid each channel is opened for, every payload delivered, and how
-    many channels were cleaned up, so a test can assert what reached the tong (and
-    that the secret never went through `-e`/argv) without touching the filesystem.
-    `deliver_error`, if set, is raised from `deliver` to exercise the failure path.
+    Records the container each channel is opened for and every payload delivered,
+    so a test can assert what reached the tong (and that the secret never went
+    through `-e`/argv) without invoking docker exec. `deliver_error`, if set, is
+    raised from `deliver` to exercise the failure path.
     """
 
     def __init__(self, deliver_error=None):
-        self.uids = []
+        self.containers = []
         self.payloads = []
-        self.cleanups = 0
         self._deliver_error = deliver_error
 
-    def __call__(self, uid=None):
-        self.uids.append(uid)
-        return FakeChannels._Channel(self)
+    def __call__(self, docker, container):
+        self.containers.append(container)
+        return self
 
-    class _Channel:
-        host_path = "/fake/swarmforge-secret/secret-env"
-
-        def __init__(self, owner):
-            self._owner = owner
-
-        def deliver(self, payload, **kwargs):
-            self._owner.payloads.append(payload)
-            if self._owner._deliver_error is not None:
-                raise self._owner._deliver_error
-
-        def cleanup(self):
-            self._owner.cleanups += 1
+    def deliver(self, payload):
+        self.payloads.append(payload)
+        if self._deliver_error is not None:
+            raise self._deliver_error
 
 
 # Tiny launcher options for driving run_with_tongs directly.
@@ -542,7 +532,7 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertNotIn("tcp_probe", [c[0] for c in docker.calls])
 
-    # --- Secret resolution + FIFO env delivery ------------------------------
+    # --- Secret resolution + channel env delivery ---------------------------
 
     def _run_secret(self, docker, merged, providers, channels=None):
         return launcher.run_with_tongs(
@@ -551,11 +541,11 @@ class RunWithTongsTests(unittest.TestCase):
             sleep=lambda _s: None, monotonic=_Clock(),
         )
 
-    def test_secret_delivered_as_env_via_fifo_never_in_argv(self):
-        # A resolved secret is handed to the tong over the FIFO (an `export`
-        # script), never as a docker `-e` value; the run argv carries only the
-        # entrypoint wrapper and the read-only FIFO bind, not the secret.
-        docker = FakeDocker(image_config=(["node"], ["server.js"], ""))
+    def test_secret_delivered_as_env_via_channel_never_in_argv(self):
+        # A resolved secret is handed to the tong over the delivery channel (an
+        # `export` script), never as a docker `-e` value; the run argv carries
+        # only the entrypoint wrapper and the FIFO's tmpfs, not the secret.
+        docker = FakeDocker(image_config=(["node"], ["server.js"]))
         channels = FakeChannels()
         rc = self._run_secret(
             docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS,
@@ -563,11 +553,10 @@ class RunWithTongsTests(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         started = docker.run_argvs[0]
-        # Entrypoint is wrapped and the FIFO is bind-mounted read-only.
+        # Entrypoint is wrapped and a tmpfs backs the in-container FIFO.
         self.assertEqual(started[started.index("--entrypoint") + 1], "/bin/sh")
-        self.assertIn(
-            "/fake/swarmforge-secret/secret-env:/run/swarmforge/secret-env:ro", started
-        )
+        self.assertEqual(started[started.index("--tmpfs") + 1],
+                         "/run/swarmforge:rw,nosuid,nodev,noexec,mode=1777")
         # The image's real argv is what the wrapper execs (after the image token).
         self.assertEqual(started[started.index("github-tong") + 1:],
                          ["-c", started[started.index("-c") + 1],
@@ -576,10 +565,9 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertNotIn("s3cr3t", " ".join(started))
         self.assertNotIn("GITHUB_TOKEN=s3cr3t", started)
         self.assertEqual(channels.payloads, ["export GITHUB_TOKEN='s3cr3t'\n"])
-        self.assertEqual(channels.cleanups, 1)  # FIFO cleaned up after delivery
 
     def test_secret_tong_reads_exec_target_from_image(self):
-        docker = FakeDocker(image_config=(["entry"], ["arg"], ""))
+        docker = FakeDocker(image_config=(["entry"], ["arg"]))
         self._run_secret(
             docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS
         )
@@ -595,7 +583,7 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIsNone(docker.anvil_argv)
 
     def test_delivery_failure_removes_half_configured_container(self):
-        # If delivery over the FIFO fails after the container started, the
+        # If delivery over the channel fails after the container started, the
         # container is removed before raising, so a `shared` tong is not left
         # stamped with its config-hash label (and reused) while missing its secret.
         docker = FakeDocker()
@@ -608,7 +596,6 @@ class RunWithTongsTests(unittest.TestCase):
         # rm_force fires twice: clearing any leftover before start, then removing
         # the half-configured container after the failed delivery.
         self.assertEqual(docker.calls.count(("rm_force", "swarmforge-shared-gh")), 2)
-        self.assertEqual(channels.cleanups, 1)  # FIFO still cleaned up
         self.assertIsNone(docker.anvil_argv)
 
     def test_unusable_mount_target_reported_and_starts_nothing(self):
@@ -624,7 +611,7 @@ class RunWithTongsTests(unittest.TestCase):
             )
         self.assertEqual(docker.run_argvs, [])
         self.assertNotIn(("rm_force", "swarmforge-shared-gh"), docker.calls)
-        self.assertEqual(channels.cleanups, 1)  # FIFO still cleaned up
+        self.assertEqual(channels.payloads, [])  # nothing started, nothing delivered
         self.assertIsNone(docker.anvil_argv)
 
     def test_interrupt_during_delivery_removes_half_configured_container(self):
@@ -639,7 +626,6 @@ class RunWithTongsTests(unittest.TestCase):
                 channels=channels,
             )
         self.assertEqual(docker.calls.count(("rm_force", "swarmforge-shared-gh")), 2)
-        self.assertEqual(channels.cleanups, 1)
         self.assertIsNone(docker.anvil_argv)
 
     def test_reused_shared_tong_never_resolves_or_delivers_secrets(self):
@@ -675,16 +661,16 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(channels.payloads, ["export TOKEN='abc'\n"])
 
-    def test_secret_uid_passed_to_channel_factory(self):
-        # The image's numeric user is passed to the channel factory so the FIFO can
-        # be chowned to the uid that will read it.
-        docker = FakeDocker(image_config=(["app"], [], "1000"))
+    def test_channel_factory_gets_the_started_container(self):
+        # The channel is opened against the container the launcher just started,
+        # since delivery is a `docker exec` into that container.
+        docker = FakeDocker()
         channels = FakeChannels()
         self._run_secret(
             docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS,
             channels=channels,
         )
-        self.assertEqual(channels.uids, [1000])
+        self.assertEqual(channels.containers, ["swarmforge-shared-gh"])
 
     # --- Session lifecycle + per-session networks ---------------------------
 

@@ -19,7 +19,7 @@ One module per concern, in the order a launch passes through them:
 
     cli         options, their defaults, and the entry point that sequences a run
     approval    the first-run gate for workspace-sourced tongs
-    secretchan  resolving secret references, and the FIFO that delivers them
+    secretchan  resolving secret references, and the channel that delivers them
     docker      the one seam every docker invocation goes through
     readiness   waiting for a started tong to report ready
     orchestrate starting the tongs, running the anvil, tearing down after it
@@ -74,16 +74,19 @@ in the user-layer table passed as `--providers` (defaulting to
 user's terminal before the anvil starts. A resolved secret is never passed to a
 tong as a docker `-e` env var (anything holding the docker socket could read it
 back via `docker inspect`), never a command-line argument, and never written to
-disk. Instead the launcher creates a host FIFO, bind-mounts it read-only into the
-tong, and overrides the tong's entrypoint with a `/bin/sh` wrapper that reads the
-FIFO, exports each `NAME=value` into its environment, then execs the image's real
+disk. Instead the launcher overrides the tong's entrypoint with a `/bin/sh`
+wrapper that creates a FIFO on a tmpfs inside the container, reads it, exports
+each `NAME=value` into its environment, then execs the image's real
 entrypoint+command (looked up via `docker inspect`, or declared as
-`entrypoint:`/`command:` on the tong). The launcher writes the resolved values
-into the FIFO only once the wrapper has opened the read end, so the secrets reach
-the real process as ordinary environment variables -- present before it starts,
-since the wrapper blocks on the FIFO until delivery -- while the bytes only ever
-live in the kernel pipe buffer. A tong with secret env therefore needs a `/bin/sh`
-in its image; one without secrets runs its image entrypoint unchanged.
+`entrypoint:`/`command:` on the tong). The launcher streams the resolved values
+into that FIFO over `docker exec -i` stdin, so the secrets reach the real
+process as ordinary environment variables -- present before it starts, since the
+wrapper blocks on the FIFO until delivery -- while the bytes only ever live in
+docker's API stream and the container kernel's pipe buffer. Because nothing in
+the path crosses the host filesystem boundary, delivery works the same under
+Docker Desktop's VM (macOS/Windows) as on native Linux. A tong with secret env
+therefore needs `/bin/sh`, `mkfifo`, `cat`, and `rm` in its image; one without
+secrets runs its image entrypoint unchanged.
 
 First-run approval
 ------------------
@@ -140,7 +143,6 @@ from .secretchan import (
     SecretChannel,
     SecretResolutionError,
     make_secret_resolver,
-    open_secret_channel,
 )
 
 __all__ = [
@@ -176,5 +178,4 @@ __all__ = [
     "SecretChannel",
     "SecretResolutionError",
     "make_secret_resolver",
-    "open_secret_channel",
 ]

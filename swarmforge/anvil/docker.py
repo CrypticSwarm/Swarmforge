@@ -76,14 +76,34 @@ class DockerCLI:
     def exec_ok(self, container, command):
         return self._quiet(["docker", "exec", container] + list(command)) == 0
 
+    def exec_stdin(self, container, command, payload, timeout=None):
+        """`(exit code, stderr)` of `docker exec -i <container> <command>` fed `payload`.
+
+        The secret-delivery transport: `payload` (bytes) goes to the exec's
+        stdin, which docker carries over its API stream -- it appears nowhere in
+        any argv or inspectable config. The exit code is None when the exec does
+        not finish within `timeout` seconds (the client is killed;
+        `SecretChannel.deliver` turns that into a delivery timeout). `stderr` is
+        the docker CLI's own chatter ("is not running", daemon errors), kept so
+        a fatal delivery failure can say which of those it was.
+        """
+        try:
+            completed = self._run(
+                ["docker", "exec", "-i", container] + list(command),
+                input=payload, timeout=timeout,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            )
+        except subprocess.TimeoutExpired:
+            return None, ""
+        return completed.returncode, _decode(completed.stderr or b"").strip()
+
     def image_exec_config(self, image):
-        """`(entrypoint, cmd, user)` from an image's config, pulling it if absent.
+        """`(entrypoint, cmd)` from an image's config, pulling it if absent.
 
         Used to reconstruct the process a secret-injecting tong must `exec` once
         its `/bin/sh` wrapper has loaded the secret env: overriding `--entrypoint`
         for the wrapper drops the image's own entrypoint/command, so they are read
-        back here. `entrypoint`/`cmd` are argv lists (possibly empty); `user` is
-        the image's configured user (``""`` when none). A missing image is pulled
+        back here. Both are argv lists (possibly empty). A missing image is pulled
         once before retrying; a still-missing or unreadable image is a `DockerError`.
         """
         info = self._inspect_image(image)
@@ -95,8 +115,7 @@ class DockerCLI:
         return info
 
     def _inspect_image(self, image):
-        fmt = ("{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}\n"
-               "{{json .Config.User}}")
+        fmt = "{{json .Config.Entrypoint}}\n{{json .Config.Cmd}}"
         completed = self._run(
             ["docker", "image", "inspect", "--format", fmt, image],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -104,12 +123,11 @@ class DockerCLI:
         if completed.returncode != 0:
             return None
         lines = _decode(completed.stdout).splitlines()
-        if len(lines) < 3:
+        if len(lines) < 2:
             return None
         entrypoint = json.loads(lines[0]) or []
         cmd = json.loads(lines[1]) or []
-        user = json.loads(lines[2]) or ""
-        return entrypoint, cmd, user
+        return entrypoint, cmd
 
     def tcp_probe(self, network, host, port, image):
         """True if `host:port` accepts a TCP connection from within `network`.

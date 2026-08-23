@@ -113,7 +113,7 @@ class DockerCLITests(unittest.TestCase):
         )
 
     @staticmethod
-    def _image_run(entrypoint_json, cmd_json, user_json, inspect_codes=(0,)):
+    def _image_run(entrypoint_json, cmd_json, inspect_codes=(0,)):
         """A run() that answers `docker image inspect` with canned JSON.
 
         `inspect_codes` is the return code for each successive inspect call (so a
@@ -126,30 +126,57 @@ class DockerCLITests(unittest.TestCase):
                 idx = min(state["calls"], len(inspect_codes) - 1)
                 code = inspect_codes[idx]
                 state["calls"] += 1
-                out = ("%s\n%s\n%s" % (entrypoint_json, cmd_json, user_json)).encode()
+                out = ("%s\n%s" % (entrypoint_json, cmd_json)).encode()
                 return subprocess.CompletedProcess(argv, code, stdout=out)
             return subprocess.CompletedProcess(argv, 0)
 
         return run
 
-    def test_image_exec_config_parses_entrypoint_cmd_user(self):
-        cli = launcher.DockerCLI(run=self._image_run('["node"]', '["server.js"]', '"1000"'))
-        self.assertEqual(cli.image_exec_config("img"), (["node"], ["server.js"], "1000"))
+    def test_image_exec_config_parses_entrypoint_and_cmd(self):
+        cli = launcher.DockerCLI(run=self._image_run('["node"]', '["server.js"]'))
+        self.assertEqual(cli.image_exec_config("img"), (["node"], ["server.js"]))
 
     def test_image_exec_config_treats_null_as_empty(self):
-        cli = launcher.DockerCLI(run=self._image_run("null", "null", "null"))
-        self.assertEqual(cli.image_exec_config("img"), ([], [], ""))
+        cli = launcher.DockerCLI(run=self._image_run("null", "null"))
+        self.assertEqual(cli.image_exec_config("img"), ([], []))
 
     def test_image_exec_config_pulls_when_absent_then_succeeds(self):
-        rec_run = self._image_run('["app"]', "null", '""', inspect_codes=(1, 0))
+        rec_run = self._image_run('["app"]', "null", inspect_codes=(1, 0))
         cli = launcher.DockerCLI(run=rec_run)
-        self.assertEqual(cli.image_exec_config("img"), (["app"], [], ""))
+        self.assertEqual(cli.image_exec_config("img"), (["app"], []))
 
     def test_image_exec_config_raises_when_still_missing(self):
-        cli = launcher.DockerCLI(run=self._image_run("null", "null", "null",
-                                                      inspect_codes=(1, 1)))
+        cli = launcher.DockerCLI(run=self._image_run("null", "null",
+                                                     inspect_codes=(1, 1)))
         with self.assertRaises(launcher.DockerError):
             cli.image_exec_config("img")
+
+    def test_exec_stdin_feeds_payload_and_returns_exit_and_stderr(self):
+        seen = {}
+
+        def run(argv, **kwargs):
+            seen["argv"] = list(argv)
+            seen["input"] = kwargs.get("input")
+            seen["timeout"] = kwargs.get("timeout")
+            return subprocess.CompletedProcess(argv, 7, stderr=b"is not running\n")
+
+        cli = launcher.DockerCLI(run=run)
+        code, stderr = cli.exec_stdin("ctr", ["/bin/sh", "-c", "cat > f"],
+                                      b"payload", timeout=12.5)
+        self.assertEqual(code, 7)
+        self.assertEqual(stderr, "is not running")
+        self.assertEqual(seen["argv"],
+                         ["docker", "exec", "-i", "ctr", "/bin/sh", "-c", "cat > f"])
+        self.assertEqual(seen["input"], b"payload")
+        self.assertEqual(seen["timeout"], 12.5)
+
+    def test_exec_stdin_returns_none_on_timeout(self):
+        def run(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+        cli = launcher.DockerCLI(run=run)
+        self.assertEqual(cli.exec_stdin("ctr", ["cmd"], b"x", timeout=0.1),
+                         (None, ""))
 
 
 if __name__ == "__main__":

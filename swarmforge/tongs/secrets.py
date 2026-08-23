@@ -255,19 +255,41 @@ def secret_provider_command(providers, provider, ref):
 # --- Secret delivery ----------------------------------------------------------
 # A resolved secret must never reach a tong as a docker `-e` env var, a command
 # argument, or a file on disk: anything holding the docker socket (the broker
-# tong) could read an `-e` value back via `docker inspect`. Instead the launcher
-# hands the secret-bearing env to the tong over a host FIFO bind-mounted into the
-# container, and wraps the tong's entrypoint with a `/bin/sh` prologue that reads
-# the FIFO, exports each value into its own environment, then execs the image's
-# real entrypoint+command. The bytes travel through the kernel pipe buffer -- never
-# a file, an argv, or the container's `Config.Env` -- and arrive as ordinary
-# environment variables, so an unmodified server that reads them from its
-# environment at startup works unchanged. Plain (non-secret) env keeps flowing
-# through `-e`, which is safe because those values are not secret.
+# tong) could read an `-e` value back via `docker inspect`. Instead the tong's
+# entrypoint is wrapped with a `/bin/sh` prologue that creates a FIFO *inside*
+# the container (on a tmpfs the launcher mounts at `SECRET_FIFO_DIR`), blocks
+# reading it, exports each delivered value into its own environment, then execs
+# the image's real entrypoint+command. The launcher delivers the `export` script
+# through `docker exec -i ... cat > <fifo>`, fed on stdin. The bytes travel
+# docker's API stream into the container kernel's pipe buffer -- never a file, an
+# argv, or the container's `Config.Env` -- and arrive as ordinary environment
+# variables, so an unmodified server that reads them from its environment at
+# startup works unchanged. Plain (non-secret) env keeps flowing through `-e`,
+# which is safe because those values are not secret.
+#
+# The FIFO lives in the container rather than on the host because a host FIFO
+# only works when host and container share a kernel: under Docker Desktop
+# (macOS/Windows) containers run in a VM and bind mounts cross the boundary via
+# a file-sharing layer (virtiofs) that shares file data, not pipe semantics.
+# Everything used here -- `docker exec -i`, a tmpfs, `mkfifo` in the container --
+# is served by the VM's own kernel, so it behaves identically on every platform.
+# FIFO open/EOF semantics double as the synchronization; `secret_inject_argv`
+# and `secret_deliver_command` each describe their half of the handshake.
 
-# Where the FIFO is bind-mounted inside the tong, and the shell the wrapper runs.
-SECRET_FIFO_TARGET = "/run/swarmforge/secret-env"
+# The tmpfs holding the FIFO inside the tong, the FIFO itself, and the shell the
+# wrapper runs. The tmpfs keeps even the FIFO inode out of the container's
+# writable layer and guarantees the wrapper a writable path on any image. Its
+# options are pinned rather than left to engine defaults: `mode=1777` so a
+# non-root image user can `mkfifo` even where the engine would inherit a
+# stricter mode from a directory the image ships at this path.
+SECRET_FIFO_DIR = "/run/swarmforge"
+SECRET_FIFO_TMPFS = SECRET_FIFO_DIR + ":rw,nosuid,nodev,noexec,mode=1777"
+SECRET_FIFO_TARGET = SECRET_FIFO_DIR + "/secret-env"
 SECRET_INJECT_SHELL = "/bin/sh"
+
+# Exit code the delivery script reserves for "the wrapper has not created the
+# FIFO yet"; the launcher retries on it and treats any other failure as fatal.
+SECRET_FIFO_ABSENT_EXIT = 42
 
 # A secret env name becomes a shell assignment target (`export NAME=...`), so it
 # must be a valid identifier -- which is exactly what docker accepts for an env
@@ -336,17 +358,41 @@ def secret_inject_argv(target_argv):
     `target_argv` is the tong image's real entrypoint+command (the process the
     tong would have run without secret injection). Returns the `--entrypoint`
     (`/bin/sh`) and the command tokens for `tong_run_argv`: a `-c` prologue that
-    reads the bind-mounted FIFO, exports each `NAME=value` into the environment,
-    then `exec`s `target_argv`. The blocking read of the FIFO is also the
-    synchronization point -- the wrapper waits there until the launcher delivers --
-    so the real process never starts before its secret env is set.
+    creates the FIFO on the container's tmpfs, reads it, exports each
+    `NAME=value` into the environment, removes the FIFO, then `exec`s
+    `target_argv`. The blocking read of the FIFO is also the synchronization
+    point -- the wrapper waits there until the launcher delivers -- so the real
+    process never starts before its secret env is set. The image must carry
+    `/bin/sh`, `mkfifo`, `cat`, and `rm`.
     """
     script = (
-        'secret_env=$(cat %s) || exit 1; '
+        'mkfifo %(fifo)s || exit 1; '
+        'secret_env=$(cat %(fifo)s) || exit 1; '
+        'rm -f %(fifo)s; '
         'eval "$secret_env" || exit 1; '
         'exec "$@"'
-    ) % SECRET_FIFO_TARGET
+    ) % {"fifo": SECRET_FIFO_TARGET}
     return SECRET_INJECT_SHELL, ["-c", script, "swarmforge-tong"] + list(target_argv)
+
+
+def secret_deliver_command():
+    """The in-container argv `docker exec -i` runs to deliver the secret payload.
+
+    The launcher feeds the rendered `export` script on the exec's stdin; this
+    command copies it into the wrapper's FIFO. The `-p` guard exits
+    `SECRET_FIFO_ABSENT_EXIT` while the wrapper has not run `mkfifo` yet -- the
+    launcher retries on that -- and matters beyond ordering: without it a too-early
+    `cat > path` would create a *regular file*, landing the secret on the
+    container filesystem and breaking the wrapper's `mkfifo`. Opening the FIFO
+    for write blocks until the wrapper's read side is open, and closing it (exec
+    stdin EOF propagates through `cat`) tells the wrapper the payload is
+    complete.
+    """
+    script = (
+        '[ -p %(fifo)s ] || exit %(absent)d; '
+        'exec cat > %(fifo)s'
+    ) % {"fifo": SECRET_FIFO_TARGET, "absent": SECRET_FIFO_ABSENT_EXIT}
+    return [SECRET_INJECT_SHELL, "-c", script]
 
 
 def resolve_exec_target(defn, image_entrypoint, image_cmd):

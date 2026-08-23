@@ -3,6 +3,7 @@
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -300,17 +301,21 @@ class SecretDeliveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tongs.render_secret_exports({"a/b": "v"})
 
-    def test_secret_inject_argv_reads_fifo_then_execs_target(self):
+    def test_secret_inject_argv_makes_and_reads_fifo_then_execs_target(self):
         entrypoint, command = tongs.secret_inject_argv(["node", "server.js"])
         self.assertEqual(entrypoint, "/bin/sh")
         self.assertEqual(command[0], "-c")
-        self.assertIn("/run/swarmforge/secret-env", command[1])
+        self.assertIn("mkfifo /run/swarmforge/secret-env", command[1])
+        self.assertIn("cat /run/swarmforge/secret-env", command[1])
+        self.assertIn("rm -f /run/swarmforge/secret-env", command[1])
         self.assertIn("|| exit 1", command[1])
         self.assertIn('exec "$@"', command[1])
         # The target argv is passed after the `$0` placeholder so `"$@"` is it.
         self.assertEqual(command[2:], ["swarmforge-tong", "node", "server.js"])
 
-    def test_secret_inject_argv_does_not_exec_target_when_fifo_read_fails(self):
+    def test_secret_inject_argv_does_not_exec_target_when_fifo_fails(self):
+        # The FIFO's directory does not exist, so `mkfifo` fails and the wrapper
+        # must exit rather than exec the target.
         # Redirected on the module `secret_inject_argv` reads its global from:
         # the package re-export is a second binding the function never consults,
         # so pointing that one at the temp path would leave the real FIFO path
@@ -318,7 +323,9 @@ class SecretDeliveryTests(unittest.TestCase):
         old_target = tongs.secrets.SECRET_FIFO_TARGET
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                tongs.secrets.SECRET_FIFO_TARGET = os.path.join(tmp, "missing")
+                tongs.secrets.SECRET_FIFO_TARGET = os.path.join(
+                    tmp, "no-such-dir", "fifo"
+                )
                 entrypoint, command = tongs.secret_inject_argv(
                     ["/bin/sh", "-c", "printf target-ran"]
                 )
@@ -336,6 +343,101 @@ class SecretDeliveryTests(unittest.TestCase):
             tongs.secrets.SECRET_FIFO_TARGET = old_target
         self.assertNotEqual(completed.returncode, 0)
         self.assertEqual(completed.stdout, b"")
+
+    def _spawn_wrapper(self, target_argv):
+        """Popen the secret wrapper around `target_argv`, reaped on any failure.
+
+        A wrapper blocked on its FIFO outlives a failed test (the orphaned FIFO
+        inode never gets a writer), so it is killed-then-waited via cleanups.
+        The kill targets the whole process group: killing just the `/bin/sh`
+        would orphan its `$(cat fifo)` child, still blocked in the FIFO open.
+        """
+        entrypoint, command = tongs.secret_inject_argv(target_argv)
+        wrapper = subprocess.Popen(
+            [entrypoint] + command,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.addCleanup(wrapper.wait)
+
+        def kill_group():
+            try:
+                os.killpg(wrapper.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        self.addCleanup(kill_group)
+        return wrapper
+
+    def _deliver_when_fifo_appears(self, payload):
+        """Run the deliver command, retrying the wrapper's `mkfifo` window.
+
+        Returns the first result that is not `SECRET_FIFO_ABSENT_EXIT` -- the
+        launcher's retry loop, condensed for tests.
+        """
+        deliver = tongs.secret_deliver_command()
+        attempts = 50
+        while True:
+            writer = subprocess.run(
+                deliver, input=payload, timeout=10,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+            )
+            if writer.returncode != tongs.SECRET_FIFO_ABSENT_EXIT:
+                return writer
+            attempts -= 1
+            self.assertGreater(attempts, 0, "wrapper never created the FIFO")
+
+    def test_secret_wrapper_and_deliver_command_round_trip(self):
+        # The real protocol end to end, no docker: the wrapper creates the FIFO
+        # and blocks; the deliver command guards on FIFO existence, copies its
+        # stdin in; the target then sees the secret in its environment and no
+        # FIFO left behind.
+        old_target = tongs.secrets.SECRET_FIFO_TARGET
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tongs.secrets.SECRET_FIFO_TARGET = os.path.join(tmp, "secret-env")
+                # Before the wrapper runs there is no FIFO: the deliver command
+                # must refuse with the retryable exit code, not create a file.
+                early = subprocess.run(
+                    tongs.secret_deliver_command(), input=b"export TOKEN='never'\n",
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                )
+                self.assertEqual(early.returncode, tongs.SECRET_FIFO_ABSENT_EXIT)
+                self.assertEqual(os.listdir(tmp), [])
+                wrapper = self._spawn_wrapper(
+                    ["/bin/sh", "-c", 'printf "%%s|%%s" "$TOKEN" "$(ls %s)"' % tmp]
+                )
+                payload = tongs.render_secret_exports({"TOKEN": "s3cr3t"}).encode()
+                writer = self._deliver_when_fifo_appears(payload)
+                self.assertEqual(writer.returncode, 0)
+                stdout, _ = wrapper.communicate(timeout=10)
+        finally:
+            tongs.secrets.SECRET_FIFO_TARGET = old_target
+        self.assertEqual(wrapper.returncode, 0)
+        self.assertEqual(stdout, b"s3cr3t|")  # env delivered, FIFO removed
+
+    def test_secret_round_trip_delivers_payload_larger_than_pipe_buffer(self):
+        # A payload bigger than the pipe capacity (~64 KiB) makes the deliver
+        # `cat` block mid-write until the wrapper drains it; every byte must
+        # still arrive. 100 KB stays under the kernel's 128 KiB cap on a single
+        # env string, which bounds any env-delivered secret.
+        old_target = tongs.secrets.SECRET_FIFO_TARGET
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tongs.secrets.SECRET_FIFO_TARGET = os.path.join(tmp, "secret-env")
+                wrapper = self._spawn_wrapper(
+                    ["/bin/sh", "-c", 'printf %s "${#TOKEN}"']
+                )
+                payload = tongs.render_secret_exports(
+                    {"TOKEN": "x" * 100000}
+                ).encode()
+                writer = self._deliver_when_fifo_appears(payload)
+                self.assertEqual(writer.returncode, 0)
+                stdout, _ = wrapper.communicate(timeout=10)
+        finally:
+            tongs.secrets.SECRET_FIFO_TARGET = old_target
+        self.assertEqual(wrapper.returncode, 0)
+        self.assertEqual(stdout, b"100000")
 
     def test_resolve_exec_target_uses_image_defaults(self):
         self.assertEqual(

@@ -210,27 +210,31 @@ class DockerArgvTests(unittest.TestCase):
         )
         self.assertEqual(with_none, omitted)
 
-    def test_run_argv_secret_injection_mounts_fifo_wraps_entrypoint(self):
-        # A secret-bearing tong gets the FIFO bind (read-only), the /bin/sh
-        # entrypoint override, and the wrapper command appended after the image.
+    def test_run_argv_secret_injection_mounts_tmpfs_wraps_entrypoint(self):
+        # A secret-bearing tong gets a tmpfs for its in-container FIFO, the
+        # /bin/sh entrypoint override, and the wrapper command appended after the
+        # image.
         entrypoint, command = tongs.secret_inject_argv(["node", "server.js"])
         argv = tongs.tong_run_argv(
             "g", def_of(NONE_TONG), container_name="c", network="n", alias="g",
-            fifo_host_path="/tmp/sf/secret-env", entrypoint=entrypoint, command=command,
+            secret_channel=True, entrypoint=entrypoint, command=command,
         )
         self.assertEqual(
             argv[argv.index("--entrypoint") + 1], "/bin/sh"
         )
-        self.assertIn("/tmp/sf/secret-env:/run/swarmforge/secret-env:ro", argv)
+        self.assertEqual(argv[argv.index("--tmpfs") + 1],
+                         "/run/swarmforge:rw,nosuid,nodev,noexec,mode=1777")
+        self.assertNotIn("-v", argv)  # no host bind backs the secret channel
         # The wrapper command trails the image (which is NONE_TONG's image).
         image = def_of(NONE_TONG)["image"]
         self.assertEqual(argv[argv.index(image) + 1 :], command)
 
-    def test_run_argv_without_secrets_omits_entrypoint_and_fifo(self):
+    def test_run_argv_without_secrets_omits_entrypoint_and_tmpfs(self):
         argv = tongs.tong_run_argv(
             "g", def_of(NONE_TONG), container_name="c", network="n", alias="g",
         )
         self.assertNotIn("--entrypoint", argv)
+        self.assertNotIn("--tmpfs", argv)
         self.assertNotIn("secret-env", " ".join(argv))
         self.assertEqual(argv[-1], def_of(NONE_TONG)["image"])  # nothing after image
 

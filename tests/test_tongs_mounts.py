@@ -63,7 +63,7 @@ class MountGrammarTests(unittest.TestCase):
         self.assertEqual(tongs.reserved_mount_targets({}), {})
         secret_bearing = tongs.reserved_mount_targets({"env": {"T": "${secret:op:r}"}})
         self.assertEqual(
-            sorted(secret_bearing), [tongs.SECRET_INJECT_SHELL, tongs.SECRET_FIFO_TARGET]
+            sorted(secret_bearing), [tongs.SECRET_INJECT_SHELL, tongs.SECRET_FIFO_DIR]
         )
         self.assertEqual(
             list(tongs.reserved_mount_targets({"mounts": ["docker-socket"]})),

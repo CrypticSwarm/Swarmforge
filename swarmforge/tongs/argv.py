@@ -14,7 +14,7 @@ import re
 from .mcp import _is_network_facing, _ordered_aliases
 from .model import LABEL_CONFIG_HASH, LABEL_TONG_NAME, WORKSPACE_HOST_ENV
 from .mounts import DEFAULT_DOCKER_SOCKET, _has_socket_mount, tong_mount_specs
-from .secrets import SECRET_FIFO_TARGET, declared_run_override
+from .secrets import SECRET_FIFO_TMPFS, declared_run_override
 
 
 # Shared tongs get a stable, session-independent container name so the same
@@ -128,7 +128,7 @@ def tong_run_argv(
     label_hash=None,
     workspace=None,
     socket_path=DEFAULT_DOCKER_SOCKET,
-    fifo_host_path=None,
+    secret_channel=False,
     entrypoint=None,
     command=None,
     extra_mount_specs=None,
@@ -143,16 +143,18 @@ def tong_run_argv(
     with the tong-name and config-hash labels so a later launch can detect a stale
     `shared` container. `env` (the tong's plain,
     non-secret values from `plan_tong_secrets`) is passed as `-e` in sorted order;
-    resolved secret values never appear here -- they arrive over the FIFO instead.
+    resolved secret values never appear here -- they arrive over the in-container
+    FIFO instead.
     A socket-holding (broker) `session` tong additionally receives
     `SWARMFORGE_WORKSPACE_HOST_PATH` so it can bind-mount the session workspace into
     the workers it spawns; a tong that sets that name itself keeps its own value. A
     `shared` socket tong does not get it -- its container is reused across sessions,
     so a per-session workspace path would be stale (and a leak) for later ones.
 
-    When the tong has secret env, the launcher passes `fifo_host_path` (bind-mounted
-    read-only as the secret channel), `entrypoint` (`/bin/sh`), and `command` (the
-    wrapper that reads the FIFO and execs the image's real argv) -- see
+    When the tong has secret env, the launcher passes `secret_channel=True` (which
+    mounts a tmpfs at `SECRET_FIFO_DIR` for the wrapper's FIFO), `entrypoint`
+    (`/bin/sh`), and `command` (the wrapper that creates and reads the FIFO, then
+    execs the image's real argv) -- see
     `secret_inject_argv`. With no secrets all three are omitted; the tong's declared
     `entrypoint:`/`command:` are then applied as ordinary docker overrides (via
     `declared_run_override`) so a secret-free tong still honors them, falling back
@@ -178,8 +180,8 @@ def tong_run_argv(
     argv += ["--label", "%s=%s" % (LABEL_TONG_NAME, name)]
     if label_hash:
         argv += ["--label", "%s=%s" % (LABEL_CONFIG_HASH, label_hash)]
-    if fifo_host_path:
-        argv += ["-v", "%s:%s:ro" % (fifo_host_path, SECRET_FIFO_TARGET)]
+    if secret_channel:
+        argv += ["--tmpfs", SECRET_FIFO_TMPFS]
     effective_env = dict(env or {})
     # A `shared` container is reused across sessions, so a per-session workspace
     # path baked into it would be stale for later ones; only `session` tongs get it.

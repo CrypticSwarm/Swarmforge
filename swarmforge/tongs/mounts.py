@@ -9,7 +9,7 @@ judged by the same rules whichever asks.
 import posixpath
 
 from .model import SOCKET_MOUNT
-from .secrets import SECRET_FIFO_TARGET, SECRET_INJECT_SHELL, partition_secret_env
+from .secrets import SECRET_FIFO_DIR, SECRET_INJECT_SHELL, partition_secret_env
 
 
 # Mount magic words (decision: opt-in words, never raw host paths from a
@@ -121,15 +121,16 @@ def reserved_mount_targets(defn, socket_path=DEFAULT_DOCKER_SOCKET):
     """Destinations a tong's own wiring occupies inside it: `{path: why}`.
 
     Derived from the definition, since each only exists for the tongs that ask for
-    it: the secret FIFO (and the shell whose wrapper reads it) come with secret
-    references, the docker socket with a `docker-socket` mount. `mount_target_error`
+    it: the secret-delivery tmpfs (and the shell whose wrapper creates and reads
+    the FIFO on it) come with secret references, the docker socket with a
+    `docker-socket` mount. `mount_target_error`
     compares destinations against this map, as written -- a target that reaches one
     of these only through a symlink inside the image is not something it can see.
     """
     paths = {}
     env = defn.get("env")
     if isinstance(env, dict) and partition_secret_env(env)[1]:
-        paths[SECRET_FIFO_TARGET] = "where the launcher delivers this tong's secrets"
+        paths[SECRET_FIFO_DIR] = "the tmpfs where the launcher delivers this tong's secrets"
         paths[SECRET_INJECT_SHELL] = "the shell the secret wrapper execs"
     if _has_socket_mount(defn):
         paths[socket_path] = "where the docker socket is mounted"
@@ -156,8 +157,8 @@ def mount_target_error(mount, word, target, destination, reserved):
 
     Two rules beyond the grammar: only `workspace` takes a target, and no mount may
     land on one of the `reserved` destinations (`{path: why}`, from
-    `reserved_mount_targets`) -- docker layers overlapping binds, which either
-    shadows the reserved file or has docker create its mountpoint inside the user's
+    `reserved_mount_targets`) -- docker layers overlapping mounts, which either
+    buries the tong's wiring or has docker create a mountpoint inside the user's
     workspace on the host. `destination` is where the mount actually lands
     (`mount_destination`), so a default target is judged like a declared one.
     Validation and argv assembly both ask this, so both give the same verdict and

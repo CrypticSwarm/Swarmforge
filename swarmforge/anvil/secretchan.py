@@ -4,18 +4,15 @@ Resolution shells out to the provider CLIs declared in the user-layer table, so
 an interactive unlock happens in the user's terminal before the anvil starts.
 Delivery never lets the resolved value become a docker `-e` env var (anything
 holding the docker socket could read it back), a command-line argument, or a
-file on disk: it reaches the tong through a host FIFO, so the bytes only ever
-live in the kernel pipe buffer.
+file on disk: it is streamed over `docker exec -i` stdin into a FIFO the tong's
+own wrapper creates on an in-container tmpfs, so the bytes only ever live in
+docker's API stream and the container kernel's pipe buffer.
 
 Both halves are the impure counterpart to the pure planning in
 `swarmforge.tongs`, which decides what to resolve and what shell the tong runs.
 """
 
-import errno
-import os
-import shutil
 import subprocess
-import tempfile
 import time
 
 from swarmforge import tongs
@@ -79,107 +76,62 @@ def make_secret_resolver(providers):
 
 
 # --- Secret delivery channel --------------------------------------------------
-# Resolved secrets reach a tong over a host FIFO bind-mounted into the container,
-# not as `-e`/argv/disk. The bytes only ever live in the kernel pipe buffer: the
-# tong's `/bin/sh` wrapper blocks reading the FIFO, and the launcher writes the
-# `export NAME=value` script once the wrapper has opened the read end, so the
-# values are in the process environment before the real entrypoint starts. The
-# channel is created behind a factory so `run_with_tongs` can be tested with a
-# fake that records the payload instead of touching the filesystem.
+# Resolved secrets reach a tong over a FIFO its own wrapper creates on an
+# in-container tmpfs, not as `-e`/argv/disk (a host FIFO would not survive
+# Docker Desktop's VM boundary; see "Secret delivery" in swarmforge.tongs.secrets).
+# The launcher streams the `export NAME=value` script through `docker exec -i`,
+# and the tong's `/bin/sh` wrapper blocks reading the FIFO, so the values are in
+# the process environment before the real entrypoint starts. The channel is
+# created behind a factory so `run_with_tongs` can be tested with a fake that
+# records the payload instead of invoking docker.
 
 
 class SecretChannel:
-    """A host FIFO handing a tong its secret env through the kernel pipe buffer."""
+    """Streams a tong's secret env into its in-container FIFO via docker exec."""
 
-    def __init__(self, directory, host_path):
-        self._dir = directory
-        self.host_path = host_path
+    def __init__(self, docker, container):
+        self._docker = docker
+        self._container = container
 
     def deliver(self, payload, *, timeout=30.0, poll=0.05,
                 sleep=time.sleep, monotonic=time.monotonic):
-        """Write `payload` once the tong has opened the FIFO's read end.
+        """Stream `payload` into the tong's FIFO once its wrapper has created it.
 
-        Opens the write end non-blocking and retries while no reader is attached
-        (`ENXIO`), so a tong that never starts times out rather than hanging the
-        launcher forever. Once the tong's wrapper has opened the read end the open
-        succeeds; the whole payload is written -- looping over partial writes and
-        a full pipe buffer, since the channel is non-blocking and a payload can
-        exceed the pipe capacity -- and the end closed, signalling EOF so the
-        wrapper's `cat` returns and it execs the real process. Raises
-        `OrchestrationError` if no reader appears, the buffer never drains within
-        `timeout`, or the tong closes the read end before delivery completes (so a
-        truncated secret never reaches the tong silently).
+        Runs `tongs.secret_deliver_command` under `docker exec -i` with `payload`
+        on stdin, retrying while the wrapper has not run `mkfifo` yet
+        (`SECRET_FIFO_ABSENT_EXIT`), so a tong that never reaches its wrapper
+        times out rather than hanging the launcher forever. Once the FIFO exists
+        the payload is copied through (`secret_deliver_command` describes the
+        blocking/EOF handshake). Raises
+        `OrchestrationError` if the FIFO never appears or the payload is never
+        accepted within `timeout`, or if the exec fails outright (a tong that
+        exited before delivery), so a truncated secret never reaches the tong
+        silently.
         """
         deadline = monotonic() + timeout
+        data = payload.encode("utf-8")
         while True:
-            try:
-                fd = os.open(self.host_path, os.O_WRONLY | os.O_NONBLOCK)
-                break
-            except OSError as exc:
-                if exc.errno == errno.ENXIO and monotonic() < deadline:
-                    sleep(poll)
-                    continue
-                if exc.errno == errno.ENXIO:
-                    raise OrchestrationError(
-                        "tong did not open its secret channel within %gs" % timeout
-                    )
-                raise OrchestrationError("secret channel error: %s" % exc)
-        try:
-            data = memoryview(payload.encode("utf-8"))
-            while data:
-                try:
-                    data = data[os.write(fd, data):]
-                except BlockingIOError:
-                    # Pipe buffer full; the tong's `cat` is still draining. Wait,
-                    # bounded by the same deadline, rather than dropping bytes.
-                    if monotonic() >= deadline:
-                        raise OrchestrationError(
-                            "tong did not drain its secret channel within %gs" % timeout
-                        )
-                    sleep(poll)
-                except BrokenPipeError:
-                    raise OrchestrationError(
-                        "tong closed its secret channel before delivery completed"
-                    )
-        finally:
-            os.close(fd)
-
-    def cleanup(self):
-        """Remove the FIFO and its directory (best-effort)."""
-        shutil.rmtree(self._dir, ignore_errors=True)
-
-
-def open_secret_channel(uid=None):
-    """Create a host FIFO in a private temp dir, returning a `SecretChannel`.
-
-    The directory is mode 0700 and the FIFO 0600, so only the launcher's user can
-    open the read end and intercept the secret. When the tong runs as a different
-    non-root uid (from the image config) the FIFO is `chown`ed to it best-effort so
-    that user can read it; a container running as root reads it regardless.
-    """
-    directory = tempfile.mkdtemp(prefix="swarmforge-secret-")
-    os.chmod(directory, 0o700)
-    host_path = os.path.join(directory, "secret-env")
-    os.mkfifo(host_path, 0o600)
-    if uid is not None:
-        try:
-            os.chown(host_path, uid, -1)
-        except OSError:
-            pass  # not permitted (uid differs and launcher is not root); 0600 stands
-    return SecretChannel(directory, host_path)
-
-
-def uid_of(image_user):
-    """Numeric uid from an image's configured user, or None if not a bare uid.
-
-    `docker inspect`'s `.Config.User` may be empty, a numeric `uid[:gid]`, or a
-    name. Only a bare numeric uid can be `chown`ed to without a passwd lookup; a
-    name (or empty/root) leaves the FIFO at its default 0600 launcher ownership.
-    """
-    if not image_user:
-        return None
-    token = image_user.split(":", 1)[0]
-    try:
-        return int(token)
-    except ValueError:
-        return None
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise OrchestrationError(
+                    "tong did not open its secret channel within %gs" % timeout
+                )
+            code, stderr = self._docker.exec_stdin(
+                self._container, tongs.secret_deliver_command(), data,
+                timeout=remaining,
+            )
+            if code == 0:
+                return
+            if code is None:
+                raise OrchestrationError(
+                    "tong did not accept its secret delivery within %gs" % timeout
+                )
+            if code == tongs.SECRET_FIFO_ABSENT_EXIT:
+                sleep(poll)
+                continue
+            raise OrchestrationError(
+                "secret delivery failed (docker exec exit %d): %s" % (
+                    code,
+                    stderr or "the tong may have exited before delivery completed",
+                )
+            )
