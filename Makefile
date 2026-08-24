@@ -255,6 +255,7 @@ define run_agent_container
 	  -e SWARMFORGE_UID="$(UID)" \
 	  -e SWARMFORGE_GID="$(GID)" \
 	  -e TZ="$(TIMEZONE)" \
+	  -e TERM -e COLORTERM \
 	  $(2) \
 	  -v "$$workspace_dir":"$(WORKSPACE_MOUNT)" \
 	  $${workspace_path_mount[@]+"$${workspace_path_mount[@]}"} \
