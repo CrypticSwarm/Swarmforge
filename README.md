@@ -24,6 +24,7 @@ Override the target file with `OC_RC_FILE=/path/to/rc bash ./install.sh`.
 make build_opencode
 make build_claude
 make build_grok
+make build_codex
 ```
 
 To pin OpenCode to a specific release instead of latest:
@@ -34,13 +35,14 @@ make update_opencode OPENCODE_VERSION=1.4.14
 ```
 
 The images share the same Debian base and toolchain (Node.js + Python; see `anvil/Dockerfile`).
-Build targets pass `AGENT=opencode|claude|grok` so only the requested agent install step runs.
+Build targets pass `AGENT=opencode|claude|grok|codex` so only the requested agent install step runs.
 
 3. Run from your project directory:
 
 - OpenCode: `oc`
 - Claude Code: `make run_claude PROJECT_DIR=$(pwd)`
 - Grok Build: `make run_grok PROJECT_DIR=$(pwd)`
+- Codex CLI: `make run_codex PROJECT_DIR=$(pwd)`
 - Pass OpenCode overrides as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
 - Override the container timezone per run (affects git commit timestamps): `oc TIMEZONE=America/New_York`.
 
@@ -60,10 +62,10 @@ alias ccd='make -C PATH_TO_SWARMFORGE run_claude PROJECT_DIR=$(pwd) CLAUDE_DATA_
 
 - `GITCONFIG_FILE` points at an agent-specific git config instead of `~/.gitconfig`.
 - For Claude Code, use separate `CLAUDE_DATA_DIR` roots to isolate work/personal logins and session state. `CLAUDE_HOME_DIR` defaults to `$(CLAUDE_DATA_DIR)/home`.
-- Config layering uses `SWARMFORGE_USER_CONFIG_DIR`, `SWARMFORGE_ORG_CONFIG_DIR`, and `SWARMFORGE_REPO_CONFIG_DIR` (their defaults differ per harness — see OpenCode layering under [Skills](#skills) and [Claude config layering](#claude-config-layering)). Set `SWARMFORGE_ORG_CONFIG_ROOT=/path/to/org-repo` to resolve org defaults to `.opencode` (OpenCode) and `.claude` (Claude) under that root.
+- Config layering uses `SWARMFORGE_USER_CONFIG_DIR`, `SWARMFORGE_ORG_CONFIG_DIR`, and `SWARMFORGE_REPO_CONFIG_DIR` (their defaults differ per harness — see OpenCode layering under [Skills](#skills) and [Claude config layering](#claude-config-layering)). Set `SWARMFORGE_ORG_CONFIG_ROOT=/path/to/org-repo` to resolve org defaults to each harness's own directory under that root (`.opencode`, `.claude`, `.grok`, `.codex`).
 
 `SWARMFORGE_REPO_CONFIG_DIR` refers to the Swarmforge checkout (the harness repo), not the working project mounted at `/workspace`.
-By default it is `$(SWARMFORGE_DIR)/opencode` for `run_opencode` and `$(SWARMFORGE_DIR)/claude` (if present) for `run_claude`.
+By default each `run_*` target points it at that harness's directory in the checkout: `$(SWARMFORGE_DIR)/opencode`, and `$(SWARMFORGE_DIR)/claude`, `/grok`, `/codex` if present.
 Project-local config in the working repo (for example `.opencode/`) is still handled by the agent tools themselves.
 
 ### Git repos and worktrees
@@ -108,8 +110,9 @@ The repo is mounted at a stable path derived from the git remote slug (with `/wo
 ### Shared assets (skills, commands, agents)
 
 Every harness mounts this repo's `skills/` and `commands/` into the container, exported as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
-The entrypoint copies them into each harness's native location: the container-local config dir for Claude (see [The config directory](#the-config-directory)), the merged config dir for OpenCode (`~/.config/opencode/skills/`) and Grok (`~/.grok/skills/`).
-For Claude and Grok those dirs are container-private and rebuilt each run, so per-repo assets never accumulate in the persistent home or leak into other repos' sessions.
+The entrypoint copies them into each harness's native location: the container-local config dir for Claude (see [The config directory](#the-config-directory)), the merged config dir for OpenCode (`~/.config/opencode/skills/`) and Grok (`~/.grok/skills/`), and `~/.agents/skills/` for Codex, whose native user location is the `.agents` convention itself.
+For Claude, Grok, and Codex those dirs are container-private and rebuilt each run, so per-repo assets never accumulate in the persistent home or leak into other repos' sessions.
+Codex has no user-defined slash commands, so it receives skills only.
 
 Skills, commands, and agents come from four layers, lowest to highest precedence — later layers override same-named entries wholesale (never file-merged):
 
@@ -185,6 +188,30 @@ Grok config layering uses the same three sources and order of trust as Claude (l
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.grok` when that root is set)
 
 These merge into `~/.grok` in the container at startup, with reset disabled so credentials survive the run. Rebuild only the Grok install layer with `make update_grok`.
+
+## Codex CLI
+
+`make run_codex` starts an [OpenAI Codex CLI](https://developers.openai.com/codex/cli) container with the same workspace, git-worktree, and repo-slug mounting as `make run_claude`.
+The image installs the official CLI via `curl -fsSL https://chatgpt.com/codex/install.sh | sh`.
+That release is a package rather than a lone binary -- `bin/codex` resolves ripgrep, `bwrap`, and a bundled zsh beside itself -- so it stays whole under `/opt/codex` and the installer's symlink is what lands on `PATH`.
+Codex state persists by mounting `$(CODEX_HOME_DIR)` to `/home/anvil`, keeping `~/.codex/` (`config.toml`, credentials, sessions, and the project trust levels a stable mount path keeps valid).
+`CODEX_HOME_DIR` defaults to `$(CODEX_DATA_DIR)/home`; use separate `CODEX_DATA_DIR` roots to isolate work/personal logins, as with `CLAUDE_DATA_DIR`.
+
+Codex reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
+Shared skills reach `~/.agents/skills/`, Codex's native user location, through the [asset pipeline](#shared-assets-skills-commands-agents) above; commands do not travel, because Codex's only extension point is skills.
+Subagent definitions are not translated for Codex; the unified-agent pipeline covers OpenCode and Claude only.
+MCP tongs reach Codex as `[mcp_servers.<name>]` entries in a managed block of the merged `~/.codex/config.toml`, on the same terms as [Grok](#grok-build-cli): rewritten every run, stripped when a session has no MCP tongs, and yielding to a server the user already defines under that name.
+
+Codex config layering uses the same three sources and order of trust as Claude (lowest to highest precedence):
+- `SWARMFORGE_REPO_CONFIG_DIR` (default `codex/`, if present)
+- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.codex`)
+- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.codex` when that root is set)
+
+These merge into `~/.codex` in the container at startup, with reset disabled so credentials survive the run. Rebuild only the Codex install layer with `make update_codex`.
+The merge skips `packages/` -- the host installer's release tree, which the container has no use for -- along with `sessions/`, `history.jsonl`, and `log/`, so one machine's transcripts do not follow the user config layer into the container's home.
+
+Codex brings its own sandbox, which is redundant inside an anvil and may not initialize in one at all, since its Landlock and `bwrap` paths need kernel permissions a container is not guaranteed.
+Relax it per run with `CODEX_ARGS='--dangerously-bypass-approvals-and-sandbox'`, or per install by setting `sandbox_mode` in a config layer.
 
 ## Agents
 
