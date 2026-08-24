@@ -45,6 +45,7 @@ copy_dir_entries() {
 
   [ -n "${src_dir}" ] || return 0
   [ -d "${src_dir}" ] || return 0
+  [ -n "${dst_dir}" ] || return 0
 
   mkdir -p "${dst_dir}"
 
@@ -121,6 +122,11 @@ copy_shared_assets() {
     grok)
       skills_dst="${ANVIL_HOME}/.grok/skills"
       commands_dst="${ANVIL_HOME}/.grok/commands"
+      ;;
+    codex)
+      # No user-defined slash commands: skills are the one extension point.
+      skills_dst="${ANVIL_HOME}/.agents/skills"
+      commands_dst=""
       ;;
     opencode)
       config_dest="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}"
@@ -243,6 +249,10 @@ merge_config_layer() {
       # this dest is a persistent home: the container has its own
       # /usr/local/bin/grok, so copying them in would only leave them there.
       exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./bin --exclude=./downloads --exclude=./completions"
+      ;;
+    codex)
+      exclude_args="${exclude_args} --exclude=./skills --exclude=./packages"
+      exclude_args="${exclude_args} --exclude=./sessions --exclude=./history.jsonl --exclude=./log"
       ;;
     opencode)
       exclude_args="${exclude_args} --exclude=./skills --exclude=./command"

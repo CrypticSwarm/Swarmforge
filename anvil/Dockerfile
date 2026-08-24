@@ -132,6 +132,11 @@ RUN set -eux; \
       install -m 0755 "${grok_bin}" /usr/local/bin/grok; \
       rm -rf /root/.grok; \
       ;; \
+    codex) \
+      echo "Installing Codex CLI (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
+      export CODEX_HOME=/opt/codex CODEX_INSTALL_DIR=/usr/local/bin; \
+      curl -fsSL https://chatgpt.com/codex/install.sh | sh; \
+      ;; \
     *) \
       printf '%s\n' "Unsupported AGENT: ${AGENT}" >&2; \
       exit 1; \
@@ -153,5 +158,7 @@ COPY anvil/claude-settings.json /usr/local/share/swarmforge/claude-settings.json
 RUN chmod +x /usr/local/bin/swarmforge-statusline
 
 FROM agent-runtime AS grok-runtime
+
+FROM agent-runtime AS codex-runtime
 
 FROM opencode-runtime AS default
