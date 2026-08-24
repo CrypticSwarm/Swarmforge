@@ -12,6 +12,8 @@ AGENT_BIN="${SWARMFORGE_AGENT_BIN:-opencode}"
 AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
 CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
+CODEX_CONFIG_HOME="/run/swarmforge/codex-config"
+CODEX_CONFIG_FILE="${ANVIL_HOME}/.codex/config.toml"
 
 # State only: nothing claude loads as configuration or code belongs here.
 CLAUDE_STATE_DIRS="projects sessions file-history session-env shell-snapshots
@@ -376,10 +378,20 @@ prepare_layered_config() {
 
 prepare_agent_config() {
   config_dest="${SWARMFORGE_CONFIG_DEST:-}"
+  reset_config="${SWARMFORGE_CONFIG_RESET:-0}"
 
   # Not the caller's to choose: a merged layer landing in the shared home
   # would outlive the container.
   [ "${AGENT_BIN}" != "claude" ] || config_dest="${CLAUDE_CONFIG_HOME}"
+
+  # Codex keeps credentials and sessions beside config.toml, so its native
+  # home stays persistent while configuration is rebuilt somewhere that dies
+  # with the container. Publishing by copy does not change how Codex atomically
+  # replaces credential files in the persistent directory.
+  if [ "${AGENT_BIN}" = "codex" ]; then
+    config_dest="${CODEX_CONFIG_HOME}"
+    reset_config=1
+  fi
 
   [ -n "${config_dest}" ] || return 0
 
@@ -388,7 +400,15 @@ prepare_agent_config() {
     "${SWARMFORGE_CONFIG_USER_DIR:-}" \
     "${SWARMFORGE_CONFIG_ORG_DIR:-}" \
     "${SWARMFORGE_CONFIG_REPO_DIR:-}" \
-    "${SWARMFORGE_CONFIG_RESET:-0}"
+    "${reset_config}"
+
+  if [ "${AGENT_BIN}" = "codex" ]; then
+    # Truncation clears the prior run even when no layer supplies config.toml.
+    : > "${CODEX_CONFIG_FILE}"
+    if [ -f "${CODEX_CONFIG_HOME}/config.toml" ]; then
+      cp "${CODEX_CONFIG_HOME}/config.toml" "${CODEX_CONFIG_FILE}"
+    fi
+  fi
 }
 
 if [ ! -x "${AGENT_BIN_PATH}" ]; then

@@ -393,6 +393,36 @@ class ClaudeConfigHome(unittest.TestCase):
                 self.entrypoint.rindex("\n%s\n" % earlier), call)
 
 
+class CodexConfigDelivery(unittest.TestCase):
+    """Codex layers are rebuilt off-home before config.toml is published."""
+
+    def setUp(self):
+        with open(ENTRYPOINT) as handle:
+            self.entrypoint = handle.read()
+
+    def function_body(self, name):
+        body = self.entrypoint[self.entrypoint.index("%s() {" % name):]
+        return body[:body.index("\n}\n")]
+
+    def test_build_directory_is_outside_host_mounts(self):
+        match = re.search(
+            r'^CODEX_CONFIG_HOME="([^"$]+)"$', self.entrypoint, re.M)
+        self.assertIsNotNone(match)
+        for mounted in ("/home/", "/workspace"):
+            self.assertFalse(match.group(1).startswith(mounted))
+
+    def test_codex_forces_a_fresh_build_and_publishes_last(self):
+        body = self.function_body("prepare_agent_config")
+        self.assertIn('config_dest="${CODEX_CONFIG_HOME}"', body)
+        self.assertIn("reset_config=1", body)
+        prepare = body.index("prepare_layered_config")
+        truncate = body.index(': > "${CODEX_CONFIG_FILE}"')
+        publish = body.index(
+            'cp "${CODEX_CONFIG_HOME}/config.toml" "${CODEX_CONFIG_FILE}"')
+        self.assertLess(prepare, truncate)
+        self.assertLess(truncate, publish)
+
+
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 

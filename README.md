@@ -194,20 +194,20 @@ These merge into `~/.grok` in the container at startup, with reset disabled so c
 `make run_codex` starts an [OpenAI Codex CLI](https://developers.openai.com/codex/cli) container with the same workspace, git-worktree, and repo-slug mounting as `make run_claude`.
 The image installs the official CLI via `curl -fsSL https://chatgpt.com/codex/install.sh | sh`.
 That release is a package rather than a lone binary -- `bin/codex` resolves ripgrep, `bwrap`, and a bundled zsh beside itself -- so it stays whole under `/opt/codex` and the installer's symlink is what lands on `PATH`.
-Codex state persists by mounting `$(CODEX_HOME_DIR)` to `/home/anvil`, keeping `~/.codex/` (`config.toml`, credentials, sessions, and the project trust levels a stable mount path keeps valid).
+Codex state persists by mounting `$(CODEX_HOME_DIR)` to `/home/anvil`, keeping credentials, sessions, and the project trust levels a stable mount path keeps valid.
 `CODEX_HOME_DIR` defaults to `$(CODEX_DATA_DIR)/home`; use separate `CODEX_DATA_DIR` roots to isolate work/personal logins, as with `CLAUDE_DATA_DIR`.
 
 Codex reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
 Shared skills reach `~/.agents/skills/`, Codex's native user location, through the [asset pipeline](#shared-assets-skills-commands-agents) above; commands do not travel, because Codex's only extension point is skills.
 Subagent definitions are not translated for Codex; the unified-agent pipeline covers OpenCode and Claude only.
-MCP tongs reach Codex as `[mcp_servers.<name>]` entries in a managed block of the merged `~/.codex/config.toml`, on the same terms as [Grok](#grok-build-cli): rewritten every run, stripped when a session has no MCP tongs, and yielding to a server the user already defines under that name.
+MCP tongs reach Codex as `[mcp_servers.<name>]` entries in a managed block of the derived `~/.codex/config.toml`, rewritten from the current layers every run and yielding to a server the user already defines under that name.
 
 Codex config layering uses the same three sources and order of trust as Claude (lowest to highest precedence):
 - `SWARMFORGE_REPO_CONFIG_DIR` (default `codex/`, if present)
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.codex`)
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.codex` when that root is set)
 
-These merge into `~/.codex` in the container at startup, with reset disabled so credentials survive the run. Rebuild only the Codex install layer with `make update_codex`.
+The entrypoint merges these into a container-local directory from scratch, then publishes only `config.toml` through a per-run host temporary file mounted over Codex's native path. Repository and organization configuration therefore cannot be loaded by a later run, even after an abnormal container stop, while credentials and sessions remain at their native persistent paths and can still be replaced atomically. Changes Codex makes to `config.toml` during a session are transient and may not support rename-based replacement of that mounted file; put durable settings in a source layer instead. Rebuild only the Codex install layer with `make update_codex`.
 The merge skips `packages/` -- the host installer's release tree, which the container has no use for -- along with `sessions/`, `history.jsonl`, and `log/`, so one machine's transcripts do not follow the user config layer into the container's home.
 
 Codex brings its own sandbox, which is redundant inside an anvil and may not initialize in one at all, since its Landlock and `bwrap` paths need kernel permissions a container is not guaranteed.

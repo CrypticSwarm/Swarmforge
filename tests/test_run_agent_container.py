@@ -261,6 +261,28 @@ class MaskedAssetDirs(MakeRecipeCase):
         self.assertIn("/home/anvil/.agents/skills", masked)
 
 
+class CodexConfigMounts(MakeRecipeCase):
+    """Codex config is per-run while native state remains persistent."""
+
+    def test_temporary_config_shadows_the_persistent_home(self):
+        mounts = self.mounts(self.docker_argv("run_codex", self.make_repo()))
+        home = os.path.join(self.home, ".local", "share", "codex", "home")
+        self.assertIn("%s:/home/anvil" % home, mounts)
+        config_mount = next(
+            mount for mount in mounts
+            if mount.endswith(":/home/anvil/.codex/config.toml"))
+        source = config_mount.split(":", 1)[0]
+        self.assertFalse(source.startswith(home))
+        self.assertTrue(os.path.basename(source).startswith(
+            "swarmforge-codex-config."))
+        self.assertFalse(os.path.exists(source))
+
+    def test_native_state_paths_are_not_individually_mounted(self):
+        mounts = self.mounts(self.docker_argv("run_codex", self.make_repo()))
+        targets = [mount.split(":", 2)[1] for mount in mounts]
+        for state in ("auth.json", "sessions", "history.jsonl", "log"):
+            self.assertNotIn("/home/anvil/.codex/%s" % state, targets)
+
 class HostTerminalEnv(MakeRecipeCase):
     """run_* forwards host TERM/COLORTERM via docker `-e NAME` passthrough.
 
