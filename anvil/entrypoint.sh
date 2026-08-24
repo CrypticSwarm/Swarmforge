@@ -118,6 +118,10 @@ copy_shared_assets() {
       skills_dst="${CLAUDE_CONFIG_HOME}/skills"
       commands_dst="${CLAUDE_CONFIG_HOME}/commands"
       ;;
+    grok)
+      skills_dst="${ANVIL_HOME}/.grok/skills"
+      commands_dst="${ANVIL_HOME}/.grok/commands"
+      ;;
     opencode)
       config_dest="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}"
       skills_dst="${config_dest}/skills"
@@ -233,6 +237,12 @@ merge_config_layer() {
     claude)
       exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./agents"
       exclude_args="${exclude_args} --exclude=./settings.json"
+      ;;
+    grok)
+      # bin/downloads/completions are the host installer's own artifacts and
+      # this dest is a persistent home: the container has its own
+      # /usr/local/bin/grok, so copying them in would only leave them there.
+      exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./bin --exclude=./downloads --exclude=./completions"
       ;;
     opencode)
       exclude_args="${exclude_args} --exclude=./skills --exclude=./command"

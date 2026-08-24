@@ -101,7 +101,7 @@ Claude state persists by mounting `$(CLAUDE_HOME_DIR)` to `/home/anvil`, keeping
 The repo is mounted at a stable path derived from the git remote slug (with `/workspace` still mounted for compatibility), which groups sessions consistently across worktrees without host-specific absolute paths.
 
 - To reuse existing host-native Claude sessions directly, run with `CLAUDE_HOME_DIR=$HOME`.
-- Remote slugs map deterministically, e.g. `git@github.com:crypticswarm/Swarmforge.git` -> `/repos/crypticswarm/Swarmforge`. Override with `CLAUDE_REPO_SLUG=crypticswarm/Swarmforge` and `CLAUDE_REMOTE_NAME=<remote>`.
+- Remote slugs map deterministically, e.g. `git@github.com:crypticswarm/Swarmforge.git` -> `/repos/crypticswarm/Swarmforge`. Override with `SWARMFORGE_REPO_SLUG=crypticswarm/Swarmforge` and `SWARMFORGE_REMOTE_NAME=<remote>`.
 
 ### Shared assets (skills, commands, agents)
 

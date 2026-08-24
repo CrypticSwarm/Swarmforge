@@ -125,6 +125,13 @@ RUN set -eux; \
       rm -rf /root/.claude /root/.claude.json /root/.local/share/claude; \
       rm -f /root/.local/bin/claude; \
       ;; \
+    grok) \
+      echo "Installing Grok Build CLI (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
+      curl -fsSL https://x.ai/cli/install.sh | bash; \
+      grok_bin="$(readlink -f /root/.grok/bin/grok)"; \
+      install -m 0755 "${grok_bin}" /usr/local/bin/grok; \
+      rm -rf /root/.grok; \
+      ;; \
     *) \
       printf '%s\n' "Unsupported AGENT: ${AGENT}" >&2; \
       exit 1; \
@@ -144,5 +151,7 @@ FROM agent-runtime AS claude-runtime
 COPY anvil/statusline.sh /usr/local/bin/swarmforge-statusline
 COPY anvil/claude-settings.json /usr/local/share/swarmforge/claude-settings.json
 RUN chmod +x /usr/local/bin/swarmforge-statusline
+
+FROM agent-runtime AS grok-runtime
 
 FROM opencode-runtime AS default
