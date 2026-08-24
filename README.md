@@ -177,6 +177,7 @@ Grok state persists by mounting `$(GROK_HOME_DIR)` to `/home/anvil`, keeping `~/
 Grok reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
 Shared skills reach `~/.grok/skills/`, Grok's native location, through the [asset pipeline](#shared-assets-skills-commands-agents) above.
 Subagent definitions are not translated for Grok; the unified-agent pipeline covers OpenCode and Claude only.
+MCP tongs reach Grok as `[mcp_servers.<name>]` entries in a managed block of the merged `~/.grok/config.toml` — user-level config, so no folder-trust prompt. That file is in the persistent home, so the block is rewritten every run and stripped when a session has no MCP tongs; a server the user already defines under the same name wins over the generated entry.
 
 Grok config layering uses the same three sources and order of trust as Claude (lowest to highest precedence):
 - `SWARMFORGE_REPO_CONFIG_DIR` (default `grok/`, if present)
