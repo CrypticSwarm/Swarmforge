@@ -104,13 +104,12 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/anvil-entrypoint.sh"]
 FROM runtime-base AS agent-runtime
 
 ARG AGENT=opencode
-ARG OPENCODE_INSTALL_BUST=0
 ARG OPENCODE_VERSION=
-ARG CLAUDE_INSTALL_BUST=0
+ARG SWARMFORGE_HARNESS_INSTALL_BUST=0
 RUN set -eux; \
   case "${AGENT}" in \
     opencode) \
-      echo "Installing OpenCode (cache bust: ${OPENCODE_INSTALL_BUST})"; \
+      echo "Installing OpenCode (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
       if [ -n "${OPENCODE_VERSION}" ]; then \
         curl -fsSL https://opencode.ai/install | bash -s -- --version "${OPENCODE_VERSION}"; \
       else \
@@ -119,7 +118,7 @@ RUN set -eux; \
       install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode; \
       ;; \
     claude) \
-      echo "Installing Claude Code (cache bust: ${CLAUDE_INSTALL_BUST})"; \
+      echo "Installing Claude Code (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
       curl -fsSL https://claude.ai/install.sh | bash; \
       claude_bin="$(readlink -f /root/.local/bin/claude)"; \
       install -m 0755 "${claude_bin}" /usr/local/bin/claude; \

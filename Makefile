@@ -25,12 +25,11 @@ CLAUDE_REMOTE_NAME ?= origin
 GITCONFIG_FILE ?= $(HOME)/.gitconfig
 ENV_FILE ?= $(PROJECT_DIR)/.swarmforge/env
 
-# Set this to a changing value to refresh the `curl https://opencode.ai/install` layer.
-OPENCODE_INSTALL_BUST ?= 0
+# Set this to a changing value to refresh the agent install layer. A build
+# target names the one agent it installs, so this busts only that image.
+SWARMFORGE_HARNESS_INSTALL_BUST ?= 0
 # Optional OpenCode version pin (example: 1.4.14)
 OPENCODE_VERSION ?=
-# Set this to a changing value to refresh the `curl https://claude.ai/install.sh` layer.
-CLAUDE_INSTALL_BUST ?= 0
 
 MODEL        ?=
 EVAL_MODEL   ?= $(MODEL)
@@ -259,13 +258,13 @@ build_opencode:
 	  --build-arg AGENT=opencode \
 	  --build-arg OPENCODE_VERSION=$(OPENCODE_VERSION) \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
-	  --build-arg OPENCODE_INSTALL_BUST=$(OPENCODE_INSTALL_BUST) \
+	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
 	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
 	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)"
 
 # Rebuild only from the OpenCode install step onward.
 update_opencode:
-	$(MAKE) build_opencode OPENCODE_INSTALL_BUST=$(shell date +%s)
+	$(MAKE) build_opencode SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
 
 # Build the reference docker-task broker image. It is not used until a broker tong
 # definition is enabled in a layer (see tongs/docker-broker/docker-broker.tong.yaml).
@@ -277,13 +276,13 @@ build_claude:
 	  --target claude-runtime \
 	  --build-arg AGENT=claude \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
-	  --build-arg CLAUDE_INSTALL_BUST=$(CLAUDE_INSTALL_BUST) \
+	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
 	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
 	  -t $(CLAUDE_IMG) "$(SWARMFORGE_DIR)"
 
 # Rebuild only from the Claude install step onward.
 update_claude:
-	$(MAKE) build_claude CLAUDE_INSTALL_BUST=$(shell date +%s)
+	$(MAKE) build_claude SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
 
 run_opencode: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.config/opencode
 run_opencode: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode,)
