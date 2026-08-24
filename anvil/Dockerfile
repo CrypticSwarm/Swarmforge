@@ -104,13 +104,12 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/anvil-entrypoint.sh"]
 FROM runtime-base AS agent-runtime
 
 ARG AGENT=opencode
-ARG OPENCODE_INSTALL_BUST=0
 ARG OPENCODE_VERSION=
-ARG CLAUDE_INSTALL_BUST=0
+ARG SWARMFORGE_HARNESS_INSTALL_BUST=0
 RUN set -eux; \
   case "${AGENT}" in \
     opencode) \
-      echo "Installing OpenCode (cache bust: ${OPENCODE_INSTALL_BUST})"; \
+      echo "Installing OpenCode (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
       if [ -n "${OPENCODE_VERSION}" ]; then \
         curl -fsSL https://opencode.ai/install | bash -s -- --version "${OPENCODE_VERSION}"; \
       else \
@@ -119,12 +118,19 @@ RUN set -eux; \
       install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode; \
       ;; \
     claude) \
-      echo "Installing Claude Code (cache bust: ${CLAUDE_INSTALL_BUST})"; \
+      echo "Installing Claude Code (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
       curl -fsSL https://claude.ai/install.sh | bash; \
       claude_bin="$(readlink -f /root/.local/bin/claude)"; \
       install -m 0755 "${claude_bin}" /usr/local/bin/claude; \
       rm -rf /root/.claude /root/.claude.json /root/.local/share/claude; \
       rm -f /root/.local/bin/claude; \
+      ;; \
+    grok) \
+      echo "Installing Grok Build CLI (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
+      curl -fsSL https://x.ai/cli/install.sh | bash; \
+      grok_bin="$(readlink -f /root/.grok/bin/grok)"; \
+      install -m 0755 "${grok_bin}" /usr/local/bin/grok; \
+      rm -rf /root/.grok; \
       ;; \
     *) \
       printf '%s\n' "Unsupported AGENT: ${AGENT}" >&2; \
@@ -145,5 +151,7 @@ FROM agent-runtime AS claude-runtime
 COPY anvil/statusline.sh /usr/local/bin/swarmforge-statusline
 COPY anvil/claude-settings.json /usr/local/share/swarmforge/claude-settings.json
 RUN chmod +x /usr/local/bin/swarmforge-statusline
+
+FROM agent-runtime AS grok-runtime
 
 FROM opencode-runtime AS default

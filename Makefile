@@ -11,6 +11,8 @@ OPENCODE_IMG ?= opencode:local
 OPENCODE_CTR ?= opencode-$(PROJECT_NAME)
 CLAUDE_IMG  ?= claude-code:local
 CLAUDE_CTR  ?= claude-$(PROJECT_NAME)
+GROK_IMG    ?= grok-build:local
+GROK_CTR    ?= grok-$(PROJECT_NAME)
 
 BROKER_IMG  ?= swarmforge-docker-broker:latest
 
@@ -20,17 +22,20 @@ OPENCODE_ARGS ?=
 CLAUDE_DATA_DIR ?= $(HOME)/.local/share/claude
 CLAUDE_HOME_DIR ?= $(CLAUDE_DATA_DIR)/home
 CLAUDE_ARGS ?=
-CLAUDE_REPO_SLUG ?=
-CLAUDE_REMOTE_NAME ?= origin
+GROK_DATA_DIR ?= $(HOME)/.local/share/grok
+GROK_HOME_DIR ?= $(GROK_DATA_DIR)/home
+GROK_ARGS ?=
+# Stable per-repo mount path knobs, shared by every persistent-home harness.
+SWARMFORGE_REPO_SLUG ?=
+SWARMFORGE_REMOTE_NAME ?= origin
 GITCONFIG_FILE ?= $(HOME)/.gitconfig
 ENV_FILE ?= $(PROJECT_DIR)/.swarmforge/env
 
-# Set this to a changing value to refresh the `curl https://opencode.ai/install` layer.
-OPENCODE_INSTALL_BUST ?= 0
+# Set this to a changing value to refresh the agent install layer. A build
+# target names the one agent it installs, so this busts only that image.
+SWARMFORGE_HARNESS_INSTALL_BUST ?= 0
 # Optional OpenCode version pin (example: 1.4.14)
 OPENCODE_VERSION ?=
-# Set this to a changing value to refresh the `curl https://claude.ai/install.sh` layer.
-CLAUDE_INSTALL_BUST ?= 0
 
 MODEL        ?=
 EVAL_MODEL   ?= $(MODEL)
@@ -151,7 +156,20 @@ CLAUDE_RUN_MOUNTS = \
 	-v "$(CLAUDE_HOME_DIR)/.claude/plugins":$(ANVIL_HOME)/.claude/plugins:ro \
 	$(SWARMFORGE_LAYER_MOUNTS)
 
-.PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude run_opencode stop_opencode run_claude stop_claude run_ollama logs_ollama stop_ollama gpu_stat clean \
+GROK_RUN_ENV = \
+	-e SWARMFORGE_AGENT_BIN=grok \
+	$(SWARMFORGE_LAYER_ENV)
+
+# Grok reads its skills from ~/.grok/skills natively. Masking that dir and
+# ~/.grok/commands with tmpfs keeps them container-private, so per-repo assets
+# never accumulate in the persistent home. exec: skill packages ship scripts.
+GROK_RUN_MOUNTS = \
+	-v "$(GROK_HOME_DIR)":$(ANVIL_HOME) \
+	--tmpfs $(ANVIL_HOME)/.grok/skills:exec \
+	--tmpfs $(ANVIL_HOME)/.grok/commands \
+	$(SWARMFORGE_LAYER_MOUNTS)
+
+.PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude build_grok update_grok run_opencode stop_opencode run_claude stop_claude run_grok stop_grok run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills lint
 
 # The workspace is mounted read-write, but the paths inside its git dir that
@@ -176,9 +194,9 @@ define run_agent_container
 		env_file_flag=(); \
 	fi; \
 	if [ "$(6)" = "repo-slug" ]; then \
-		repo_slug="$(CLAUDE_REPO_SLUG)"; \
+		repo_slug="$(SWARMFORGE_REPO_SLUG)"; \
 		if [ -z "$$repo_slug" ]; then \
-			remote_url="$$(git -C "$$workspace_dir" remote get-url "$(CLAUDE_REMOTE_NAME)" 2>/dev/null || true)"; \
+			remote_url="$$(git -C "$$workspace_dir" remote get-url "$(SWARMFORGE_REMOTE_NAME)" 2>/dev/null || true)"; \
 			if [ -n "$$remote_url" ]; then \
 				remote_slug="$$remote_url"; \
 				remote_slug="$${remote_slug%.git}"; \
@@ -237,6 +255,7 @@ define run_agent_container
 	  -e SWARMFORGE_UID="$(UID)" \
 	  -e SWARMFORGE_GID="$(GID)" \
 	  -e TZ="$(TIMEZONE)" \
+	  -e TERM -e COLORTERM \
 	  $(2) \
 	  -v "$$workspace_dir":"$(WORKSPACE_MOUNT)" \
 	  $${workspace_path_mount[@]+"$${workspace_path_mount[@]}"} \
@@ -259,13 +278,13 @@ build_opencode:
 	  --build-arg AGENT=opencode \
 	  --build-arg OPENCODE_VERSION=$(OPENCODE_VERSION) \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
-	  --build-arg OPENCODE_INSTALL_BUST=$(OPENCODE_INSTALL_BUST) \
+	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
 	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
 	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)"
 
 # Rebuild only from the OpenCode install step onward.
 update_opencode:
-	$(MAKE) build_opencode OPENCODE_INSTALL_BUST=$(shell date +%s)
+	$(MAKE) build_opencode SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
 
 # Build the reference docker-task broker image. It is not used until a broker tong
 # definition is enabled in a layer (see tongs/docker-broker/docker-broker.tong.yaml).
@@ -277,13 +296,26 @@ build_claude:
 	  --target claude-runtime \
 	  --build-arg AGENT=claude \
 	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
-	  --build-arg CLAUDE_INSTALL_BUST=$(CLAUDE_INSTALL_BUST) \
+	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
 	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
 	  -t $(CLAUDE_IMG) "$(SWARMFORGE_DIR)"
 
 # Rebuild only from the Claude install step onward.
 update_claude:
-	$(MAKE) build_claude CLAUDE_INSTALL_BUST=$(shell date +%s)
+	$(MAKE) build_claude SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
+
+build_grok:
+	docker build \
+	  --target grok-runtime \
+	  --build-arg AGENT=grok \
+	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
+	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
+	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
+	  -t $(GROK_IMG) "$(SWARMFORGE_DIR)"
+
+# Rebuild only from the Grok install step onward.
+update_grok:
+	$(MAKE) build_grok SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
 
 run_opencode: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.config/opencode
 run_opencode: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode,)
@@ -315,6 +347,24 @@ run_claude: opencode_network
 stop_claude:
 	@docker rm -f $(CLAUDE_CTR) >/dev/null 2>&1 || true
 
+run_grok: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.grok
+run_grok: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.grok,)
+run_grok: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/grok
+run_grok: SWARMFORGE_CONFIG_DEST ?= $(ANVIL_HOME)/.grok
+run_grok: SWARMFORGE_CONFIG_RESET ?= 0
+run_grok: opencode_network
+	@mkdir -p "$(GROK_HOME_DIR)"
+	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
+	@mkdir -p "$(GROK_HOME_DIR)/.swarmforge"
+	@mkdir -p "$(GROK_HOME_DIR)/.swarmforge/skills"
+	@mkdir -p "$(GROK_HOME_DIR)/.swarmforge/command"
+	@mkdir -p "$(GROK_HOME_DIR)/.grok/skills"
+	@mkdir -p "$(GROK_HOME_DIR)/.grok/commands"
+	$(call run_agent_container,$(GROK_CTR),$(GROK_RUN_ENV),$(GROK_RUN_MOUNTS),$(GROK_IMG),$(GROK_ARGS),repo-slug,grok)
+
+stop_grok:
+	@docker rm -f $(GROK_CTR) >/dev/null 2>&1 || true
+
 run_ollama: opencode_network
 	@docker rm -f $(OLLAMA_CTR) >/dev/null 2>&1 || true
 	docker run -d --rm --name $(OLLAMA_CTR) \
@@ -336,7 +386,7 @@ stop_ollama:
 gpu_stat:
 	nvidia-smi
 
-clean: stop_opencode stop_claude stop_ollama
+clean: stop_opencode stop_claude stop_grok stop_ollama
 	@docker network rm $(NETWORK) >/dev/null 2>&1 || true
 
 run_llama_3-1-8b:

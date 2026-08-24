@@ -234,6 +234,31 @@ class ClaudeSharedHomeMounts(MakeRecipeCase):
         self.assertNotIn("--tmpfs", argv)
 
 
+class HostTerminalEnv(MakeRecipeCase):
+    """run_* forwards host TERM/COLORTERM via docker `-e NAME` passthrough.
+
+    Values are not baked into argv; docker copies them from run-anvil's
+    environment at start time.
+    """
+
+    def env_flags(self, argv):
+        image = next(
+            i for i, word in enumerate(argv) if word.endswith(":local"))
+        return [argv[i + 1] for i, word in enumerate(argv[:image])
+                if word == "-e"]
+
+    def test_term_and_colorterm_are_passthrough_flags(self):
+        repo = self.make_repo()
+        for target in ("run_opencode", "run_claude", "run_grok"):
+            flags = self.env_flags(self.docker_argv(target, repo))
+            self.assertIn("TERM", flags, target)
+            self.assertIn("COLORTERM", flags, target)
+            self.assertFalse(
+                any(flag.startswith("TERM=") for flag in flags), target)
+            self.assertFalse(
+                any(flag.startswith("COLORTERM=") for flag in flags), target)
+
+
 if __name__ == "__main__":
     if shutil.which("make") is None or shutil.which("git") is None:
         sys.stderr.write("make and git are required for these tests\n")
