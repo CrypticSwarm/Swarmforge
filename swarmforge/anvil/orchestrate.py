@@ -254,8 +254,8 @@ def _injection_pre_image_args(injection):
 
 
 # Where the generated MCP config is mounted in the anvil, and the env var the
-# OpenCode entrypoint reads to merge it into opencode.json. Claude Code is pointed
-# at the same in-container path with `--mcp-config` instead.
+# entrypoint reads to merge it into the harness's own config file. Claude Code
+# is pointed at the same in-container path with `--mcp-config` instead.
 MCP_CONFIG_CONTAINER_PATH = "/tmp/swarmforge-tong-mcp.json"
 MCP_FILE_ENV = "SWARMFORGE_TONG_MCP_FILE"
 
@@ -267,10 +267,10 @@ def _mcp_injection(mcp_config, harness, mcp_dir):
     shaped for the harness). It is written into `mcp_dir` on the host and mounted
     read-only into the anvil. For Claude Code the mount is paired with
     `--mcp-config <path>` (a harness arg, so it appends after the image); for
-    OpenCode the mount is paired with `SWARMFORGE_TONG_MCP_FILE=<path>`, which the
-    entrypoint reads to merge the fragment into opencode.json. With an empty
-    fragment nothing is written, mounted, or appended, so the anvil argv is
-    unchanged.
+    every other harness the mount is paired with `SWARMFORGE_TONG_MCP_FILE=<path>`,
+    which the entrypoint reads to merge the fragment into that harness's config.
+    With an empty fragment nothing is written, mounted, or appended, so the
+    anvil argv is unchanged.
     """
     if not mcp_config:
         return [], []
