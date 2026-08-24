@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Render generated tong MCP servers into the merged Grok Build config.
+"""Render generated tong MCP servers into a harness's TOML config.
 
-Grok reads MCP servers from TOML ``[mcp_servers.<name>]`` tables, where a
-``url`` key is what selects the remote transport -- there is no type key.
-The launcher emits the discovered tongs as JSON; this module renders them.
+Grok Build and Codex CLI both read MCP servers from TOML
+``[mcp_servers.<name>]`` tables, where a ``url`` key is what selects the
+remote transport -- there is no type key. The launcher emits the discovered
+tongs as JSON; this module renders them into the file the entrypoint names.
 
-The config dest is a persistent home, so the servers cannot simply be
+Both harnesses merge into a persistent home, so the servers cannot simply be
 appended: they go in a sentinel-delimited managed block, rewritten on every
 run and removed when no fragment is given, so a session with no tongs leaves
 no trace of an earlier one's servers.
 
 A name already defined outside the block is skipped with a warning.
 Appending it would be a TOML duplicate-table error, and the user's own
-definition outranking a generated one matches Grok's config precedence.
+definition outranking a generated one matches both harnesses' config
+precedence.
 """
 
 import json
@@ -20,7 +22,7 @@ import re
 import sys
 import tomllib
 
-USAGE = "usage: python3 -m swarmforge.config.merge_grok_mcp CONFIG_TOML [FRAGMENT_JSON]"
+USAGE = "usage: python3 -m swarmforge.config.merge_toml_mcp CONFIG_TOML [FRAGMENT_JSON]"
 
 BLOCK_BEGIN = "# >>> swarmforge tong mcp servers (generated; do not edit) >>>"
 BLOCK_END = "# <<< swarmforge tong mcp servers <<<"
@@ -75,8 +77,8 @@ def _existing_server_names(text, path):
     try:
         parsed = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        # Grok itself will refuse the invalid config with its own error; the
-        # duplicate check is all that degrades here.
+        # The harness itself will refuse the invalid config with its own
+        # error; the duplicate check is all that degrades here.
         print(
             "Warning: could not parse %s (%s); skipping duplicate-name check"
             % (path, exc),

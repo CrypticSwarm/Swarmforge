@@ -354,10 +354,10 @@ prepare_layered_config() {
   # for a harness that reads the fragment here, and each merges into its own
   # config file, so the fragment never lands in another harness's.
   case "${AGENT_BIN:-}" in
-    grok)
-      # This dest is a persistent home, so the servers go in a managed block
+    grok|codex)
+      # These dests are a persistent home, so the servers go in a managed block
       # the module rewrites each run rather than being appended.
-      PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_grok_mcp \
+      PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_toml_mcp \
         "${config_dst}/config.toml" ${SWARMFORGE_TONG_MCP_FILE:+"${SWARMFORGE_TONG_MCP_FILE}"}
       ;;
     *)

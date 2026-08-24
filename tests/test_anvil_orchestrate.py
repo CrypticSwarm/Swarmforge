@@ -324,21 +324,23 @@ class McpInjectionTests(unittest.TestCase):
             with open(host_path, encoding="utf-8") as handle:
                 self.assertEqual(json.load(handle), self.FRAGMENT)
 
-    def test_grok_mounts_and_sets_env(self):
+    def test_toml_harnesses_mount_and_set_env(self):
         # Delivered through the entrypoint, like OpenCode's, so the harness
         # argv stays untouched.
         fragment = {"mcp_servers": {"github": {"url": "http://github:8080/mcp"}}}
-        with tempfile.TemporaryDirectory() as tmp:
-            pre, post = launcher.orchestrate._mcp_injection(fragment, "grok", tmp)
-            host_path = os.path.join(tmp, "tong-mcp.json")
-            self.assertEqual(post, [])
-            self.assertEqual(
-                pre,
-                ["-v", "%s:%s:ro" % (host_path, launcher.MCP_CONFIG_CONTAINER_PATH),
-                 "-e", "%s=%s" % (launcher.MCP_FILE_ENV, launcher.MCP_CONFIG_CONTAINER_PATH)],
-            )
-            with open(host_path, encoding="utf-8") as handle:
-                self.assertEqual(json.load(handle), fragment)
+        for harness in ("grok", "codex"):
+            with tempfile.TemporaryDirectory() as tmp:
+                pre, post = launcher.orchestrate._mcp_injection(fragment, harness, tmp)
+                host_path = os.path.join(tmp, "tong-mcp.json")
+                self.assertEqual(post, [], harness)
+                self.assertEqual(
+                    pre,
+                    ["-v", "%s:%s:ro" % (host_path, launcher.MCP_CONFIG_CONTAINER_PATH),
+                     "-e", "%s=%s" % (launcher.MCP_FILE_ENV, launcher.MCP_CONFIG_CONTAINER_PATH)],
+                    harness,
+                )
+                with open(host_path, encoding="utf-8") as handle:
+                    self.assertEqual(json.load(handle), fragment)
 
     def test_claude_mounts_and_appends_flag(self):
         with tempfile.TemporaryDirectory() as tmp:

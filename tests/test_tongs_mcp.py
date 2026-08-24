@@ -142,19 +142,24 @@ class InterfaceWiringTests(unittest.TestCase):
             {"mcpServers": {"github": {"type": "http", "url": "http://github:8080/mcp"}}},
         )
 
-    def test_grok_mcp_fragment_shape(self):
-        # No type/transport key: Grok selects the remote transport from the
-        # presence of `url` in the rendered [mcp_servers.<name>] table.
-        fragment = tongs.mcp_config_grok(_merged("github-creds", GITHUB_TONG))
+    def test_toml_mcp_fragment_shape(self):
+        # No type/transport key: Grok and Codex both select the remote
+        # transport from the presence of `url` in the rendered
+        # [mcp_servers.<name>] table.
+        fragment = tongs.mcp_config_toml(_merged("github-creds", GITHUB_TONG))
         self.assertEqual(
             fragment,
             {"mcp_servers": {"github": {"url": "http://github:8080/mcp"}}},
         )
 
+    def test_the_toml_harnesses_share_one_emitter(self):
+        for harness in ("grok", "codex"):
+            self.assertIs(tongs.MCP_EMITTERS[harness], tongs.mcp_config_toml)
+
     def test_mcp_config_empty_when_no_mcp_tongs(self):
         # port-only set -> no MCP fragment at all (omitted, not an empty block).
         port_only = _merged("pg", PORT_TONG)
-        for emitter in (tongs.mcp_config_opencode, tongs.mcp_config_claude, tongs.mcp_config_grok):
+        for emitter in (tongs.mcp_config_opencode, tongs.mcp_config_claude, tongs.mcp_config_toml):
             self.assertEqual(emitter(port_only), {})
             self.assertEqual(emitter({}), {})
 
@@ -179,7 +184,7 @@ class InterfaceWiringTests(unittest.TestCase):
 
     def test_plan_injection_inert_when_empty(self):
         # The inert-when-empty invariant for this layer: nothing in, nothing out.
-        for harness in ("opencode", "claude", "grok"):
+        for harness in ("opencode", "claude", "grok", "codex"):
             self.assertEqual(
                 tongs.plan_injection({}, harness),
                 {"env": {}, "mounts": [], "mcp": {}},
