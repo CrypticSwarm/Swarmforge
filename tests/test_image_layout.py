@@ -239,6 +239,28 @@ class ConfigLayerOrder(unittest.TestCase):
             self.body.index("SWARMFORGE_TONG_MCP_FILE"),
         )
 
+    def test_codex_toml_config_stacks_lowest_trust_first(self):
+        call = self.body[self.body.index("build_codex_config"):]
+        self.assertEqual(
+            re.findall(r'"\$\{(\w+)_config_src\}"', call)[:3],
+            list(self.LAYERS),
+        )
+
+    def test_absent_codex_layers_do_not_resolve_from_the_root(self):
+        body = self.function_body("build_codex_config")
+        for layer in self.LAYERS:
+            expected = (
+                "$" + "{config_%s_src:+" % layer
+                + "$" + "{config_%s_src}/config.toml}" % layer
+            )
+            self.assertIn(expected, body)
+
+    def test_codex_toml_build_precedes_generated_tong_servers(self):
+        self.assertLess(
+            self.body.index("build_codex_config"),
+            self.body.index("SWARMFORGE_TONG_MCP_FILE"),
+        )
+
     def test_claude_settings_stack_the_image_defaults_below_every_layer(self):
         """The image's defaults are a layer, and the bottom one.
 
@@ -271,6 +293,11 @@ class ConfigLayerOrder(unittest.TestCase):
         body = self.function_body("merge_config_layer")
         claude = body[body.index("claude)"):body.index("opencode)")]
         self.assertIn("--exclude=./settings.json", claude)
+
+    def test_codex_excludes_the_built_config_from_the_file_overlay(self):
+        body = self.function_body("merge_config_layer")
+        codex = body[body.index("codex)"):body.index("opencode)")]
+        self.assertIn("--exclude=./config.toml", codex)
 
 
 class ClaudeSettingsDelivery(unittest.TestCase):
