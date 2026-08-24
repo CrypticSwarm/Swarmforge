@@ -18,11 +18,12 @@ Run it with `bash` (it uses Bash arrays) even if your login shell is Zsh.
 On macOS it prefers `~/.zshrc` and falls back to `~/.bash_profile`, so you don't need to create `~/.bashrc` manually.
 Override the target file with `OC_RC_FILE=/path/to/rc bash ./install.sh`.
 
-2. Build one or both container images:
+2. Build the container images you want:
 
 ```
 make build_opencode
 make build_claude
+make build_grok
 ```
 
 To pin OpenCode to a specific release instead of latest:
@@ -32,20 +33,21 @@ make build_opencode OPENCODE_VERSION=1.4.14
 make update_opencode OPENCODE_VERSION=1.4.14
 ```
 
-Both images share the same Debian base and toolchain (Node.js + Python; see `anvil/Dockerfile`).
-Build targets pass `AGENT=opencode|claude` so only the requested agent install step runs.
+The images share the same Debian base and toolchain (Node.js + Python; see `anvil/Dockerfile`).
+Build targets pass `AGENT=opencode|claude|grok` so only the requested agent install step runs.
 
 3. Run from your project directory:
 
 - OpenCode: `oc`
 - Claude Code: `make run_claude PROJECT_DIR=$(pwd)`
+- Grok Build: `make run_grok PROJECT_DIR=$(pwd)`
 - Pass OpenCode overrides as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
 - Override the container timezone per run (affects git commit timestamps): `oc TIMEZONE=America/New_York`.
 
 ### Repo-local env vars
 
-`make run_opencode` and `make run_claude` load a repo-local env file from `.swarmforge/env` if it exists; override with `ENV_FILE=/path/to/env`.
-Both also accept `TIMEZONE=<Region/City>` (default `Etc/UTC`), passed into the container as `TZ`.
+The `run_*` harness targets load a repo-local env file from `.swarmforge/env` if it exists; override with `ENV_FILE=/path/to/env`.
+They also accept `TIMEZONE=<Region/City>` (default `Etc/UTC`), passed into the container as `TZ`.
 
 ### Multiple aliases (work/personal)
 
@@ -66,7 +68,7 @@ Project-local config in the working repo (for example `.opencode/`) is still han
 
 ### Git repos and worktrees
 
-`make run_opencode` and `make run_claude` auto-detect the git root from `PROJECT_DIR` and mount it at `/workspace`.
+The `run_*` harness targets auto-detect the git root from `PROJECT_DIR` and mount it at `/workspace`.
 For a linked git worktree they also mount the shared git common directory so git operations keep working inside the container.
 This means `oc` works from repo roots, subdirectories, and linked worktrees without extra flags.
 
@@ -105,9 +107,9 @@ The repo is mounted at a stable path derived from the git remote slug (with `/wo
 
 ### Shared assets (skills, commands, agents)
 
-Both harnesses mount this repo's `skills/` and `commands/` into the container, exported as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
-The entrypoint copies them into each harness's native location — the container-local config dir for Claude (see [The config directory](#the-config-directory)), the merged config dir (`~/.config/opencode/skills/`, `~/.config/opencode/command/`) for OpenCode.
-For Claude that dir is rebuilt each run and dies with the container, so per-repo assets never accumulate in `CLAUDE_HOME_DIR` or leak into other repos' sessions.
+Every harness mounts this repo's `skills/` and `commands/` into the container, exported as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
+The entrypoint copies them into each harness's native location: the container-local config dir for Claude (see [The config directory](#the-config-directory)), the merged config dir for OpenCode (`~/.config/opencode/skills/`) and Grok (`~/.grok/skills/`).
+For Claude and Grok those dirs are container-private and rebuilt each run, so per-repo assets never accumulate in the persistent home or leak into other repos' sessions.
 
 Skills, commands, and agents come from four layers, lowest to highest precedence — later layers override same-named entries wholesale (never file-merged):
 
@@ -164,6 +166,24 @@ Being the lowest layer, its `statusLine` is overridden key by key — a layer th
   "statusLine": { "type": "command", "command": "~/.claude/my-statusline.sh" }
 }
 ```
+
+## Grok Build CLI
+
+`make run_grok` starts a [Grok Build](https://x.ai/news/grok-build-cli) container with the same workspace, git-worktree, and repo-slug mounting as `make run_claude`.
+The image installs the official xAI CLI via `curl -fsSL https://x.ai/cli/install.sh | bash` and relocates the binary to `/usr/local/bin/grok`.
+Grok state persists by mounting `$(GROK_HOME_DIR)` to `/home/anvil`, keeping `~/.grok/` (account and session files such as `config.toml` and the credentialed user-settings JSON).
+`GROK_HOME_DIR` defaults to `$(GROK_DATA_DIR)/home`; use separate `GROK_DATA_DIR` roots to isolate work/personal logins, as with `CLAUDE_DATA_DIR`.
+
+Grok reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
+Shared skills reach `~/.grok/skills/`, Grok's native location, through the [asset pipeline](#shared-assets-skills-commands-agents) above.
+Subagent definitions are not translated for Grok; the unified-agent pipeline covers OpenCode and Claude only.
+
+Grok config layering uses the same three sources and order of trust as Claude (lowest to highest precedence):
+- `SWARMFORGE_REPO_CONFIG_DIR` (default `grok/`, if present)
+- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.grok`)
+- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.grok` when that root is set)
+
+These merge into `~/.grok` in the container at startup, with reset disabled so credentials survive the run. Rebuild only the Grok install layer with `make update_grok`.
 
 ## Agents
 
