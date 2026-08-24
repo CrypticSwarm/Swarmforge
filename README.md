@@ -112,7 +112,12 @@ The repo is mounted at a stable path derived from the git remote slug (with `/wo
 Every harness mounts this repo's `skills/` and `commands/` into the container, exported as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
 The entrypoint copies them into each harness's native location: the container-local config dir for Claude (see [The config directory](#the-config-directory)), the merged config dir for OpenCode (`~/.config/opencode/skills/`) and Grok (`~/.grok/skills/`), and `~/.agents/skills/` for Codex, whose native user location is the `.agents` convention itself.
 For Claude, Grok, and Codex those dirs are container-private and rebuilt each run, so per-repo assets never accumulate in the persistent home or leak into other repos' sessions.
-Codex has no user-defined slash commands, so it receives skills only.
+Codex has no user-defined slash commands, so portable commands are translated
+into skills named after the command. Command-only metadata is removed,
+`$ARGUMENTS` becomes an instruction to use the invocation arguments, and
+OpenCode shell interpolation becomes an instruction for Codex to run the
+command at invocation time. Within one layer, a native skill wins over a
+same-named translated command; normal layer precedence still applies.
 
 Skills, commands, and agents come from four layers, lowest to highest precedence — later layers override same-named entries wholesale (never file-merged):
 
@@ -121,7 +126,7 @@ Skills, commands, and agents come from four layers, lowest to highest precedence
 - **repo** — this checkout's `skills/`, `commands/`, and `agents/`
 - **workspace** — `<workspace>/.agents/{skills,commands}` and `<workspace>/.swarmforge/agents/`
 
-Skills and commands follow the harness-neutral `.agents/{skills,commands}` convention and are copied as-is; agents use the unified format (see [Agents](#agents)) and are translated per harness.
+Skills and commands follow the harness-neutral `.agents/{skills,commands}` convention. Skills are copied as-is; commands are copied for harnesses with native commands and translated into skills for Codex. Agents use the unified format (see [Agents](#agents)) and are translated per harness.
 Harness-native dirs (`<layer>/.opencode/skills/`, `<layer>/.claude/skills/`) are not consumed for skills/commands.
 Override the `.agents` roots with `SWARMFORGE_USER_DOTAGENTS_DIR` / `SWARMFORGE_ORG_DOTAGENTS_DIR`.
 
@@ -198,7 +203,7 @@ Codex state persists by mounting `$(CODEX_HOME_DIR)` to `/home/anvil`, keeping c
 `CODEX_HOME_DIR` defaults to `$(CODEX_DATA_DIR)/home`; use separate `CODEX_DATA_DIR` roots to isolate work/personal logins, as with `CLAUDE_DATA_DIR`.
 
 Codex reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
-Shared skills reach `~/.agents/skills/`, Codex's native user location, through the [asset pipeline](#shared-assets-skills-commands-agents) above; commands do not travel, because Codex's only extension point is skills.
+Shared skills reach `~/.agents/skills/`, Codex's native user location, through the [asset pipeline](#shared-assets-skills-commands-agents) above. Portable commands reach the same location as translated skills.
 Subagent definitions are not translated for Codex; the unified-agent pipeline covers OpenCode and Claude only.
 MCP tongs reach Codex as `[mcp_servers.<name>]` entries in a managed block of the derived `~/.codex/config.toml`, rewritten from the current layers every run and yielding to a server the user already defines under that name.
 

@@ -63,6 +63,18 @@ copy_dir_entries() {
   done
 }
 
+translate_codex_commands() {
+  src_dir="${1}"
+  skills_dst="${2}"
+
+  [ -n "${src_dir}" ] || return 0
+  [ -d "${src_dir}" ] || return 0
+
+  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.commands.translate \
+    "${skills_dst}" "${src_dir}" \
+    || printf '%s\n' "Warning: command translation failed for Codex; continuing" >&2
+}
+
 # Only the allowlisted state outlives the run: claude loads configuration and
 # code out of this dir, and a shared one would hand a session's writes to the
 # next container. Symlinks rather than bind mounts survive the atomic rename
@@ -126,9 +138,10 @@ copy_shared_assets() {
       commands_dst="${ANVIL_HOME}/.grok/commands"
       ;;
     codex)
-      # No user-defined slash commands: skills are the one extension point.
+      # Codex uses skills as its extension point; portable commands are
+      # translated into skill packages below.
       skills_dst="${ANVIL_HOME}/.agents/skills"
-      commands_dst=""
+      commands_dst="codex-skills"
       ;;
     opencode)
       config_dest="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}"
@@ -142,15 +155,26 @@ copy_shared_assets() {
 
   for layer_src in "${SWARMFORGE_DOTAGENTS_USER_DIR:-}" "${SWARMFORGE_DOTAGENTS_ORG_DIR:-}"; do
     [ -n "${layer_src}" ] || continue
-    copy_dir_entries "${layer_src}/skills" "${skills_dst}"
-    copy_dir_entries "${layer_src}/commands" "${commands_dst}"
+    if [ "${commands_dst}" = "codex-skills" ]; then
+      translate_codex_commands "${layer_src}/commands" "${skills_dst}"
+      copy_dir_entries "${layer_src}/skills" "${skills_dst}"
+    else
+      copy_dir_entries "${layer_src}/skills" "${skills_dst}"
+      copy_dir_entries "${layer_src}/commands" "${commands_dst}"
+    fi
   done
 
-  copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
-  copy_dir_entries "${SWARMFORGE_COMMAND_DIR:-}" "${commands_dst}"
-
-  copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
-  copy_dir_entries "${workspace_dir}/.agents/commands" "${commands_dst}"
+  if [ "${commands_dst}" = "codex-skills" ]; then
+    translate_codex_commands "${SWARMFORGE_COMMAND_DIR:-}" "${skills_dst}"
+    copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
+    translate_codex_commands "${workspace_dir}/.agents/commands" "${skills_dst}"
+    copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
+  else
+    copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
+    copy_dir_entries "${SWARMFORGE_COMMAND_DIR:-}" "${commands_dst}"
+    copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
+    copy_dir_entries "${workspace_dir}/.agents/commands" "${commands_dst}"
+  fi
 }
 
 # Translate unified Swarmforge agent definitions into the running harness's
