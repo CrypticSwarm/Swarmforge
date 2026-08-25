@@ -262,20 +262,14 @@ class MaskedAssetDirs(MakeRecipeCase):
 
 
 class CodexConfigMounts(MakeRecipeCase):
-    """Codex config is per-run while native state remains persistent."""
+    """Codex config and native state use the writable persistent home."""
 
-    def test_temporary_config_shadows_the_persistent_home(self):
+    def test_config_is_not_an_individual_bind_mount(self):
         mounts = self.mounts(self.docker_argv("run_codex", self.make_repo()))
         home = os.path.join(self.home, ".local", "share", "codex", "home")
         self.assertIn("%s:/home/anvil" % home, mounts)
-        config_mount = next(
-            mount for mount in mounts
-            if mount.endswith(":/home/anvil/.codex/config.toml"))
-        source = config_mount.split(":", 1)[0]
-        self.assertFalse(source.startswith(home))
-        self.assertTrue(os.path.basename(source).startswith(
-            "swarmforge-codex-config."))
-        self.assertFalse(os.path.exists(source))
+        targets = [mount.split(":", 2)[1] for mount in mounts]
+        self.assertNotIn("/home/anvil/.codex/config.toml", targets)
 
     def test_native_state_paths_are_not_individually_mounted(self):
         mounts = self.mounts(self.docker_argv("run_codex", self.make_repo()))

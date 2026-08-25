@@ -249,12 +249,6 @@ define run_agent_container
 	git_guard_flags=(--workspace "$$workspace_dir" --target "$(WORKSPACE_MOUNT)"); \
 	if [ -n "$${repo_mount_path:-}" ]; then git_guard_flags+=(--target "$$repo_mount_path"); fi; \
 	git_dir_mounts=(); \
-	codex_config_mount=(); \
-	if [ "$(7)" = "codex" ]; then \
-		codex_config_file="$$(mktemp "$${TMPDIR:-/tmp}/swarmforge-codex-config.XXXXXX")"; \
-		trap 'rm -f -- "$$codex_config_file"' EXIT HUP INT TERM; \
-		codex_config_mount=(-v "$$codex_config_file:$(ANVIL_HOME)/.codex/config.toml"); \
-	fi; \
 	git_guard_specs="$$($(PYTHON) "$(SWARMFORGE_DIR)/bin/git-guard" "$${git_guard_flags[@]}")"; \
 	if [ -n "$$git_guard_specs" ]; then \
 		while IFS= read -r git_guard_spec; do \
@@ -281,7 +275,6 @@ define run_agent_container
 	  -v "$$workspace_dir":"$(WORKSPACE_MOUNT)" \
 	  $${workspace_path_mount[@]+"$${workspace_path_mount[@]}"} \
 	  $(3) \
-	  $${codex_config_mount[@]+"$${codex_config_mount[@]}"} \
 	  $${git_dir_mounts[@]+"$${git_dir_mounts[@]}"} \
 	  $${gitconfig_mount[@]+"$${gitconfig_mount[@]}"} \
 	  $${env_file_flag[@]+"$${env_file_flag[@]}"} \
