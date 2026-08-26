@@ -32,11 +32,9 @@ Per-target rules:
             `disallowedTools`, rewrites `model` (anthropic/<id> -> <id>,
             other providers dropped, aliases pass through), and drops
             OpenCode-only fields.
-  codex     Emits TOML with name/description/developer_instructions. OpenAI
-            model prefixes are stripped, other provider-qualified models are
-            dropped, and the codex override block is merged verbatim. Generic
-            tool restrictions are not translated: use Codex sandbox and MCP
-            configuration in the override block instead.
+  codex     Emits project-agent TOML. OpenAI model prefixes are stripped,
+            other providers are dropped, and codex overrides are merged.
+            Generic tool restrictions are dropped.
 
 Usage: python3 -m swarmforge.agents.translate <target> <dest_dir> <src_dir>...
 

@@ -112,12 +112,10 @@ The repo is mounted at a stable path derived from the git remote slug (with `/wo
 Every harness mounts this repo's `skills/` and `commands/` into the container, exported as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
 The entrypoint copies them into each harness's native location: the container-local config dir for Claude (see [The config directory](#the-config-directory)), the merged config dir for OpenCode (`~/.config/opencode/skills/`) and Grok (`~/.grok/skills/`), and `~/.agents/skills/` for Codex, whose native user location is the `.agents` convention itself.
 For Claude, Grok, and Codex those dirs are container-private and rebuilt each run, so per-repo assets never accumulate in the persistent home or leak into other repos' sessions.
-Codex has no user-defined slash commands, so portable commands are translated
-into skills named after the command. Command-only metadata is removed,
-`$ARGUMENTS` becomes an instruction to use the invocation arguments, and
-OpenCode shell interpolation becomes an instruction for Codex to run the
-command at invocation time. Within one layer, a native skill wins over a
-same-named translated command; normal layer precedence still applies.
+Codex has no user-defined slash commands, so portable commands become
+same-named skills. Translation removes command-only metadata and adapts
+arguments and shell interpolation. A native skill wins over a translated
+command in the same layer; normal layer precedence still applies.
 
 Skills, commands, and agents come from four layers, lowest to highest precedence — later layers override same-named entries wholesale (never file-merged):
 
@@ -184,7 +182,7 @@ Grok state persists by mounting `$(GROK_HOME_DIR)` to `/home/anvil`, keeping `~/
 
 Grok reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
 Shared skills reach `~/.grok/skills/`, Grok's native location, through the [asset pipeline](#shared-assets-skills-commands-agents) above.
-Subagent definitions are not translated for Grok; the unified-agent pipeline covers OpenCode and Claude only.
+Subagent definitions are not translated for Grok; the unified-agent pipeline covers OpenCode, Claude, and Codex.
 MCP tongs reach Grok as `[mcp_servers.<name>]` entries in a managed block of the merged `~/.grok/config.toml` — user-level config, so no folder-trust prompt. That file is in the persistent home, so the block is rewritten every run and stripped when a session has no MCP tongs; a server the user already defines under the same name wins over the generated entry.
 
 Grok config layering uses the same three sources and order of trust as Claude (lowest to highest precedence):
@@ -212,7 +210,12 @@ Codex config layering uses the same three sources and order of trust as Claude (
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.codex`)
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.codex` when that root is set)
 
-The entrypoint merges these into a container-local directory from scratch, merging `config.toml` by key in repo → user → org order, then publishes that file to Codex's native path. Settings from different layers therefore compose, while later layers retain precedence for conflicting keys. The canonical output preserves TOML values and table structure but not comments or source formatting. Each launch replaces configuration left by an earlier run, while keeping the native file writable so Codex can atomically save settings. Put durable settings in a source layer because the next launch rebuilds the file. Rebuild only the Codex install layer with `make update_codex`.
+The entrypoint builds `config.toml` from scratch in repo → user → org order,
+merging by key, then copies it to Codex's native path. The canonical output
+preserves values and tables, but not comments or formatting. The native file
+remains writable for Codex's atomic settings updates, but the next launch
+rebuilds it; put durable settings in a source layer. Rebuild only the Codex
+install layer with `make update_codex`.
 The merge skips `packages/` -- the host installer's release tree, which the container has no use for -- along with `sessions/`, `history.jsonl`, and `log/`, so one machine's transcripts do not follow the user config layer into the container's home.
 
 Codex brings its own sandbox, which is redundant inside an anvil and may not initialize in one at all, since its Landlock and `bwrap` paths need kernel permissions a container is not guaranteed.
@@ -251,8 +254,8 @@ Field handling per harness:
 - `tools` uses OpenCode's lowercase tool ids mapped to booleans. For Claude Code, disabled tools become `disallowedTools` (`write: false` -> `disallowedTools: Write`); ids with no Claude equivalent are dropped.
 - `model` accepts a provider-qualified id (`anthropic/claude-sonnet-4-6`, passed through to OpenCode and stripped to the bare id for Claude — non-Anthropic providers dropped) or a Claude alias (`sonnet`, `haiku`, Claude-only and dropped for OpenCode).
 - `mode`, `temperature`, and other OpenCode-only fields are dropped for Claude Code.
-- For Codex, an unqualified model passes through and an `openai/` prefix is stripped; models qualified for another provider are dropped. Names are normalized to Codex's ASCII letters/digits/spaces/hyphens/underscores constraint, and source filenames become normalized `.toml` filenames. Generic `tools` restrictions are not translated because Codex controls tools through its sandbox and MCP configuration.
-- `claude:` / `codex:` / `opencode:` blocks merge verbatim into that harness's output. Put Codex-only settings such as `model_reasoning_effort` and `sandbox_mode` in `codex:`.
+- For Codex, unqualified models pass through, `openai/` prefixes are stripped, and other providers are dropped. Names and `.toml` filenames are normalized to Codex's supported ASCII characters. Generic `tools` restrictions are dropped; use Codex sandbox and MCP settings instead.
+- `claude:`, `codex:`, and `opencode:` blocks merge into that harness's output. Put Codex-only fields such as `model_reasoning_effort` and `sandbox_mode` in `codex:`.
 - `disable: true` passes through to OpenCode and skips the agent for Claude Code and Codex.
 
 Unified agents live in harness-neutral `.swarmforge/agents/` directories across the same four layers as shared assets (lowest to highest precedence):

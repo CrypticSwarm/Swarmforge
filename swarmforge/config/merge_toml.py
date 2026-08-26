@@ -33,7 +33,7 @@ def merge(base, override, *, path=()):
 
 
 def read_layer(path, *, err=sys.stderr):
-    """Return a TOML layer, or None when an absent or invalid layer contributes none."""
+    """Return a parsed layer, or None when it is absent or invalid."""
     if not os.path.isfile(path):
         return None
     try:
