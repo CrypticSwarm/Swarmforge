@@ -374,6 +374,11 @@ class CodexEmitterTests(unittest.TestCase):
         self.assertEqual(out["name"], "reviewer-md")
         self.assertEqual(ta.normalize_codex_name("!!!"), "agent")
 
+    def test_reserved_agent_table_fields_are_prefixed(self):
+        for name in ("default_subagent_model", "enabled", "max_depth"):
+            with self.subTest(name=name):
+                self.assertEqual(ta.normalize_codex_name(name), "agent-" + name)
+
     def test_render_is_valid_toml_and_preserves_multiline_prompt(self):
         rendered = ta.render_codex(
             {
@@ -390,6 +395,19 @@ class CodexEmitterTests(unittest.TestCase):
         self.assertEqual(instructions, 'First line.\nSecond "line".\n')
         self.assertEqual(parsed["options"], {"enabled": True})
 
+    def test_render_quotes_agent_registration_names(self):
+        rendered = ta.render_codex(
+            {
+                "agents": {
+                    "code reviewer": {
+                        "config_file": "/run/swarmforge/agents/reviewer.toml"
+                    }
+                }
+            }
+        )
+        parsed = tomllib.loads(rendered)
+        self.assertIn("code reviewer", parsed["agents"])
+
 
 class MainTests(unittest.TestCase):
     def test_codex_writes_normalized_toml_filename(self):
@@ -402,11 +420,26 @@ class MainTests(unittest.TestCase):
 
             rc = ta.main(["codex", dest, src])
             self.assertEqual(rc, 0)
-            self.assertEqual(os.listdir(dest), ["code-reviewer.toml"])
-            with open(os.path.join(dest, "code-reviewer.toml"), "rb") as f:
+            self.assertEqual(
+                set(os.listdir(dest)), {"code-reviewer.toml", "config.toml"}
+            )
+            role_path = os.path.join(dest, "code-reviewer.toml")
+            with open(role_path, "rb") as f:
                 parsed = tomllib.load(f)
             self.assertEqual(parsed["name"], "code-reviewer")
             self.assertEqual(parsed["developer_instructions"], "Review carefully.\n")
+            with open(os.path.join(dest, "config.toml"), "rb") as f:
+                config = tomllib.load(f)
+            self.assertEqual(
+                config,
+                {
+                    "agents": {
+                        "code-reviewer": {
+                            "config_file": os.path.abspath(role_path),
+                        }
+                    }
+                },
+            )
 
     def test_overlay_precedence_and_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -14,6 +14,7 @@ CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
 CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
 CODEX_CONFIG_HOME="/run/swarmforge/codex-config"
 CODEX_CONFIG_FILE="${ANVIL_HOME}/.codex/config.toml"
+CODEX_AGENTS_HOME="/run/swarmforge/codex-agents"
 
 # State only: nothing claude loads as configuration or code belongs here.
 CLAUDE_STATE_DIRS="projects sessions file-history session-env shell-snapshots
@@ -214,7 +215,7 @@ prepare_unified_agents() {
       agents_dst="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}/agents"
       ;;
     codex)
-      agents_dst="${workspace_dir}/.codex/agents"
+      agents_dst="${CODEX_AGENTS_HOME}"
       ;;
     *)
       return 0
@@ -225,13 +226,25 @@ prepare_unified_agents() {
   # to /usr/local/lib/swarmforge; -P keeps the working directory off sys.path,
   # so a workspace that happens to contain a swarmforge/ directory cannot
   # shadow it. These run as root, before the drop to the invoking user.
-  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.agents.translate \
+  if ! PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.agents.translate \
     "${AGENT_BIN}" "${agents_dst}" \
     "${SWARMFORGE_ASSETS_USER_DIR:-}/agents" \
     "${SWARMFORGE_ASSETS_ORG_DIR:-}/agents" \
     "${SWARMFORGE_ASSETS_REPO_DIR:-}/agents" \
-    "${workspace_dir}/.swarmforge/agents" \
-    || printf '%s\n' "Warning: unified agent translation failed for ${AGENT_BIN}; continuing" >&2
+    "${workspace_dir}/.swarmforge/agents"; then
+    printf '%s\n' "Warning: unified agent translation failed for ${AGENT_BIN}; continuing" >&2
+    return 0
+  fi
+}
+
+register_codex_agents() {
+  [ "${AGENT_BIN}" = "codex" ] || return 0
+  [ -f "${CODEX_AGENTS_HOME}/config.toml" ] || return 0
+
+  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_toml \
+    --build "${CODEX_CONFIG_FILE}" \
+    "${CODEX_AGENTS_HOME}/config.toml" "${CODEX_CONFIG_FILE}" \
+    || printf '%s\n' "Warning: Codex agent registration failed; continuing" >&2
 }
 
 merge_config_layer() {
@@ -485,6 +498,7 @@ fi
 
 prepare_agent_config
 prepare_unified_agents
+register_codex_agents
 copy_shared_assets
 
 if [ "${AGENT_BIN}" = "claude" ]; then
@@ -493,6 +507,7 @@ fi
 
 chown -R "${ANVIL_UID}:${ANVIL_GID}" "${ANVIL_HOME}" 2>/dev/null || true
 chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CLAUDE_CONFIG_HOME}" 2>/dev/null || true
+chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CODEX_AGENTS_HOME}" 2>/dev/null || true
 chown -R "${ANVIL_UID}:${ANVIL_GID}" /workspace 2>/dev/null || true
 
 if [ "${AGENT_BIN}" = "claude" ]; then

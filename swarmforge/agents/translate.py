@@ -137,6 +137,14 @@ def render(meta, body):
     return "---\n%s\n---\n\n%s" % ("\n".join(emit_map(meta)), body)
 
 
+TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def emit_toml_key(value):
+    text = str(value)
+    return text if TOML_BARE_KEY_RE.fullmatch(text) else emit_toml_string(text)
+
+
 def emit_toml_string(value):
     return json.dumps(str(value), ensure_ascii=False)
 
@@ -155,7 +163,7 @@ def emit_toml_value(value):
         return "[%s]" % ", ".join(emit_toml_value(item) for item in value)
     if isinstance(value, dict):
         pairs = (
-            "%s = %s" % (key, emit_toml_value(item))
+            "%s = %s" % (emit_toml_key(key), emit_toml_value(item))
             for key, item in value.items()
         )
         return "{ %s }" % ", ".join(pairs)
@@ -170,7 +178,7 @@ def render_codex(meta):
             if key == "developer_instructions"
             else emit_toml_value(value)
         )
-        lines.append("%s = %s" % (key, rendered))
+        lines.append("%s = %s" % (emit_toml_key(key), rendered))
     return "\n".join(lines) + "\n"
 
 
@@ -233,10 +241,19 @@ def to_claude(name, meta):
     return out
 
 
+CODEX_AGENT_TABLE_FIELDS = {
+    "default_subagent_model",
+    "enabled",
+    "max_depth",
+}
+
+
 def normalize_codex_name(name):
     normalized = re.sub(r"[^A-Za-z0-9 _-]+", "-", str(name))
-    normalized = normalized.strip(" _-")
-    return normalized or "agent"
+    normalized = normalized.strip(" _-") or "agent"
+    if normalized in CODEX_AGENT_TABLE_FIELDS:
+        normalized = "agent-" + normalized
+    return normalized
 
 
 def to_codex(name, meta, body):
@@ -315,6 +332,7 @@ def main(argv):
         return 0
 
     os.makedirs(dest_dir, exist_ok=True)
+    codex_registrations = {}
     for filename, (meta, body) in agents.items():
         name = filename[: -len(".md")]
         out_meta = emitter(name, meta, body) if target == "codex" else emitter(name, meta)
@@ -323,11 +341,20 @@ def main(argv):
         out_filename = (
             "%s.toml" % normalize_codex_name(name) if target == "codex" else filename
         )
-        with open(os.path.join(dest_dir, out_filename), "w", encoding="utf-8") as handle:
+        out_path = os.path.join(dest_dir, out_filename)
+        with open(out_path, "w", encoding="utf-8") as handle:
             if target == "codex":
                 handle.write(render_codex(out_meta))
+                codex_registrations[out_meta["name"]] = {
+                    "config_file": os.path.abspath(out_path)
+                }
             else:
                 handle.write(render(out_meta, body))
+
+    if codex_registrations:
+        config_path = os.path.join(dest_dir, "config.toml")
+        with open(config_path, "w", encoding="utf-8") as handle:
+            handle.write(render_codex({"agents": codex_registrations}))
     return 0
 
 

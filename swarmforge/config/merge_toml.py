@@ -20,7 +20,7 @@ def merge(base, override, *, path=()):
     """Deep-merge two parsed TOML values, with ``override`` taking precedence."""
     if isinstance(base, dict) and isinstance(override, dict):
         out = dict(base)
-        if path == ("mcp_servers",):
+        if path in {("agents",), ("mcp_servers",)}:
             out.update(override)
             return out
         for key, value in override.items():

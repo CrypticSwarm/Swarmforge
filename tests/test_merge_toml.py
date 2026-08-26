@@ -39,6 +39,34 @@ class MergeTests(unittest.TestCase):
             {"mcp_servers": {"api": {"url": "https://org.example/mcp"}}},
         )
 
+    def test_later_agent_registration_replaces_the_whole_lower_entry(self):
+        self.assertEqual(
+            merge_toml.merge(
+                {
+                    "agents": {
+                        "reviewer": {
+                            "config_file": "/run/swarmforge/reviewer.toml",
+                            "nickname_candidates": ["Review"],
+                        }
+                    }
+                },
+                {
+                    "agents": {
+                        "reviewer": {
+                            "config_file": "/home/anvil/custom-reviewer.toml"
+                        }
+                    }
+                },
+            ),
+            {
+                "agents": {
+                    "reviewer": {
+                        "config_file": "/home/anvil/custom-reviewer.toml"
+                    }
+                }
+            },
+        )
+
     def test_later_value_replaces_scalar_array_or_table(self):
         self.assertEqual(merge_toml.merge({"value": 1}, {"value": [2]}), {"value": [2]})
         self.assertEqual(merge_toml.merge({"value": [1]}, {"value": {"x": 2}}), {"value": {"x": 2}})

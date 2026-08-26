@@ -438,6 +438,36 @@ class CodexConfigDelivery(unittest.TestCase):
         for mounted in ("/home/", "/workspace"):
             self.assertFalse(match.group(1).startswith(mounted))
 
+    def test_generated_codex_agents_stay_outside_host_mounts(self):
+        agents_home = re.search(
+            r'^CODEX_AGENTS_HOME="([^"$]+)"$', self.entrypoint, re.M
+        )
+        self.assertIsNotNone(agents_home)
+        for mounted in ("/home/", "/workspace"):
+            self.assertFalse(agents_home.group(1).startswith(mounted))
+
+    def test_generated_codex_agents_register_in_published_config(self):
+        translate = self.function_body("prepare_unified_agents")
+        register = self.function_body("register_codex_agents")
+        self.assertIn('agents_dst="${CODEX_AGENTS_HOME}"', translate)
+        self.assertIn('"${CODEX_AGENTS_HOME}/config.toml"', register)
+        self.assertIn('"${CODEX_CONFIG_FILE}"', register)
+
+    def test_registration_runs_after_translation_and_before_assets(self):
+        register = self.entrypoint.rindex("\nregister_codex_agents\n")
+        self.assertLess(
+            self.entrypoint.rindex("\nprepare_unified_agents\n"), register
+        )
+        self.assertLess(register, self.entrypoint.rindex("\ncopy_shared_assets\n"))
+
+    def test_generated_roles_are_chowned_before_the_uid_drop(self):
+        chown = (
+            'chown -Rh "${ANVIL_UID}:${ANVIL_GID}" '
+            '"${CODEX_AGENTS_HOME}"'
+        )
+        self.assertIn(chown, self.entrypoint)
+        self.assertLess(self.entrypoint.index(chown), self.entrypoint.index("exec gosu"))
+
     def test_codex_forces_a_fresh_build_and_publishes_last(self):
         body = self.function_body("prepare_agent_config")
         self.assertIn('config_dest="${CODEX_CONFIG_HOME}"', body)

@@ -202,7 +202,9 @@ Codex state persists by mounting `$(CODEX_HOME_DIR)` to `/home/anvil`, keeping c
 
 Codex reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
 Shared skills reach `~/.agents/skills/`, Codex's native user location, through the [asset pipeline](#shared-assets-skills-commands-agents) above. Portable commands reach the same location as translated skills.
-Unified subagent definitions are translated to Codex project-agent TOML under `<workspace>/.codex/agents/`.
+Unified subagent definitions become temporary Codex role files under
+`/run/swarmforge/codex-agents/` and are registered through the derived
+`~/.codex/config.toml`. The checkout's native `.codex/agents/` is untouched.
 MCP tongs reach Codex as `[mcp_servers.<name>]` entries in a managed block of the derived `~/.codex/config.toml`, rewritten from the current layers every run and yielding to a server the user already defines under that name.
 
 Codex config layering uses the same three sources and order of trust as Claude (lowest to highest precedence):
@@ -265,7 +267,7 @@ Unified agents live in harness-neutral `.swarmforge/agents/` directories across 
 - **repo** — `agents/` in the checkout (override with `SWARMFORGE_REPO_AGENTS_DIR`, which points directly at an agents dir so the rest of the checkout is never mounted)
 - **workspace** — `<workspace>/.swarmforge/agents/`
 
-Layers mount read-only under `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the in-container `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` env vars point at the layer roots); the entrypoint translates the stacked sources into each harness's native location (`~/.config/opencode/agents/` for OpenCode, the container-private `~/.claude/agents/` for Claude, and `<workspace>/.codex/agents/*.toml` for Codex). Later layers override earlier ones by filename.
+Layers mount read-only under `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the in-container `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` env vars point at the layer roots). The entrypoint translates them into `~/.config/opencode/agents/` for OpenCode, the container-private `~/.claude/agents/` for Claude, and temporary registered role files for Codex. Later layers override earlier ones by filename.
 Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude directly, outside this pipeline.
 
 The translator is covered by the unit suite; run it with `make test`.
