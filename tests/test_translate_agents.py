@@ -4,6 +4,7 @@
 import os
 import sys
 import tempfile
+import tomllib
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -335,7 +336,78 @@ class OpencodeEmitterTests(unittest.TestCase):
         self.assertEqual(once, twice)
 
 
+class CodexEmitterTests(unittest.TestCase):
+    def test_basic_translation_and_overrides(self):
+        meta = {
+            "description": "Reviews code.",
+            "model": "openai/gpt-5.3-codex",
+            "tools": {"write": False},
+            "codex": {
+                "model_reasoning_effort": "high",
+                "sandbox_mode": "read-only",
+            },
+        }
+        out = ta.to_codex("code-reviewer", meta, "Review carefully.\n")
+        self.assertEqual(out["name"], "code-reviewer")
+        self.assertEqual(out["description"], "Reviews code.")
+        self.assertEqual(out["model"], "gpt-5.3-codex")
+        self.assertEqual(out["model_reasoning_effort"], "high")
+        self.assertEqual(out["sandbox_mode"], "read-only")
+        self.assertEqual(out["developer_instructions"], "Review carefully.\n")
+        self.assertNotIn("tools", out)
+
+    def test_unqualified_model_passes_and_other_provider_drops(self):
+        out = ta.to_codex("a", {"description": "d", "model": "gpt-5"}, "body")
+        self.assertEqual(out["model"], "gpt-5")
+        out = ta.to_codex(
+            "a", {"description": "d", "model": "anthropic/claude-sonnet-4-6"}, "body"
+        )
+        self.assertNotIn("model", out)
+
+    def test_disable_skips_agent(self):
+        self.assertIsNone(
+            ta.to_codex("a", {"description": "d", "disable": True}, "body")
+        )
+
+    def test_name_normalization_matches_codex_constraints(self):
+        out = ta.to_codex("reviewer.md", {"description": "d"}, "body")
+        self.assertEqual(out["name"], "reviewer-md")
+        self.assertEqual(ta.normalize_codex_name("!!!"), "agent")
+
+    def test_render_is_valid_toml_and_preserves_multiline_prompt(self):
+        rendered = ta.render_codex(
+            {
+                "name": "reviewer",
+                "description": "Reviews \"quoted\" code.",
+                "developer_instructions": 'First line.\nSecond \"line\".\n',
+                "model_reasoning_effort": "high",
+                "options": {"enabled": True},
+            }
+        )
+        parsed = tomllib.loads(rendered)
+        self.assertEqual(parsed["name"], "reviewer")
+        instructions = parsed["developer_instructions"]
+        self.assertEqual(instructions, 'First line.\nSecond "line".\n')
+        self.assertEqual(parsed["options"], {"enabled": True})
+
+
 class MainTests(unittest.TestCase):
+    def test_codex_writes_normalized_toml_filename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "src")
+            dest = os.path.join(tmp, "dest")
+            os.makedirs(src)
+            with open(os.path.join(src, "code.reviewer.md"), "w") as f:
+                f.write("---\ndescription: Reviews code.\n---\n\nReview carefully.\n")
+
+            rc = ta.main(["codex", dest, src])
+            self.assertEqual(rc, 0)
+            self.assertEqual(os.listdir(dest), ["code-reviewer.toml"])
+            with open(os.path.join(dest, "code-reviewer.toml"), "rb") as f:
+                parsed = tomllib.load(f)
+            self.assertEqual(parsed["name"], "code-reviewer")
+            self.assertEqual(parsed["developer_instructions"], "Review carefully.\n")
+
     def test_overlay_precedence_and_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:
             shared = os.path.join(tmp, "shared")

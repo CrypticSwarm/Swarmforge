@@ -182,7 +182,7 @@ copy_shared_assets() {
 #
 # Unified definitions are markdown files whose YAML frontmatter is a superset
 # of the OpenCode agent schema (description, mode, model, temperature, tools)
-# plus optional per-harness override blocks (claude:, opencode:). One shared
+# plus optional per-harness override blocks (claude:, codex:, opencode:). One shared
 # translator (swarmforge.agents.translate) emits each harness's dialect, so
 # adding a new harness means adding an emitter there plus a case arm here.
 #
@@ -212,6 +212,9 @@ prepare_unified_agents() {
       ;;
     opencode)
       agents_dst="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}/agents"
+      ;;
+    codex)
+      agents_dst="${workspace_dir}/.codex/agents"
       ;;
     *)
       return 0

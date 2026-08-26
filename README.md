@@ -204,7 +204,7 @@ Codex state persists by mounting `$(CODEX_HOME_DIR)` to `/home/anvil`, keeping c
 
 Codex reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
 Shared skills reach `~/.agents/skills/`, Codex's native user location, through the [asset pipeline](#shared-assets-skills-commands-agents) above. Portable commands reach the same location as translated skills.
-Subagent definitions are not translated for Codex; the unified-agent pipeline covers OpenCode and Claude only.
+Unified subagent definitions are translated to Codex project-agent TOML under `<workspace>/.codex/agents/`.
 MCP tongs reach Codex as `[mcp_servers.<name>]` entries in a managed block of the derived `~/.codex/config.toml`, rewritten from the current layers every run and yielding to a server the user already defines under that name.
 
 Codex config layering uses the same three sources and order of trust as Claude (lowest to highest precedence):
@@ -236,6 +236,10 @@ tools:
   bash: false
 claude:
   maxTurns: 12
+codex:
+  model: gpt-5.3-codex
+  model_reasoning_effort: high
+  sandbox_mode: read-only
 ---
 
 You are the reviewer agent...
@@ -247,8 +251,9 @@ Field handling per harness:
 - `tools` uses OpenCode's lowercase tool ids mapped to booleans. For Claude Code, disabled tools become `disallowedTools` (`write: false` -> `disallowedTools: Write`); ids with no Claude equivalent are dropped.
 - `model` accepts a provider-qualified id (`anthropic/claude-sonnet-4-6`, passed through to OpenCode and stripped to the bare id for Claude — non-Anthropic providers dropped) or a Claude alias (`sonnet`, `haiku`, Claude-only and dropped for OpenCode).
 - `mode`, `temperature`, and other OpenCode-only fields are dropped for Claude Code.
-- `claude:` / `opencode:` blocks merge verbatim into that harness's output frontmatter.
-- `disable: true` passes through to OpenCode and skips the agent for Claude Code.
+- For Codex, an unqualified model passes through and an `openai/` prefix is stripped; models qualified for another provider are dropped. Names are normalized to Codex's ASCII letters/digits/spaces/hyphens/underscores constraint, and source filenames become normalized `.toml` filenames. Generic `tools` restrictions are not translated because Codex controls tools through its sandbox and MCP configuration.
+- `claude:` / `codex:` / `opencode:` blocks merge verbatim into that harness's output. Put Codex-only settings such as `model_reasoning_effort` and `sandbox_mode` in `codex:`.
+- `disable: true` passes through to OpenCode and skips the agent for Claude Code and Codex.
 
 Unified agents live in harness-neutral `.swarmforge/agents/` directories across the same four layers as shared assets (lowest to highest precedence):
 
@@ -257,7 +262,7 @@ Unified agents live in harness-neutral `.swarmforge/agents/` directories across 
 - **repo** — `agents/` in the checkout (override with `SWARMFORGE_REPO_AGENTS_DIR`, which points directly at an agents dir so the rest of the checkout is never mounted)
 - **workspace** — `<workspace>/.swarmforge/agents/`
 
-Layers mount read-only under `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the in-container `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` env vars point at the layer roots); the entrypoint translates the stacked sources into each harness's native location (`~/.config/opencode/agents/` for OpenCode, the container-private `~/.claude/agents/` for Claude). Later layers override earlier ones by filename.
+Layers mount read-only under `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the in-container `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` env vars point at the layer roots); the entrypoint translates the stacked sources into each harness's native location (`~/.config/opencode/agents/` for OpenCode, the container-private `~/.claude/agents/` for Claude, and `<workspace>/.codex/agents/*.toml` for Codex). Later layers override earlier ones by filename.
 Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude directly, outside this pipeline.
 
 The translator is covered by the unit suite; run it with `make test`.
