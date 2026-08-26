@@ -13,6 +13,8 @@ CLAUDE_IMG  ?= claude-code:local
 CLAUDE_CTR  ?= claude-$(PROJECT_NAME)
 GROK_IMG    ?= grok-build:local
 GROK_CTR    ?= grok-$(PROJECT_NAME)
+CODEX_IMG   ?= codex-cli:local
+CODEX_CTR   ?= codex-$(PROJECT_NAME)
 
 BROKER_IMG  ?= swarmforge-docker-broker:latest
 
@@ -25,6 +27,9 @@ CLAUDE_ARGS ?=
 GROK_DATA_DIR ?= $(HOME)/.local/share/grok
 GROK_HOME_DIR ?= $(GROK_DATA_DIR)/home
 GROK_ARGS ?=
+CODEX_DATA_DIR ?= $(HOME)/.local/share/codex
+CODEX_HOME_DIR ?= $(CODEX_DATA_DIR)/home
+CODEX_ARGS ?=
 # Stable per-repo mount path knobs, shared by every persistent-home harness.
 SWARMFORGE_REPO_SLUG ?=
 SWARMFORGE_REMOTE_NAME ?= origin
@@ -169,7 +174,17 @@ GROK_RUN_MOUNTS = \
 	--tmpfs $(ANVIL_HOME)/.grok/commands \
 	$(SWARMFORGE_LAYER_MOUNTS)
 
-.PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude build_grok update_grok run_opencode stop_opencode run_claude stop_claude run_grok stop_grok run_ollama logs_ollama stop_ollama gpu_stat clean \
+CODEX_RUN_ENV = \
+	-e SWARMFORGE_AGENT_BIN=codex \
+	$(SWARMFORGE_LAYER_ENV)
+
+# Codex's native skills dir is ~/.agents/skills, masked for the reason above.
+CODEX_RUN_MOUNTS = \
+	-v "$(CODEX_HOME_DIR)":$(ANVIL_HOME) \
+	--tmpfs $(ANVIL_HOME)/.agents/skills:exec \
+	$(SWARMFORGE_LAYER_MOUNTS)
+
+.PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude build_grok update_grok build_codex update_codex run_opencode stop_opencode run_claude stop_claude run_grok stop_grok run_codex stop_codex run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills lint
 
 # The workspace is mounted read-write, but the paths inside its git dir that
@@ -317,6 +332,19 @@ build_grok:
 update_grok:
 	$(MAKE) build_grok SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
 
+build_codex:
+	docker build \
+	  --target codex-runtime \
+	  --build-arg AGENT=codex \
+	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
+	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
+	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
+	  -t $(CODEX_IMG) "$(SWARMFORGE_DIR)"
+
+# Rebuild only from the Codex install step onward.
+update_codex:
+	$(MAKE) build_codex SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
+
 run_opencode: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.config/opencode
 run_opencode: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode,)
 run_opencode: SWARMFORGE_REPO_CONFIG_DIR ?= $(OPENCODE_CONFIG_DIR)
@@ -365,6 +393,23 @@ run_grok: opencode_network
 stop_grok:
 	@docker rm -f $(GROK_CTR) >/dev/null 2>&1 || true
 
+run_codex: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.codex
+run_codex: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.codex,)
+run_codex: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/codex
+run_codex: SWARMFORGE_CONFIG_RESET ?= 0
+run_codex: opencode_network
+	@mkdir -p "$(CODEX_HOME_DIR)"
+	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
+	@mkdir -p "$(CODEX_HOME_DIR)/.swarmforge"
+	@mkdir -p "$(CODEX_HOME_DIR)/.swarmforge/skills"
+	@mkdir -p "$(CODEX_HOME_DIR)/.swarmforge/command"
+	@mkdir -p "$(CODEX_HOME_DIR)/.agents/skills"
+	@mkdir -p "$(CODEX_HOME_DIR)/.codex"
+	$(call run_agent_container,$(CODEX_CTR),$(CODEX_RUN_ENV),$(CODEX_RUN_MOUNTS),$(CODEX_IMG),$(CODEX_ARGS),repo-slug,codex)
+
+stop_codex:
+	@docker rm -f $(CODEX_CTR) >/dev/null 2>&1 || true
+
 run_ollama: opencode_network
 	@docker rm -f $(OLLAMA_CTR) >/dev/null 2>&1 || true
 	docker run -d --rm --name $(OLLAMA_CTR) \
@@ -386,7 +431,7 @@ stop_ollama:
 gpu_stat:
 	nvidia-smi
 
-clean: stop_opencode stop_claude stop_grok stop_ollama
+clean: stop_opencode stop_claude stop_grok stop_codex stop_ollama
 	@docker network rm $(NETWORK) >/dev/null 2>&1 || true
 
 run_llama_3-1-8b:

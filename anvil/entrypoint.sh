@@ -12,6 +12,9 @@ AGENT_BIN="${SWARMFORGE_AGENT_BIN:-opencode}"
 AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
 CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
+CODEX_CONFIG_HOME="/run/swarmforge/codex-config"
+CODEX_CONFIG_FILE="${ANVIL_HOME}/.codex/config.toml"
+CODEX_AGENTS_HOME="/run/swarmforge/codex-agents"
 
 # State only: nothing claude loads as configuration or code belongs here.
 CLAUDE_STATE_DIRS="projects sessions file-history session-env shell-snapshots
@@ -45,6 +48,7 @@ copy_dir_entries() {
 
   [ -n "${src_dir}" ] || return 0
   [ -d "${src_dir}" ] || return 0
+  [ -n "${dst_dir}" ] || return 0
 
   mkdir -p "${dst_dir}"
 
@@ -58,6 +62,18 @@ copy_dir_entries() {
     rm -rf "${target}"
     cp -a "${entry}" "${target}"
   done
+}
+
+translate_codex_commands() {
+  src_dir="${1}"
+  skills_dst="${2}"
+
+  [ -n "${src_dir}" ] || return 0
+  [ -d "${src_dir}" ] || return 0
+
+  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.commands.translate \
+    "${skills_dst}" "${src_dir}" \
+    || printf '%s\n' "Warning: command translation failed for Codex; continuing" >&2
 }
 
 # Only the allowlisted state outlives the run: claude loads configuration and
@@ -122,6 +138,12 @@ copy_shared_assets() {
       skills_dst="${ANVIL_HOME}/.grok/skills"
       commands_dst="${ANVIL_HOME}/.grok/commands"
       ;;
+    codex)
+      # Codex uses skills as its extension point; portable commands are
+      # translated into skill packages below.
+      skills_dst="${ANVIL_HOME}/.agents/skills"
+      commands_dst="codex-skills"
+      ;;
     opencode)
       config_dest="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}"
       skills_dst="${config_dest}/skills"
@@ -134,15 +156,26 @@ copy_shared_assets() {
 
   for layer_src in "${SWARMFORGE_DOTAGENTS_USER_DIR:-}" "${SWARMFORGE_DOTAGENTS_ORG_DIR:-}"; do
     [ -n "${layer_src}" ] || continue
-    copy_dir_entries "${layer_src}/skills" "${skills_dst}"
-    copy_dir_entries "${layer_src}/commands" "${commands_dst}"
+    if [ "${commands_dst}" = "codex-skills" ]; then
+      translate_codex_commands "${layer_src}/commands" "${skills_dst}"
+      copy_dir_entries "${layer_src}/skills" "${skills_dst}"
+    else
+      copy_dir_entries "${layer_src}/skills" "${skills_dst}"
+      copy_dir_entries "${layer_src}/commands" "${commands_dst}"
+    fi
   done
 
-  copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
-  copy_dir_entries "${SWARMFORGE_COMMAND_DIR:-}" "${commands_dst}"
-
-  copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
-  copy_dir_entries "${workspace_dir}/.agents/commands" "${commands_dst}"
+  if [ "${commands_dst}" = "codex-skills" ]; then
+    translate_codex_commands "${SWARMFORGE_COMMAND_DIR:-}" "${skills_dst}"
+    copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
+    translate_codex_commands "${workspace_dir}/.agents/commands" "${skills_dst}"
+    copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
+  else
+    copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
+    copy_dir_entries "${SWARMFORGE_COMMAND_DIR:-}" "${commands_dst}"
+    copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
+    copy_dir_entries "${workspace_dir}/.agents/commands" "${commands_dst}"
+  fi
 }
 
 # Translate unified Swarmforge agent definitions into the running harness's
@@ -150,8 +183,8 @@ copy_shared_assets() {
 #
 # Unified definitions are markdown files whose YAML frontmatter is a superset
 # of the OpenCode agent schema (description, mode, model, temperature, tools)
-# plus optional per-harness override blocks (claude:, opencode:). One shared
-# translator (swarmforge.agents.translate) emits each harness's dialect, so
+# plus optional per-harness override blocks (claude:, codex:, opencode:).
+# One translator (swarmforge.agents.translate) emits each harness's dialect, so
 # adding a new harness means adding an emitter there plus a case arm here.
 #
 # Unified Swarmforge agent definitions live under <dir>/agents in the
@@ -181,6 +214,9 @@ prepare_unified_agents() {
     opencode)
       agents_dst="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}/agents"
       ;;
+    codex)
+      agents_dst="${CODEX_AGENTS_HOME}"
+      ;;
     *)
       return 0
       ;;
@@ -190,13 +226,25 @@ prepare_unified_agents() {
   # to /usr/local/lib/swarmforge; -P keeps the working directory off sys.path,
   # so a workspace that happens to contain a swarmforge/ directory cannot
   # shadow it. These run as root, before the drop to the invoking user.
-  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.agents.translate \
+  if ! PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.agents.translate \
     "${AGENT_BIN}" "${agents_dst}" \
     "${SWARMFORGE_ASSETS_USER_DIR:-}/agents" \
     "${SWARMFORGE_ASSETS_ORG_DIR:-}/agents" \
     "${SWARMFORGE_ASSETS_REPO_DIR:-}/agents" \
-    "${workspace_dir}/.swarmforge/agents" \
-    || printf '%s\n' "Warning: unified agent translation failed for ${AGENT_BIN}; continuing" >&2
+    "${workspace_dir}/.swarmforge/agents"; then
+    printf '%s\n' "Warning: unified agent translation failed for ${AGENT_BIN}; continuing" >&2
+    return 0
+  fi
+}
+
+register_codex_agents() {
+  [ "${AGENT_BIN}" = "codex" ] || return 0
+  [ -f "${CODEX_AGENTS_HOME}/config.toml" ] || return 0
+
+  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_toml \
+    --build "${CODEX_CONFIG_FILE}" \
+    "${CODEX_AGENTS_HOME}/config.toml" "${CODEX_CONFIG_FILE}" \
+    || printf '%s\n' "Warning: Codex agent registration failed; continuing" >&2
 }
 
 merge_config_layer() {
@@ -243,6 +291,11 @@ merge_config_layer() {
       # this dest is a persistent home: the container has its own
       # /usr/local/bin/grok, so copying them in would only leave them there.
       exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./bin --exclude=./downloads --exclude=./completions"
+      ;;
+    codex)
+      exclude_args="${exclude_args} --exclude=./skills --exclude=./packages"
+      exclude_args="${exclude_args} --exclude=./sessions --exclude=./history.jsonl --exclude=./log"
+      exclude_args="${exclude_args} --exclude=./config.toml"
       ;;
     opencode)
       exclude_args="${exclude_args} --exclude=./skills --exclude=./command"
@@ -312,6 +365,21 @@ build_claude_settings() {
   fi
 }
 
+build_codex_config() {
+  config_dst="${1}"
+  config_repo_src="${2:-}"
+  config_user_src="${3:-}"
+  config_org_src="${4:-}"
+
+  [ "${AGENT_BIN}" = "codex" ] || return 0
+
+  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_toml \
+    --build "${config_dst}/config.toml" \
+    "${config_repo_src:+${config_repo_src}/config.toml}" \
+    "${config_user_src:+${config_user_src}/config.toml}" \
+    "${config_org_src:+${config_org_src}/config.toml}"
+}
+
 prepare_layered_config() {
   config_dst="${1}"
   user_config_src="${2:-}"
@@ -339,15 +407,20 @@ prepare_layered_config() {
   merge_config_layer "${org_config_src}" "${config_dst}"
   merge_config_file "${org_config_src}/opencode.json" "${config_dst}/opencode.json"
 
-  # Sidecar (tong) MCP servers, generated by the host launcher and bind-mounted
-  # in read-only, merge last so they take precedence. The variable is set only
-  # for a harness that reads the fragment here, and each merges into its own
-  # config file, so the fragment never lands in another harness's.
+  build_codex_config \
+    "${config_dst}" \
+    "${repo_config_src}" \
+    "${user_config_src}" \
+    "${org_config_src}"
+
+  # Sidecar MCP servers merge last but yield to same-named layer entries.
+  # Only harnesses handled here receive the bind-mounted fragment, and each
+  # merges it into its own config file.
   case "${AGENT_BIN:-}" in
-    grok)
-      # This dest is a persistent home, so the servers go in a managed block
-      # the module rewrites each run rather than being appended.
-      PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_grok_mcp \
+    grok|codex)
+      # Servers go in a managed block the module rewrites each run rather than
+      # being appended; this also removes stale entries when no tongs are set.
+      PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_toml_mcp \
         "${config_dst}/config.toml" ${SWARMFORGE_TONG_MCP_FILE:+"${SWARMFORGE_TONG_MCP_FILE}"}
       ;;
     *)
@@ -366,10 +439,18 @@ prepare_layered_config() {
 
 prepare_agent_config() {
   config_dest="${SWARMFORGE_CONFIG_DEST:-}"
+  reset_config="${SWARMFORGE_CONFIG_RESET:-0}"
 
   # Not the caller's to choose: a merged layer landing in the shared home
   # would outlive the container.
   [ "${AGENT_BIN}" != "claude" ] || config_dest="${CLAUDE_CONFIG_HOME}"
+
+  # Rebuild Codex config outside its persistent home, which also holds state.
+  # Copying the result back keeps config.toml writable for atomic updates.
+  if [ "${AGENT_BIN}" = "codex" ]; then
+    config_dest="${CODEX_CONFIG_HOME}"
+    reset_config=1
+  fi
 
   [ -n "${config_dest}" ] || return 0
 
@@ -378,7 +459,15 @@ prepare_agent_config() {
     "${SWARMFORGE_CONFIG_USER_DIR:-}" \
     "${SWARMFORGE_CONFIG_ORG_DIR:-}" \
     "${SWARMFORGE_CONFIG_REPO_DIR:-}" \
-    "${SWARMFORGE_CONFIG_RESET:-0}"
+    "${reset_config}"
+
+  if [ "${AGENT_BIN}" = "codex" ]; then
+    # Truncation clears the prior run even when no layer supplies config.toml.
+    : > "${CODEX_CONFIG_FILE}"
+    if [ -f "${CODEX_CONFIG_HOME}/config.toml" ]; then
+      cp "${CODEX_CONFIG_HOME}/config.toml" "${CODEX_CONFIG_FILE}"
+    fi
+  fi
 }
 
 if [ ! -x "${AGENT_BIN_PATH}" ]; then
@@ -409,6 +498,7 @@ fi
 
 prepare_agent_config
 prepare_unified_agents
+register_codex_agents
 copy_shared_assets
 
 if [ "${AGENT_BIN}" = "claude" ]; then
@@ -417,6 +507,7 @@ fi
 
 chown -R "${ANVIL_UID}:${ANVIL_GID}" "${ANVIL_HOME}" 2>/dev/null || true
 chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CLAUDE_CONFIG_HOME}" 2>/dev/null || true
+chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CODEX_AGENTS_HOME}" 2>/dev/null || true
 chown -R "${ANVIL_UID}:${ANVIL_GID}" /workspace 2>/dev/null || true
 
 if [ "${AGENT_BIN}" = "claude" ]; then

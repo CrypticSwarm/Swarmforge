@@ -234,6 +234,49 @@ class ClaudeSharedHomeMounts(MakeRecipeCase):
         self.assertNotIn("--tmpfs", argv)
 
 
+class MaskedAssetDirs(MakeRecipeCase):
+    """A persistent-home harness masks the dirs the entrypoint fills with assets.
+
+    Those destinations are native to the harness, so they sit inside the home
+    mount rather than in a config dir rebuilt each run. Without the mask, one
+    repo's skills would be left in the home for every later session, against
+    any other repo.
+    """
+
+    def masked(self, argv):
+        image = next(
+            i for i, word in enumerate(argv) if word.endswith(":local"))
+        return [argv[i + 1].split(":")[0]
+                for i, word in enumerate(argv[:image]) if word == "--tmpfs"]
+
+    def test_grok_masks_its_native_skills_and_commands(self):
+        masked = self.masked(self.docker_argv("run_grok", self.make_repo()))
+        self.assertIn("/home/anvil/.grok/skills", masked)
+        self.assertIn("/home/anvil/.grok/commands", masked)
+
+    def test_codex_masks_the_dotagents_skills_dir_it_reads(self):
+        # Codex's user skills location is the harness-neutral one, so the
+        # dir masked here is not under a codex-named path.
+        masked = self.masked(self.docker_argv("run_codex", self.make_repo()))
+        self.assertIn("/home/anvil/.agents/skills", masked)
+
+
+class CodexConfigMounts(MakeRecipeCase):
+    """Codex config and native state use the writable persistent home."""
+
+    def test_config_is_not_an_individual_bind_mount(self):
+        mounts = self.mounts(self.docker_argv("run_codex", self.make_repo()))
+        home = os.path.join(self.home, ".local", "share", "codex", "home")
+        self.assertIn("%s:/home/anvil" % home, mounts)
+        targets = [mount.split(":", 2)[1] for mount in mounts]
+        self.assertNotIn("/home/anvil/.codex/config.toml", targets)
+
+    def test_native_state_paths_are_not_individually_mounted(self):
+        mounts = self.mounts(self.docker_argv("run_codex", self.make_repo()))
+        targets = [mount.split(":", 2)[1] for mount in mounts]
+        for state in ("auth.json", "sessions", "history.jsonl", "log"):
+            self.assertNotIn("/home/anvil/.codex/%s" % state, targets)
+
 class HostTerminalEnv(MakeRecipeCase):
     """run_* forwards host TERM/COLORTERM via docker `-e NAME` passthrough.
 
@@ -249,7 +292,7 @@ class HostTerminalEnv(MakeRecipeCase):
 
     def test_term_and_colorterm_are_passthrough_flags(self):
         repo = self.make_repo()
-        for target in ("run_opencode", "run_claude", "run_grok"):
+        for target in ("run_opencode", "run_claude", "run_grok", "run_codex"):
             flags = self.env_flags(self.docker_argv(target, repo))
             self.assertIn("TERM", flags, target)
             self.assertIn("COLORTERM", flags, target)

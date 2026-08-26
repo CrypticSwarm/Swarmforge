@@ -15,6 +15,8 @@ system prompt and passes through unchanged. Recognized frontmatter:
     model: haiku                                      merged into the output
   opencode:                                           frontmatter verbatim)
     permission: ...
+  codex:
+    model_reasoning_effort: high
 
 The agent's identity is its filename (foo.md -> agent "foo"); a `name` field
 is emitted only for harnesses that require one. Tool names use OpenCode's
@@ -30,6 +32,9 @@ Per-target rules:
             `disallowedTools`, rewrites `model` (anthropic/<id> -> <id>,
             other providers dropped, aliases pass through), and drops
             OpenCode-only fields.
+  codex     Emits project-agent TOML. OpenAI model prefixes are stripped,
+            other providers are dropped, and codex overrides are merged.
+            Generic tool restrictions are dropped.
 
 Usage: python3 -m swarmforge.agents.translate <target> <dest_dir> <src_dir>...
 
@@ -44,7 +49,7 @@ import sys
 
 from swarmforge.yamlite import parse_map, parse_scalar
 
-HARNESS_OVERRIDE_KEYS = {"claude", "opencode"}
+HARNESS_OVERRIDE_KEYS = {"claude", "codex", "opencode"}
 
 # OpenCode tool id -> Claude Code tool name. Ids mapping to None have no
 # Claude equivalent and are dropped.
@@ -132,6 +137,51 @@ def render(meta, body):
     return "---\n%s\n---\n\n%s" % ("\n".join(emit_map(meta)), body)
 
 
+TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def emit_toml_key(value):
+    text = str(value)
+    return text if TOML_BARE_KEY_RE.fullmatch(text) else emit_toml_string(text)
+
+
+def emit_toml_string(value):
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def emit_toml_multiline(value):
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return chr(34) * 3 + "\n" + text + chr(34) * 3
+
+
+def emit_toml_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[%s]" % ", ".join(emit_toml_value(item) for item in value)
+    if isinstance(value, dict):
+        pairs = (
+            "%s = %s" % (emit_toml_key(key), emit_toml_value(item))
+            for key, item in value.items()
+        )
+        return "{ %s }" % ", ".join(pairs)
+    return emit_toml_string(value)
+
+
+def render_codex(meta):
+    lines = []
+    for key, value in meta.items():
+        rendered = (
+            emit_toml_multiline(value)
+            if key == "developer_instructions"
+            else emit_toml_value(value)
+        )
+        lines.append("%s = %s" % (emit_toml_key(key), rendered))
+    return "\n".join(lines) + "\n"
+
+
 # --- Per-harness emitters ---------------------------------------------------
 
 
@@ -191,9 +241,59 @@ def to_claude(name, meta):
     return out
 
 
+CODEX_AGENT_TABLE_FIELDS = {
+    "default_subagent_model",
+    "enabled",
+    "max_depth",
+}
+
+
+def normalize_codex_name(name):
+    normalized = re.sub(r"[^A-Za-z0-9 _-]+", "-", str(name))
+    normalized = normalized.strip(" _-") or "agent"
+    if normalized in CODEX_AGENT_TABLE_FIELDS:
+        normalized = "agent-" + normalized
+    return normalized
+
+
+def to_codex(name, meta, body):
+    if meta.get("disable") is True:
+        return None
+    requested_name = meta.get("name", name)
+    codex_name = normalize_codex_name(requested_name)
+    if codex_name != requested_name:
+        warn("agent '%s': Codex name normalized to '%s'" % (name, codex_name))
+    out = {"name": codex_name, "developer_instructions": body}
+    if "description" in meta:
+        out["description"] = meta["description"]
+    else:
+        warn("agent '%s' has no description" % name)
+
+    model = meta.get("model")
+    if model is not None:
+        provider, sep, model_id = str(model).partition("/")
+        if not sep:
+            out["model"] = model
+        elif provider == "openai":
+            out["model"] = model_id
+
+    if "tools" in meta:
+        warn(
+            "agent '%s': tool restrictions are not translated for Codex; "
+            "use codex sandbox/MCP settings" % name
+        )
+
+    overrides = meta.get("codex")
+    if isinstance(overrides, dict):
+        out.update(overrides)
+    out["name"] = normalize_codex_name(out["name"])
+    return out
+
+
 EMITTERS = {
     "opencode": to_opencode,
     "claude": to_claude,
+    "codex": to_codex,
 }
 
 
@@ -232,13 +332,29 @@ def main(argv):
         return 0
 
     os.makedirs(dest_dir, exist_ok=True)
+    codex_registrations = {}
     for filename, (meta, body) in agents.items():
         name = filename[: -len(".md")]
-        out_meta = emitter(name, meta)
+        out_meta = emitter(name, meta, body) if target == "codex" else emitter(name, meta)
         if out_meta is None:
             continue
-        with open(os.path.join(dest_dir, filename), "w", encoding="utf-8") as handle:
-            handle.write(render(out_meta, body))
+        out_filename = (
+            "%s.toml" % normalize_codex_name(name) if target == "codex" else filename
+        )
+        out_path = os.path.join(dest_dir, out_filename)
+        with open(out_path, "w", encoding="utf-8") as handle:
+            if target == "codex":
+                handle.write(render_codex(out_meta))
+                codex_registrations[out_meta["name"]] = {
+                    "config_file": os.path.abspath(out_path)
+                }
+            else:
+                handle.write(render(out_meta, body))
+
+    if codex_registrations:
+        config_path = os.path.join(dest_dir, "config.toml")
+        with open(config_path, "w", encoding="utf-8") as handle:
+            handle.write(render_codex({"agents": codex_registrations}))
     return 0
 
 

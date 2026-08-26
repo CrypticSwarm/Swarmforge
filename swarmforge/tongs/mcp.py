@@ -205,14 +205,14 @@ def mcp_config_claude(merged):
     return {"mcpServers": servers} if servers else {}
 
 
-def mcp_config_grok(merged):
-    """Grok Build `mcp_servers` fragment for the discovered `mcp` tongs.
+def mcp_config_toml(merged):
+    """`mcp_servers` fragment for the discovered `mcp` tongs, TOML-shaped.
 
-    HTTP MCP servers keyed by canonical alias. Grok reads them from TOML
-    `[mcp_servers.<name>]` tables, where a `url` key is what selects the
-    remote transport -- there is no type key. The fragment stays JSON here;
-    swarmforge.config.merge_grok_mcp renders it. Returns `{}` when no `mcp`
-    tongs exist.
+    HTTP MCP servers keyed by canonical alias, in the shape Grok Build and
+    Codex CLI share: TOML `[mcp_servers.<name>]` tables, where a `url` key is
+    what selects the remote transport -- there is no type key. The fragment
+    stays JSON here; swarmforge.config.merge_toml_mcp renders it. Returns
+    `{}` when no `mcp` tongs exist.
     """
     servers = {}
     for alias, defn in mcp_tongs(merged).items():
@@ -225,7 +225,8 @@ def mcp_config_grok(merged):
 MCP_EMITTERS = {
     "opencode": mcp_config_opencode,
     "claude": mcp_config_claude,
-    "grok": mcp_config_grok,
+    "grok": mcp_config_toml,
+    "codex": mcp_config_toml,
 }
 
 

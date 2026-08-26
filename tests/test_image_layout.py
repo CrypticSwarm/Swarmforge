@@ -239,6 +239,28 @@ class ConfigLayerOrder(unittest.TestCase):
             self.body.index("SWARMFORGE_TONG_MCP_FILE"),
         )
 
+    def test_codex_toml_config_stacks_lowest_trust_first(self):
+        call = self.body[self.body.index("build_codex_config"):]
+        self.assertEqual(
+            re.findall(r'"\$\{(\w+)_config_src\}"', call)[:3],
+            list(self.LAYERS),
+        )
+
+    def test_absent_codex_layers_do_not_resolve_from_the_root(self):
+        body = self.function_body("build_codex_config")
+        for layer in self.LAYERS:
+            expected = (
+                "$" + "{config_%s_src:+" % layer
+                + "$" + "{config_%s_src}/config.toml}" % layer
+            )
+            self.assertIn(expected, body)
+
+    def test_codex_toml_build_precedes_generated_tong_servers(self):
+        self.assertLess(
+            self.body.index("build_codex_config"),
+            self.body.index("SWARMFORGE_TONG_MCP_FILE"),
+        )
+
     def test_claude_settings_stack_the_image_defaults_below_every_layer(self):
         """The image's defaults are a layer, and the bottom one.
 
@@ -271,6 +293,11 @@ class ConfigLayerOrder(unittest.TestCase):
         body = self.function_body("merge_config_layer")
         claude = body[body.index("claude)"):body.index("opencode)")]
         self.assertIn("--exclude=./settings.json", claude)
+
+    def test_codex_excludes_the_built_config_from_the_file_overlay(self):
+        body = self.function_body("merge_config_layer")
+        codex = body[body.index("codex)"):body.index("opencode)")]
+        self.assertIn("--exclude=./config.toml", codex)
 
 
 class ClaudeSettingsDelivery(unittest.TestCase):
@@ -391,6 +418,66 @@ class ClaudeConfigHome(unittest.TestCase):
                         "copy_shared_assets"):
             self.assertLess(
                 self.entrypoint.rindex("\n%s\n" % earlier), call)
+
+
+class CodexConfigDelivery(unittest.TestCase):
+    """Codex layers are rebuilt off-home before config.toml is published."""
+
+    def setUp(self):
+        with open(ENTRYPOINT) as handle:
+            self.entrypoint = handle.read()
+
+    def function_body(self, name):
+        body = self.entrypoint[self.entrypoint.index("%s() {" % name):]
+        return body[:body.index("\n}\n")]
+
+    def test_build_directory_is_outside_host_mounts(self):
+        match = re.search(
+            r'^CODEX_CONFIG_HOME="([^"$]+)"$', self.entrypoint, re.M)
+        self.assertIsNotNone(match)
+        for mounted in ("/home/", "/workspace"):
+            self.assertFalse(match.group(1).startswith(mounted))
+
+    def test_generated_codex_agents_stay_outside_host_mounts(self):
+        agents_home = re.search(
+            r'^CODEX_AGENTS_HOME="([^"$]+)"$', self.entrypoint, re.M
+        )
+        self.assertIsNotNone(agents_home)
+        for mounted in ("/home/", "/workspace"):
+            self.assertFalse(agents_home.group(1).startswith(mounted))
+
+    def test_generated_codex_agents_register_in_published_config(self):
+        translate = self.function_body("prepare_unified_agents")
+        register = self.function_body("register_codex_agents")
+        self.assertIn('agents_dst="${CODEX_AGENTS_HOME}"', translate)
+        self.assertIn('"${CODEX_AGENTS_HOME}/config.toml"', register)
+        self.assertIn('"${CODEX_CONFIG_FILE}"', register)
+
+    def test_registration_runs_after_translation_and_before_assets(self):
+        register = self.entrypoint.rindex("\nregister_codex_agents\n")
+        self.assertLess(
+            self.entrypoint.rindex("\nprepare_unified_agents\n"), register
+        )
+        self.assertLess(register, self.entrypoint.rindex("\ncopy_shared_assets\n"))
+
+    def test_generated_roles_are_chowned_before_the_uid_drop(self):
+        chown = (
+            'chown -Rh "${ANVIL_UID}:${ANVIL_GID}" '
+            '"${CODEX_AGENTS_HOME}"'
+        )
+        self.assertIn(chown, self.entrypoint)
+        self.assertLess(self.entrypoint.index(chown), self.entrypoint.index("exec gosu"))
+
+    def test_codex_forces_a_fresh_build_and_publishes_last(self):
+        body = self.function_body("prepare_agent_config")
+        self.assertIn('config_dest="${CODEX_CONFIG_HOME}"', body)
+        self.assertIn("reset_config=1", body)
+        prepare = body.index("prepare_layered_config")
+        truncate = body.index(': > "${CODEX_CONFIG_FILE}"')
+        publish = body.index(
+            'cp "${CODEX_CONFIG_HOME}/config.toml" "${CODEX_CONFIG_FILE}"')
+        self.assertLess(prepare, truncate)
+        self.assertLess(truncate, publish)
 
 
 class StatusLineAgreement(unittest.TestCase):
