@@ -12,6 +12,7 @@ AGENT_BIN="${SWARMFORGE_AGENT_BIN:-opencode}"
 AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
 CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
+CLAUDE_SHARED_HOME="${ANVIL_HOME}/.claude"
 CODEX_CONFIG_HOME="/run/swarmforge/codex-config"
 CODEX_CONFIG_FILE="${ANVIL_HOME}/.codex/config.toml"
 CODEX_AGENTS_HOME="/run/swarmforge/codex-agents"
@@ -20,7 +21,7 @@ CODEX_AGENTS_HOME="/run/swarmforge/codex-agents"
 CLAUDE_STATE_DIRS="projects sessions file-history session-env shell-snapshots
 plans tasks todos backups cache paste-cache plugins"
 CLAUDE_STATE_FILES="history.jsonl stats-cache.json keybindings.json
-.credentials.json .last-cleanup .last-update-result.json scheduled_tasks.lock"
+.last-cleanup scheduled_tasks.lock"
 
 configure_timezone() {
   timezone="${TZ:-}"
@@ -78,25 +79,23 @@ translate_codex_commands() {
 
 # Only the allowlisted state outlives the run: claude loads configuration and
 # code out of this dir, and a shared one would hand a session's writes to the
-# next container. Symlinks rather than bind mounts survive the atomic rename
-# some entries are written with; a directory must exist before it is linked,
+# next container. A link holds only what claude writes in place -- an entry
+# rewritten by rename replaces it. A directory must exist before it is linked,
 # or claude's own mkdir fails on the link. Runs after the config merge, which
 # wipes this destination under SWARMFORGE_CONFIG_RESET.
 link_claude_state() {
-  shared="${ANVIL_HOME}/.claude"
-
   mkdir -p "${CLAUDE_CONFIG_HOME}"
 
   # The one piece of state claude keeps beside its config dir, not inside it.
   link_claude_entry "${ANVIL_HOME}/.claude.json" ".claude.json"
 
   for entry in ${CLAUDE_STATE_DIRS}; do
-    mkdir -p "${shared}/${entry}" 2>/dev/null || true
-    link_claude_entry "${shared}/${entry}" "${entry}"
+    mkdir -p "${CLAUDE_SHARED_HOME}/${entry}" 2>/dev/null || true
+    link_claude_entry "${CLAUDE_SHARED_HOME}/${entry}" "${entry}"
   done
 
   for entry in ${CLAUDE_STATE_FILES}; do
-    link_claude_entry "${shared}/${entry}" "${entry}"
+    link_claude_entry "${CLAUDE_SHARED_HOME}/${entry}" "${entry}"
   done
 }
 
@@ -280,11 +279,14 @@ merge_config_layer() {
   #
   # settings.json is excluded for Claude for the same reason opencode.json
   # is excluded everywhere: it merges by key, through build_claude_settings.
+  #
+  # .credentials.json: the default user layer is the host's own ~/.claude, and
+  # the store is named elsewhere, so a merged copy is a secret nothing reads.
   exclude_args="--exclude=./opencode.json --exclude=./.swarmforge"
   case "${AGENT_BIN:-}" in
     claude)
       exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./agents"
-      exclude_args="${exclude_args} --exclude=./settings.json"
+      exclude_args="${exclude_args} --exclude=./settings.json --exclude=./.credentials.json"
       ;;
     grok)
       # bin/downloads/completions are the host installer's own artifacts and
@@ -573,6 +575,10 @@ fi
 
 if [ "${AGENT_BIN}" = "claude" ]; then
   export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_HOME}"
+  # Credentials are written by rename, which replaces a link, so the store is
+  # named rather than linked. Claude's token-refresh lock sits in the same
+  # directory, so concurrent containers rotate the shared token one at a time.
+  export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SHARED_HOME}"
 fi
 
 export HOME="${ANVIL_HOME}"
