@@ -143,7 +143,9 @@ Note that config layers stack in the opposite order to the assets above: assets 
 
 Claude runs with `CLAUDE_CONFIG_DIR` pointed at a container-local path, rebuilt from the config layers and the asset pipeline on every run. Everything Claude reads as configuration or code lives in that directory, so a shared one would hand a session's writes to the next container and to any running alongside it.
 
-State that must outlive the run (`projects/`, `history.jsonl`, `.credentials.json`, …) is symlinked back in from the shared home; the allowlist is `CLAUDE_STATE_DIRS`/`CLAUDE_STATE_FILES` in `anvil/entrypoint.sh`. It fails safe — a directory Claude learns to load in a later release stays inert until listed — at the cost that an unlisted new state directory dies with the container.
+State that must outlive the run (`projects/`, `history.jsonl`, …) is symlinked back in from the shared home; the allowlist is `CLAUDE_STATE_DIRS`/`CLAUDE_STATE_FILES` in `anvil/entrypoint.sh`. It fails safe — a directory Claude learns to load in a later release stays inert until listed — at the cost that an unlisted new state directory dies with the container. A link holds only what Claude writes in place: an entry it rewrites by rename replaces the link with a container-local file.
+
+Credentials are that second kind, so `CLAUDE_SECURESTORAGE_CONFIG_DIR` names their store instead: `~/.claude` in the shared home. The rename lands on the persistent mount, and Claude's token-refresh lock sits in the same directory, so concurrent containers rotate the shared token one at a time.
 
 `plugins/` is linked but mounted read-only: marketplace clones are worth keeping, but a session must not rewrite what the next container executes, so plugin installs happen host-side.
 

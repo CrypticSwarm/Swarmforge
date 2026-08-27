@@ -294,6 +294,12 @@ class ConfigLayerOrder(unittest.TestCase):
         claude = body[body.index("claude)"):body.index("opencode)")]
         self.assertIn("--exclude=./settings.json", claude)
 
+    def test_claude_excludes_credentials_from_the_file_overlay(self):
+        """The user layer is the host's own ~/.claude, the store is not."""
+        body = self.function_body("merge_config_layer")
+        claude = body[body.index("claude)"):body.index("grok)")]
+        self.assertIn("--exclude=./.credentials.json", claude)
+
     def test_codex_excludes_the_built_config_from_the_file_overlay(self):
         body = self.function_body("merge_config_layer")
         codex = body[body.index("codex)"):body.index("opencode)")]
@@ -409,6 +415,19 @@ class ClaudeConfigHome(unittest.TestCase):
     def test_claude_is_told_where_its_config_lives(self):
         self.assertIn(
             'export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_HOME}"', self.entrypoint)
+
+    def test_the_credential_store_is_named_not_linked(self):
+        """A rename-based write replaces a link, so the store cannot be one."""
+        self.assertIn(
+            'export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SHARED_HOME}"',
+            self.entrypoint)
+        self.assertNotIn(
+            ".credentials.json", self.literal("CLAUDE_STATE_FILES"))
+
+    def test_the_credential_store_outlives_the_container(self):
+        self.assertTrue(
+            self.literal("CLAUDE_SHARED_HOME").startswith("${ANVIL_HOME}/"),
+            "the credential store is not in the shared persistent home")
 
     def test_state_is_linked_after_the_config_home_is_built(self):
         """The merge wipes its destination under SWARMFORGE_CONFIG_RESET; a
