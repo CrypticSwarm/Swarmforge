@@ -1,0 +1,5 @@
+name = "agent-enabled"
+developer_instructions = """
+Toggle the feature.
+"""
+description = "Toggles features on."
