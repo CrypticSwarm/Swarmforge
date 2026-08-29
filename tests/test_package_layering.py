@@ -40,6 +40,12 @@ NOT_OURS_PATHS = {
     os.path.join(REPO_ROOT, ".opencode-test-data"),
 }
 
+# The harness package and the launcher layers it sits under, as the prefixes
+# the one-way rule matches on. A module counts as inside one of these when it
+# is the package itself or anything below it.
+HARNESS_ROOT = "swarmforge.harness"
+LAUNCHER_ROOTS = ("swarmforge.tongs", "swarmforge.anvil")
+
 # importlib's load-a-module-from-a-file-path helper.
 PATH_LOADER = "spec_from_file_location"
 
@@ -195,15 +201,22 @@ def reached_by(target, importer, modules):
     return reached
 
 
-def imported_modules(tree, importer, package, modules):
+def all_nodes(tree):
+    """Every node of `tree`, the ones only a call ever runs included."""
+    return ast.walk(tree)
+
+
+def imported_modules(tree, importer, package, modules, nodes=import_time_nodes):
     """The modules in `modules` that this syntax tree imports.
 
     `from pkg import name` reaches `pkg.name` when that name is a submodule
     and `pkg` itself when it is a function or a constant, so only the more
-    specific of the two is taken as the target.
+    specific of the two is taken as the target. `nodes` picks which part of
+    the tree counts: the import-time statements by default, or every node
+    for a rule that must also catch an import deferred into a call.
     """
     found = set()
-    for node in import_time_nodes(tree):
+    for node in nodes(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name in modules:
@@ -240,6 +253,15 @@ def import_graph():
         edges = imported_modules(tree, name, package_of(path), paths)
         graph[name] = edges - {name}
     return graph
+
+
+def is_within(name, package):
+    """Whether the module `name` is `package` itself or something inside it.
+
+    The dot matters: `swarmforge.tongsmith` starts with `swarmforge.tongs`
+    as text and is a different package entirely.
+    """
+    return name == package or name.startswith(package + ".")
 
 
 def path_loading_sites(path):
@@ -389,6 +411,113 @@ class ImportGraphIsAcyclic(unittest.TestCase):
     def test_no_module_in_the_package_imports_in_a_circle(self):
         cycle = find_cycle(import_graph())
         self.assertIsNone(cycle, "import cycle: %s" % " -> ".join(cycle or []))
+
+
+class HarnessModulesStayBelowTheLaunchers(unittest.TestCase):
+    """The harness modules describe a harness; they do not drive one.
+
+    Each of them covers a single harness and ships into the container image,
+    so the only package code they reach for is leaf helpers -- the agent
+    emitters, the config readers, `yamlite`. The launcher layers go the other
+    way and dispatch through them by name. An edge from a harness module back
+    into tongs or anvil would leave the two halves of the package depending on
+    each other, and would drag launcher-only code onto the path the image
+    imports.
+    """
+
+    def test_the_scan_sees_the_harness_modules_and_the_edge_into_them(self):
+        """A rule matching no modules would report no violation either.
+
+        These are the three pieces the rule is built out of: a harness module
+        in the graph with the leaf import it is allowed, the registry edge
+        that gathers the harnesses up, and the launcher edge that gives the
+        rule a direction to be one-way in.
+        """
+        graph = import_graph()
+        self.assertIn(
+            "swarmforge.agents.emit", graph["swarmforge.harness.claude"])
+        self.assertIn("swarmforge.harness.claude", graph["swarmforge.harness"])
+        self.assertIn("swarmforge.harness", graph["swarmforge.tongs.mcp"])
+
+    def test_no_harness_module_imports_tongs_or_anvil(self):
+        offenders = []
+        for name, edges in sorted(import_graph().items()):
+            if not is_within(name, HARNESS_ROOT):
+                continue
+            for edge in sorted(edges):
+                if any(is_within(edge, root) for root in LAUNCHER_ROOTS):
+                    offenders.append("%s -> %s" % (name, edge))
+        self.assertEqual(
+            offenders, [],
+            "harness modules import launcher code at import time: %s"
+            % ", ".join(offenders),
+        )
+
+    def test_the_lazy_scan_sees_what_the_import_time_scan_skips(self):
+        """The two scans differ on exactly the deferred-import shape.
+
+        The call-time rule below exists because a harness module already
+        defers one import into a function body on purpose; a scan that
+        skipped those bodies would wave the same trick through for tongs
+        and anvil.
+        """
+        module = ast.parse("def fn():\n    from deferred import x\n")
+        lazy = {
+            node.module for node in all_nodes(module)
+            if isinstance(node, ast.ImportFrom)
+        }
+        eager = {
+            node.module for node in import_time_nodes(module)
+            if isinstance(node, ast.ImportFrom)
+        }
+        self.assertIn("deferred", lazy)
+        self.assertNotIn("deferred", eager)
+        # And on the real files: the registry lookup the harness modules
+        # defer into their functions is visible to the lazy scan.
+        paths = {
+            module_name(path): path
+            for path in python_files(PACKAGE_ROOT)
+            if path.endswith(".py")
+        }
+        claude = paths["swarmforge.harness.claude"]
+        with open(claude, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read(), claude)
+        edges = imported_modules(
+            tree, "swarmforge.harness.claude", package_of(claude), paths,
+            nodes=all_nodes)
+        self.assertIn("swarmforge.harness", edges)
+
+    def test_no_harness_module_reaches_the_launchers_even_from_a_call(self):
+        """Deferring the import must not smuggle the dependency in.
+
+        The one-way rule above reads import-time edges, which is what the
+        acyclic check needs -- but a `from swarmforge import tongs` inside a
+        function body would pass it while still tying the harness half to
+        the launcher half the first time the function ran. Harness modules
+        get the stricter reading: no import of tongs or anvil anywhere in
+        the file.
+        """
+        paths = {
+            module_name(path): path
+            for path in python_files(PACKAGE_ROOT)
+            if path.endswith(".py")
+        }
+        offenders = []
+        for name, path in sorted(paths.items()):
+            if not is_within(name, HARNESS_ROOT):
+                continue
+            with open(path, encoding="utf-8") as handle:
+                tree = ast.parse(handle.read(), path)
+            edges = imported_modules(
+                tree, name, package_of(path), paths, nodes=all_nodes)
+            for edge in sorted(edges):
+                if any(is_within(edge, root) for root in LAUNCHER_ROOTS):
+                    offenders.append("%s -> %s" % (name, edge))
+        self.assertEqual(
+            offenders, [],
+            "harness modules reach launcher code from a call: %s"
+            % ", ".join(offenders),
+        )
 
 
 class PathLoadingStaysInTheShims(unittest.TestCase):
