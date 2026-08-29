@@ -21,6 +21,8 @@ import sys
 import tempfile
 import unittest
 
+import make_argv_fixtures
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
@@ -533,13 +535,8 @@ class StatusLineAgreement(unittest.TestCase):
         )
 
 
-class BuildRecipeArgv(unittest.TestCase):
-    """`make build_*` pairs an explicit Dockerfile with a repo-root context.
-
-    Building from `anvil/` again would leave the package outside the context
-    and the translator unable to import it, and the failure would not surface
-    until an agent went missing at runtime.
-    """
+class BuildRecipeCase(unittest.TestCase):
+    """Runs a build_* target and exposes the docker argv it assembled."""
 
     def setUp(self):
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-build-"))
@@ -569,6 +566,15 @@ class BuildRecipeArgv(unittest.TestCase):
         with open(self.capture_path) as handle:
             return handle.read().split("\0")[:-1]
 
+
+class BuildRecipeArgv(BuildRecipeCase):
+    """`make build_*` pairs an explicit Dockerfile with a repo-root context.
+
+    Building from `anvil/` again would leave the package outside the context
+    and the translator unable to import it, and the failure would not surface
+    until an agent went missing at runtime.
+    """
+
     def assert_builds_from_repo_root(self, target):
         argv = self.build_argv(target)
         self.assertEqual(argv[0], "build")
@@ -584,6 +590,43 @@ class BuildRecipeArgv(unittest.TestCase):
 
     def test_claude_image_builds_from_repo_root(self):
         self.assert_builds_from_repo_root("build_claude")
+
+    def test_grok_image_builds_from_repo_root(self):
+        self.assert_builds_from_repo_root("build_grok")
+
+    def test_codex_image_builds_from_repo_root(self):
+        self.assert_builds_from_repo_root("build_codex")
+
+
+class BuildArgvBaseline(BuildRecipeCase):
+    """Every word of every build_* recipe's docker argv, against a recording.
+
+    The shape assertions above explain the Dockerfile/context pairing; this
+    pins the rest -- target stage, build args and their defaults, image tag --
+    so a drifted recipe fails against `make_argv_fixtures.BUILD_ARGV` instead
+    of building something subtly different.
+    """
+
+    maxDiff = None
+
+    def assert_argv_matches_recording(self, target):
+        argv = self.build_argv(target)
+        self.assertEqual(
+            make_argv_fixtures.normalize(argv, self.tmp),
+            make_argv_fixtures.BUILD_ARGV[target],
+        )
+
+    def test_build_opencode_argv_matches_recording(self):
+        self.assert_argv_matches_recording("build_opencode")
+
+    def test_build_claude_argv_matches_recording(self):
+        self.assert_argv_matches_recording("build_claude")
+
+    def test_build_grok_argv_matches_recording(self):
+        self.assert_argv_matches_recording("build_grok")
+
+    def test_build_codex_argv_matches_recording(self):
+        self.assert_argv_matches_recording("build_codex")
 
 
 class ContainerImportLayout(unittest.TestCase):
