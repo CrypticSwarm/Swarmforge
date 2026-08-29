@@ -445,6 +445,36 @@ class MainTests(unittest.TestCase):
                 },
             )
 
+    def test_codex_name_override_keys_the_registration(self):
+        # The emitted file keeps the source stem; the registration and the
+        # file's own name follow the `codex:` block's declared name.
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, "src")
+            dest = os.path.join(tmp, "dest")
+            os.makedirs(src)
+            with open(os.path.join(src, "reviewer.md"), "w") as f:
+                f.write(
+                    "---\ndescription: Reviews code.\ncodex:\n"
+                    "  name: review bot\n---\n\nReview carefully.\n"
+                )
+
+            rc = ta.main(["codex", dest, src])
+            self.assertEqual(rc, 0)
+            self.assertEqual(set(os.listdir(dest)), {"reviewer.toml", "config.toml"})
+            role_path = os.path.join(dest, "reviewer.toml")
+            with open(role_path, "rb") as f:
+                self.assertEqual(tomllib.load(f)["name"], "review bot")
+            with open(os.path.join(dest, "config.toml"), "rb") as f:
+                config = tomllib.load(f)
+            self.assertEqual(
+                config,
+                {
+                    "agents": {
+                        "review bot": {"config_file": os.path.abspath(role_path)}
+                    }
+                },
+            )
+
     def test_overlay_precedence_and_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:
             shared = os.path.join(tmp, "shared")

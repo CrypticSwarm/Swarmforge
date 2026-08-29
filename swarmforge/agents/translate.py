@@ -42,258 +42,73 @@ Later source directories override earlier ones by filename. Missing or
 empty source paths are skipped. Only top-level *.md files are read.
 """
 
-import json
 import os
-import re
 import sys
 
+from swarmforge import harness
+from swarmforge.agents.emit import (
+    OPENCODE_ONLY_FIELDS,
+    PLAIN_SCALAR_RE,
+    TOML_BARE_KEY_RE,
+    emit_map,
+    emit_scalar,
+    emit_toml_key,
+    emit_toml_multiline,
+    emit_toml_string,
+    emit_toml_value,
+    render,
+    split_frontmatter,
+    warn,
+)
+from swarmforge.harness.claude import CLAUDE_TOOL_NAMES, to_claude
+from swarmforge.harness.codex import (
+    CODEX_AGENT_TABLE_FIELDS,
+    normalize_codex_name,
+    render_codex,
+    to_codex,
+)
+from swarmforge.harness.opencode import to_opencode
+from swarmforge.harness.spec import provided
 from swarmforge.yamlite import parse_map, parse_scalar
 
-HARNESS_OVERRIDE_KEYS = {"claude", "codex", "opencode"}
+# This module's public surface: the rendering helpers and the per-harness
+# emitters stay importable from the CLI's own module name.
+__all__ = [
+    "CLAUDE_TOOL_NAMES",
+    "CODEX_AGENT_TABLE_FIELDS",
+    "EMITTERS",
+    "HARNESS_OVERRIDE_KEYS",
+    "OPENCODE_ONLY_FIELDS",
+    "PLAIN_SCALAR_RE",
+    "TOML_BARE_KEY_RE",
+    "emit_map",
+    "emit_scalar",
+    "emit_toml_key",
+    "emit_toml_multiline",
+    "emit_toml_string",
+    "emit_toml_value",
+    "load_agents",
+    "main",
+    "normalize_codex_name",
+    "parse_map",
+    "parse_scalar",
+    "render",
+    "render_codex",
+    "split_frontmatter",
+    "to_claude",
+    "to_codex",
+    "to_opencode",
+    "warn",
+]
 
-# OpenCode tool id -> Claude Code tool name. Ids mapping to None have no
-# Claude equivalent and are dropped.
-CLAUDE_TOOL_NAMES = {
-    "bash": "Bash",
-    "edit": "Edit",
-    "write": "Write",
-    "read": "Read",
-    "grep": "Grep",
-    "glob": "Glob",
-    "list": None,
-    "patch": None,
-    "skill": "Skill",
-    "task": "Task",
-    "todoread": None,
-    "todowrite": "TodoWrite",
-    "webfetch": "WebFetch",
-    "websearch": "WebSearch",
-}
-
-OPENCODE_ONLY_FIELDS = {
-    "mode",
-    "temperature",
-    "top_p",
-    "steps",
-    "permission",
-    "hidden",
-    "disable",
-    "tools",
-}
-
-
-def warn(message):
-    print("swarmforge.agents.translate: %s" % message, file=sys.stderr)
-
-
-PLAIN_SCALAR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.,()/+-]*$")
-
-
-def emit_scalar(value):
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    if value is None:
-        return "null"
-    if isinstance(value, (int, float)):
-        return repr(value)
-    text = str(value)
-    if PLAIN_SCALAR_RE.match(text) and not text.endswith(" "):
-        if parse_scalar(text) == text:
-            return text
-    return json.dumps(text)
-
-
-def emit_map(mapping, indent=0):
-    lines = []
-    pad = " " * indent
-    for key, value in mapping.items():
-        if isinstance(value, dict):
-            lines.append("%s%s:" % (pad, key))
-            lines.extend(emit_map(value, indent + 2))
-        elif isinstance(value, list):
-            lines.append("%s%s:" % (pad, key))
-            for item in value:
-                lines.append("%s  - %s" % (pad, emit_scalar(item)))
-        else:
-            lines.append("%s%s: %s" % (pad, key, emit_scalar(value)))
-    return lines
-
-
-def split_frontmatter(text):
-    if not text.startswith("---\n"):
-        return {}, text
-    lines = text.split("\n")
-    for end in range(1, len(lines)):
-        if lines[end].strip() == "---":
-            meta, _ = parse_map(lines[1:end], 0, 0)
-            body = "\n".join(lines[end + 1 :]).lstrip("\n")
-            return meta, body
-    raise ValueError("unterminated frontmatter")
-
-
-def render(meta, body):
-    return "---\n%s\n---\n\n%s" % ("\n".join(emit_map(meta)), body)
-
-
-TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-
-
-def emit_toml_key(value):
-    text = str(value)
-    return text if TOML_BARE_KEY_RE.fullmatch(text) else emit_toml_string(text)
-
-
-def emit_toml_string(value):
-    return json.dumps(str(value), ensure_ascii=False)
-
-
-def emit_toml_multiline(value):
-    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return chr(34) * 3 + "\n" + text + chr(34) * 3
-
-
-def emit_toml_value(value):
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return repr(value)
-    if isinstance(value, list):
-        return "[%s]" % ", ".join(emit_toml_value(item) for item in value)
-    if isinstance(value, dict):
-        pairs = (
-            "%s = %s" % (emit_toml_key(key), emit_toml_value(item))
-            for key, item in value.items()
-        )
-        return "{ %s }" % ", ".join(pairs)
-    return emit_toml_string(value)
-
-
-def render_codex(meta):
-    lines = []
-    for key, value in meta.items():
-        rendered = (
-            emit_toml_multiline(value)
-            if key == "developer_instructions"
-            else emit_toml_value(value)
-        )
-        lines.append("%s = %s" % (emit_toml_key(key), rendered))
-    return "\n".join(lines) + "\n"
-
-
-# --- Per-harness emitters ---------------------------------------------------
-
-
-def to_opencode(name, meta):
-    out = {k: v for k, v in meta.items() if k not in HARNESS_OVERRIDE_KEYS and k != "name"}
-    model = out.get("model")
-    if model is not None and "/" not in str(model):
-        del out["model"]
-    overrides = meta.get("opencode")
-    if isinstance(overrides, dict):
-        out.update(overrides)
-    return out
-
-
-def to_claude(name, meta):
-    if meta.get("disable") is True:
-        return None
-    out = {"name": meta.get("name", name)}
-    if "description" in meta:
-        out["description"] = meta["description"]
-    else:
-        warn("agent '%s' has no description" % name)
-
-    model = meta.get("model")
-    if model is not None:
-        provider, sep, model_id = str(model).partition("/")
-        if not sep:
-            out["model"] = model
-        elif provider == "anthropic":
-            out["model"] = model_id
-
-    tools = meta.get("tools")
-    if isinstance(tools, dict):
-        disallowed = []
-        for tool, enabled in tools.items():
-            if enabled is not False:
-                continue
-            mapped = CLAUDE_TOOL_NAMES.get(tool)
-            if mapped is None:
-                if tool not in CLAUDE_TOOL_NAMES:
-                    warn("agent '%s': unknown tool '%s' skipped" % (name, tool))
-                continue
-            disallowed.append(mapped)
-        if disallowed:
-            out["disallowedTools"] = ", ".join(disallowed)
-    elif tools is not None:
-        warn("agent '%s': 'tools' must be a map of tool -> bool" % name)
-
-    skipped = OPENCODE_ONLY_FIELDS | HARNESS_OVERRIDE_KEYS | {"name", "description", "model"}
-    for key, value in meta.items():
-        if key not in skipped:
-            out[key] = value
-
-    overrides = meta.get("claude")
-    if isinstance(overrides, dict):
-        out.update(overrides)
-    return out
-
-
-CODEX_AGENT_TABLE_FIELDS = {
-    "default_subagent_model",
-    "enabled",
-    "max_depth",
-}
-
-
-def normalize_codex_name(name):
-    normalized = re.sub(r"[^A-Za-z0-9 _-]+", "-", str(name))
-    normalized = normalized.strip(" _-") or "agent"
-    if normalized in CODEX_AGENT_TABLE_FIELDS:
-        normalized = "agent-" + normalized
-    return normalized
-
-
-def to_codex(name, meta, body):
-    if meta.get("disable") is True:
-        return None
-    requested_name = meta.get("name", name)
-    codex_name = normalize_codex_name(requested_name)
-    if codex_name != requested_name:
-        warn("agent '%s': Codex name normalized to '%s'" % (name, codex_name))
-    out = {"name": codex_name, "developer_instructions": body}
-    if "description" in meta:
-        out["description"] = meta["description"]
-    else:
-        warn("agent '%s' has no description" % name)
-
-    model = meta.get("model")
-    if model is not None:
-        provider, sep, model_id = str(model).partition("/")
-        if not sep:
-            out["model"] = model
-        elif provider == "openai":
-            out["model"] = model_id
-
-    if "tools" in meta:
-        warn(
-            "agent '%s': tool restrictions are not translated for Codex; "
-            "use codex sandbox/MCP settings" % name
-        )
-
-    overrides = meta.get("codex")
-    if isinstance(overrides, dict):
-        out.update(overrides)
-    out["name"] = normalize_codex_name(out["name"])
-    return out
-
+# Frontmatter keys that are per-harness override blocks, and the emitter
+# for each harness that defines one, both read off the harness registry.
+HARNESS_OVERRIDE_KEYS = harness.agent_override_keys()
 
 EMITTERS = {
-    "opencode": to_opencode,
-    "claude": to_claude,
-    "codex": to_codex,
+    name: harness.get(name).SPEC.agent_emitter
+    for name in harness.names()
+    if provided(harness.get(name).SPEC.agent_emitter)
 }
 
 
@@ -318,6 +133,11 @@ def load_agents(src_dirs):
 
 
 def main(argv):
+    """Run the target harness's emitter over the loaded agents.
+
+    Each emitted file is written under `dest_dir`, then the harness's
+    finalize hook runs over everything that was emitted.
+    """
     if len(argv) < 3:
         print(__doc__.strip(), file=sys.stderr)
         return 2
@@ -332,29 +152,19 @@ def main(argv):
         return 0
 
     os.makedirs(dest_dir, exist_ok=True)
-    codex_registrations = {}
+    emitted = []
     for filename, (meta, body) in agents.items():
         name = filename[: -len(".md")]
-        out_meta = emitter(name, meta, body) if target == "codex" else emitter(name, meta)
-        if out_meta is None:
+        result = emitter(name, meta, body)
+        if result is None:
             continue
-        out_filename = (
-            "%s.toml" % normalize_codex_name(name) if target == "codex" else filename
-        )
+        out_filename, text = result
         out_path = os.path.join(dest_dir, out_filename)
         with open(out_path, "w", encoding="utf-8") as handle:
-            if target == "codex":
-                handle.write(render_codex(out_meta))
-                codex_registrations[out_meta["name"]] = {
-                    "config_file": os.path.abspath(out_path)
-                }
-            else:
-                handle.write(render(out_meta, body))
+            handle.write(text)
+        emitted.append((name, meta, out_path))
 
-    if codex_registrations:
-        config_path = os.path.join(dest_dir, "config.toml")
-        with open(config_path, "w", encoding="utf-8") as handle:
-            handle.write(render_codex({"agents": codex_registrations}))
+    harness.get(target).SPEC.finalize_agents(dest_dir, emitted)
     return 0
 
 
