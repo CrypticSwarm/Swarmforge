@@ -1,0 +1,6 @@
+name = "helper"
+developer_instructions = """
+Help briefly.
+"""
+description = "Answers quick questions."
+model = "haiku"

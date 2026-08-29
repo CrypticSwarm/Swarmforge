@@ -1,0 +1,7 @@
+name = "reviewer"
+developer_instructions = """
+You are the reviewer agent.
+"""
+description = "Reviews code for defects."
+model_reasoning_effort = "high"
+sandbox_mode = "read-only"

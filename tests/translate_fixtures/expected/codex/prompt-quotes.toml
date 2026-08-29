@@ -1,0 +1,7 @@
+name = "prompt-quotes"
+developer_instructions = """
+Line one with \"quotes\" and a backslash \\ here.
+Line two.
+"""
+description = "Formats: strings and paths"
+extras = { nested = true, items = ["a", "b"] }

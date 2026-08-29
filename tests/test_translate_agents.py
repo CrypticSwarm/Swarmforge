@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Unit tests for swarmforge.agents.translate. Run: python3 tests/test_translate_agents.py"""
 
+import contextlib
+import io
 import os
+import shutil
 import sys
 import tempfile
 import tomllib
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FIXTURE_DIR = os.path.join(REPO_ROOT, "tests", "translate_fixtures")
 
 # The image puts the swarmforge package on PYTHONPATH; standing in for that
 # here keeps this file runnable on its own, not just under a discovery run
@@ -471,6 +475,48 @@ class MainTests(unittest.TestCase):
             self.assertNotIn("claude", meta)
             self.assertEqual(meta["steps"], 8)
             self.assertEqual(meta["tools"], {"write": False, "edit": False, "bash": False})
+
+
+class RecordedFixtureTests(unittest.TestCase):
+    """Every target's output over one source tree, byte for byte.
+
+    The classes above pin individual rules; this pins the whole rendering --
+    field order, quoting, filenames, the codex registration file -- against
+    recordings under tests/translate_fixtures/. The sources exercise every
+    emitter and every per-harness override block, plus the branches that skip
+    an agent, drop a model, or normalize a name. `{DEST}` in an expected file
+    stands for the destination directory, which the codex registration embeds
+    as an absolute path. A deliberate output change is re-recorded by running
+    main() over src/ and substituting `{DEST}` back; nothing rewrites the
+    recordings automatically.
+    """
+
+    maxDiff = None
+
+    def assert_output_matches_recording(self, target):
+        src = os.path.join(FIXTURE_DIR, "src")
+        expected_dir = os.path.join(FIXTURE_DIR, "expected", target)
+        dest = tempfile.mkdtemp(prefix="translate-recorded-")
+        self.addCleanup(shutil.rmtree, dest, True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            rc = ta.main([target, dest, src])
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(os.listdir(dest)), sorted(os.listdir(expected_dir)))
+        for filename in sorted(os.listdir(expected_dir)):
+            with open(os.path.join(dest, filename), encoding="utf-8") as handle:
+                actual = handle.read().replace(dest, "{DEST}")
+            with open(os.path.join(expected_dir, filename), encoding="utf-8") as handle:
+                expected = handle.read()
+            self.assertEqual(actual, expected, filename)
+
+    def test_opencode_output_matches_recording(self):
+        self.assert_output_matches_recording("opencode")
+
+    def test_claude_output_matches_recording(self):
+        self.assert_output_matches_recording("claude")
+
+    def test_codex_output_matches_recording(self):
+        self.assert_output_matches_recording("codex")
 
 
 if __name__ == "__main__":
