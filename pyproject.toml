@@ -47,5 +47,10 @@ packages = [
     "swarmforge.agents",
     "swarmforge.anvil",
     "swarmforge.config",
+    "swarmforge.harness",
+    "swarmforge.harness.claude",
+    "swarmforge.harness.codex",
+    "swarmforge.harness.grok",
+    "swarmforge.harness.opencode",
     "swarmforge.tongs",
 ]
