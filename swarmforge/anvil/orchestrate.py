@@ -30,6 +30,11 @@ from swarmforge import tongs
 # same git-dir mounts (and the same read-only guards) the anvil does.
 from swarmforge import gitguard
 
+# The per-harness registry: MCP fragment shape and delivery are read off each
+# harness's spec.
+from swarmforge import harness as harnesses
+from swarmforge.harness.spec import provided
+
 from .errors import OrchestrationError
 from .readiness import wait_ready
 from .secretchan import SecretChannel, make_secret_resolver
@@ -122,9 +127,13 @@ def ensure_mcp_harness_supported(merged, harness):
         name for name in sorted(merged)
         if (merged[name]["definition"].get("interface") or {}).get("kind") == "mcp"
     ]
-    if not mcp_names or harness in tongs.MCP_EMITTERS:
+    module = harnesses.get(harness)
+    if not mcp_names or (module is not None and provided(module.SPEC.mcp_fragment)):
         return
-    supported = ", ".join(sorted(tongs.MCP_EMITTERS))
+    supported = ", ".join(
+        name for name in harnesses.names()
+        if provided(harnesses.get(name).SPEC.mcp_fragment)
+    )
     got = harness if harness else "none"
     raise OrchestrationError(
         "mcp tong(s) %s require --harness to be one of: %s (got %s)"
@@ -253,9 +262,10 @@ def _injection_pre_image_args(injection):
     return args
 
 
-# Where the generated MCP config is mounted in the anvil, and the env var the
-# entrypoint reads to merge it into the harness's own config file. Claude Code
-# is pointed at the same in-container path with `--mcp-config` instead.
+# Where the generated MCP config is mounted in the anvil. A harness whose spec
+# delivers by env var is pointed at that path through the variable below, which
+# the entrypoint reads; one that delivers by flag is pointed at it on its own
+# command line instead.
 MCP_CONFIG_CONTAINER_PATH = "/tmp/swarmforge-tong-mcp.json"
 MCP_FILE_ENV = "SWARMFORGE_TONG_MCP_FILE"
 
@@ -265,12 +275,13 @@ def _mcp_injection(mcp_config, harness, mcp_dir):
 
     `mcp_config` is the per-harness fragment from `tongs.plan_injection` (already
     shaped for the harness). It is written into `mcp_dir` on the host and mounted
-    read-only into the anvil. For Claude Code the mount is paired with
-    `--mcp-config <path>` (a harness arg, so it appends after the image); for
-    every other harness the mount is paired with `SWARMFORGE_TONG_MCP_FILE=<path>`,
-    which the entrypoint reads to merge the fragment into that harness's config.
-    With an empty fragment nothing is written, mounted, or appended, so the
-    anvil argv is unchanged.
+    read-only into the anvil; the harness spec's `mcp_delivery` decides how the
+    harness is told where it landed. A `("flag", FLAG)` harness gets `FLAG <path>`
+    appended as a harness arg after the image; an `("env", VAR)` harness gets the
+    mount paired with `VAR=<path>`, which the entrypoint reads to merge the
+    fragment into that harness's config. An unregistered harness falls back to
+    the env-var delivery. With an empty fragment nothing is written, mounted, or
+    appended, so the anvil argv is unchanged.
     """
     if not mcp_config:
         return [], []
@@ -278,9 +289,14 @@ def _mcp_injection(mcp_config, harness, mcp_dir):
     with open(host_path, "w", encoding="utf-8") as handle:
         json.dump(mcp_config, handle)
     mount = ["-v", "%s:%s:ro" % (host_path, MCP_CONFIG_CONTAINER_PATH)]
-    if harness == "claude":
-        return mount, ["--mcp-config", MCP_CONFIG_CONTAINER_PATH]
-    return mount + ["-e", "%s=%s" % (MCP_FILE_ENV, MCP_CONFIG_CONTAINER_PATH)], []
+    delivery = ("env", MCP_FILE_ENV)
+    module = harnesses.get(harness)
+    if module is not None:
+        delivery = module.SPEC.mcp_delivery
+    kind, name = delivery
+    if kind == "flag":
+        return mount, [name, MCP_CONFIG_CONTAINER_PATH]
+    return mount + ["-e", "%s=%s" % (name, MCP_CONFIG_CONTAINER_PATH)], []
 
 
 def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
@@ -438,10 +454,10 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                 raise OrchestrationError("tong '%s' did not become ready in time" % name)
 
         # `port`/`volume` reachability splices in before the image; the MCP
-        # config adds a read-only mount (and, for OpenCode, the env var the
-        # entrypoint reads) before the image, plus Claude's `--mcp-config` as a
-        # harness arg after it. With no `mcp` tongs the fragment is empty and
-        # nothing is written or appended.
+        # config adds a read-only mount before the image, paired with either the
+        # env var the entrypoint reads or a harness arg after the image,
+        # whichever the harness spec's delivery names. With no `mcp` tongs the
+        # fragment is empty and nothing is written or appended.
         pre_image_args = _injection_pre_image_args(injection)
         post_image_args = []
         if injection["mcp"]:
