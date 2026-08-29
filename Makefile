@@ -9,8 +9,6 @@ OLLAMA_CTX   ?= 32768
 
 OPENCODE_IMG ?= opencode:local
 OPENCODE_CTR ?= opencode-$(PROJECT_NAME)
-CLAUDE_IMG  ?= claude-code:local
-CLAUDE_CTR  ?= claude-$(PROJECT_NAME)
 GROK_IMG    ?= grok-build:local
 GROK_CTR    ?= grok-$(PROJECT_NAME)
 CODEX_IMG   ?= codex-cli:local
@@ -21,9 +19,6 @@ BROKER_IMG  ?= swarmforge-docker-broker:latest
 PROFILE      ?=
 DATA_DIR     ?= $(HOME)/.local/share/opencode
 OPENCODE_ARGS ?=
-CLAUDE_DATA_DIR ?= $(HOME)/.local/share/claude
-CLAUDE_HOME_DIR ?= $(CLAUDE_DATA_DIR)/home
-CLAUDE_ARGS ?=
 GROK_DATA_DIR ?= $(HOME)/.local/share/grok
 GROK_HOME_DIR ?= $(GROK_DATA_DIR)/home
 GROK_ARGS ?=
@@ -149,18 +144,6 @@ OPENCODE_RUN_MOUNTS = \
 OPENCODE_RUN_ENV = \
 	$(SWARMFORGE_LAYER_ENV)
 
-CLAUDE_RUN_ENV = \
-	-e SWARMFORGE_AGENT_BIN=claude \
-	$(SWARMFORGE_LAYER_ENV)
-
-# Claude's config dir is container-local (see the entrypoint), so nothing
-# under .claude here is loaded as config. plugins/ remounts read-only: a
-# session must not rewrite what the next container executes.
-CLAUDE_RUN_MOUNTS = \
-	-v "$(CLAUDE_HOME_DIR)":$(ANVIL_HOME) \
-	-v "$(CLAUDE_HOME_DIR)/.claude/plugins":$(ANVIL_HOME)/.claude/plugins:ro \
-	$(SWARMFORGE_LAYER_MOUNTS)
-
 GROK_RUN_ENV = \
 	-e SWARMFORGE_AGENT_BIN=grok \
 	$(SWARMFORGE_LAYER_ENV)
@@ -184,7 +167,7 @@ CODEX_RUN_MOUNTS = \
 	--tmpfs $(ANVIL_HOME)/.agents/skills:exec \
 	$(SWARMFORGE_LAYER_MOUNTS)
 
-.PHONY: opencode_network build_opencode update_opencode build_broker build_claude update_claude build_grok update_grok build_codex update_codex run_opencode stop_opencode run_claude stop_claude run_grok stop_grok run_codex stop_codex run_ollama logs_ollama stop_ollama gpu_stat clean \
+.PHONY: opencode_network build_opencode update_opencode build_broker build_grok update_grok build_codex update_codex run_opencode stop_opencode run_grok stop_grok run_codex stop_codex run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills lint
 
 # The workspace is mounted read-write, but the paths inside its git dir that
@@ -283,9 +266,69 @@ define run_agent_container
 	set +x
 endef
 
+# A literal newline, a lone backslash, and a single space, for assembling
+# recipe text inside $(eval). Reading a define body collapses literal
+# backslash-newlines, so harness_rules splices harness_bs where a recipe
+# needs a line continuation to survive into the generated rule.
+define harness_nl
+
+
+endef
+harness_blank :=
+harness_bs := \$(harness_blank)
+harness_space := $(harness_blank) $(harness_blank)
+
+# One recipe line per directory. $(1) holds $$-escaped paths, so each
+# expands in the run_<name> recipe where the target-scoped config-layer
+# defaults are in effect. foreach joins iterations with a space; strip
+# the space that would otherwise trail each generated line.
+harness_mkdir_lines = $(subst $(harness_space)$(harness_nl),$(harness_nl),$(foreach dir,$(1),$(harness_nl)	@mkdir -p "$(dir)"))
+
+# Generates one harness's build/update/run/stop targets from the knobs its
+# harness.mk fragment declares. $(1) is the harness name as it appears in
+# target names, --build-arg AGENT, and the Dockerfile stage; $(2) is the
+# fragment's variable prefix (CLAUDE, OPENCODE, ...). Fragment knobs stay
+# $$-deferred in the generated recipes, so command-line and environment
+# overrides behave exactly as they would on a hand-written rule. .PHONY
+# and clean accumulate across evals, one contribution per harness.
+define harness_rules
+.PHONY: build_$(1) update_$(1) run_$(1) stop_$(1)
+
+build_$(1):
+	docker build $(harness_bs)
+	  --target $(1)-runtime $(harness_bs)
+	  --build-arg AGENT=$(1) $(harness_bs)
+$(if $($(2)_EXTRA_BUILD_ARGS),	  $($(2)_EXTRA_BUILD_ARGS) $(harness_bs)$(harness_nl))	  --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) $(harness_bs)
+	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) $(harness_bs)
+	  -f "$$(SWARMFORGE_DIR)/anvil/Dockerfile" $(harness_bs)
+	  -t $$($(2)_IMG) "$$(SWARMFORGE_DIR)"
+
+# Rebuild only from the harness install step onward.
+update_$(1):
+	$$(MAKE) build_$(1) SWARMFORGE_HARNESS_INSTALL_BUST=$$(shell date +%s)
+
+run_$(1): SWARMFORGE_USER_CONFIG_DIR ?= $$($(2)_USER_CONFIG_DIR)
+run_$(1): SWARMFORGE_ORG_CONFIG_DIR ?= $$($(2)_ORG_CONFIG_DIR)
+run_$(1): SWARMFORGE_REPO_CONFIG_DIR ?= $$($(2)_REPO_CONFIG_DIR)
+run_$(1): SWARMFORGE_CONFIG_DEST ?= $$($(2)_CONFIG_DEST)
+run_$(1): SWARMFORGE_CONFIG_RESET ?= $$($(2)_CONFIG_RESET)
+run_$(1): opencode_network$(call harness_mkdir_lines,$($(2)_MKDIRS))
+	$$(call run_agent_container,$$($(2)_CTR),$$($(2)_RUN_ENV),$$($(2)_RUN_MOUNTS),$$($(2)_IMG),$$($(2)_RUN_ARGS),$$($(2)_WORKDIR_MODE),$(1))
+
+stop_$(1):
+	@docker rm -f $$($(2)_CTR) >/dev/null 2>&1 || true
+
+clean: stop_$(1)
+endef
+
 opencode_network:
 	@docker network inspect $(NETWORK) >/dev/null 2>&1 || docker network create $(NETWORK) >/dev/null
 	@echo "Network ready: $(NETWORK)"
+
+# Per-harness fragments declare that harness's knobs and eval harness_rules to
+# generate its targets. They are read after the shared variables and macros they
+# reference, and after opencode_network so it stays the default goal.
+include $(wildcard $(SWARMFORGE_DIR)/swarmforge/harness/*/harness.mk)
 
 build_opencode:
 	docker build \
@@ -305,19 +348,6 @@ update_opencode:
 # definition is enabled in a layer (see tongs/docker-broker/docker-broker.tong.yaml).
 build_broker:
 	docker build -t $(BROKER_IMG) "$(SWARMFORGE_DIR)/tongs/docker-broker"
-
-build_claude:
-	docker build \
-	  --target claude-runtime \
-	  --build-arg AGENT=claude \
-	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
-	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
-	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
-	  -t $(CLAUDE_IMG) "$(SWARMFORGE_DIR)"
-
-# Rebuild only from the Claude install step onward.
-update_claude:
-	$(MAKE) build_claude SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
 
 build_grok:
 	docker build \
@@ -358,22 +388,6 @@ run_opencode: opencode_network
 
 stop_opencode:
 	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
-
-run_claude: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.claude
-run_claude: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude,)
-run_claude: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/claude
-run_claude: SWARMFORGE_CONFIG_RESET ?= 0
-run_claude: opencode_network
-	@mkdir -p "$(CLAUDE_HOME_DIR)"
-	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
-	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge"
-	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/skills"
-	@mkdir -p "$(CLAUDE_HOME_DIR)/.swarmforge/command"
-	@mkdir -p "$(CLAUDE_HOME_DIR)/.claude/plugins"
-	$(call run_agent_container,$(CLAUDE_CTR),$(CLAUDE_RUN_ENV),$(CLAUDE_RUN_MOUNTS),$(CLAUDE_IMG),$(CLAUDE_ARGS),repo-slug,claude)
-
-stop_claude:
-	@docker rm -f $(CLAUDE_CTR) >/dev/null 2>&1 || true
 
 run_grok: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.grok
 run_grok: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.grok,)
