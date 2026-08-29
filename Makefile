@@ -7,24 +7,8 @@ OLLAMA_CTR   ?= ollama
 OLLAMA_PORT  ?= 11434
 OLLAMA_CTX   ?= 32768
 
-OPENCODE_IMG ?= opencode:local
-OPENCODE_CTR ?= opencode-$(PROJECT_NAME)
-GROK_IMG    ?= grok-build:local
-GROK_CTR    ?= grok-$(PROJECT_NAME)
-CODEX_IMG   ?= codex-cli:local
-CODEX_CTR   ?= codex-$(PROJECT_NAME)
-
 BROKER_IMG  ?= swarmforge-docker-broker:latest
 
-PROFILE      ?=
-DATA_DIR     ?= $(HOME)/.local/share/opencode
-OPENCODE_ARGS ?=
-GROK_DATA_DIR ?= $(HOME)/.local/share/grok
-GROK_HOME_DIR ?= $(GROK_DATA_DIR)/home
-GROK_ARGS ?=
-CODEX_DATA_DIR ?= $(HOME)/.local/share/codex
-CODEX_HOME_DIR ?= $(CODEX_DATA_DIR)/home
-CODEX_ARGS ?=
 # Stable per-repo mount path knobs, shared by every persistent-home harness.
 SWARMFORGE_REPO_SLUG ?=
 SWARMFORGE_REMOTE_NAME ?= origin
@@ -34,8 +18,6 @@ ENV_FILE ?= $(PROJECT_DIR)/.swarmforge/env
 # Set this to a changing value to refresh the agent install layer. A build
 # target names the one agent it installs, so this busts only that image.
 SWARMFORGE_HARNESS_INSTALL_BUST ?= 0
-# Optional OpenCode version pin (example: 1.4.14)
-OPENCODE_VERSION ?=
 
 MODEL        ?=
 EVAL_MODEL   ?= $(MODEL)
@@ -62,7 +44,6 @@ PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
 WORKSPACE_MOUNT := /workspace
 # The entrypoint hardcodes this same path, so no overrides.
 ANVIL_HOME := /home/anvil
-OPENCODE_CONFIG_DIR ?= $(SWARMFORGE_DIR)/opencode
 SHARED_SKILLS_DIR ?= $(SWARMFORGE_DIR)/skills
 SHARED_COMMAND_DIR ?= $(SWARMFORGE_DIR)/commands
 SWARMFORGE_ORG_CONFIG_ROOT ?=
@@ -96,11 +77,6 @@ PYTHON ?= python3
 # and only for `make lint` -- nothing under swarmforge/ imports it and no image
 # installs it. CI pins a version; locally whatever is on PATH will do.
 RUFF ?= ruff
-
-PROFILE_FLAG :=
-ifneq ($(strip $(PROFILE)),)
-PROFILE_FLAG := --profile $(PROFILE)
-endif
 
 SWARMFORGE_LAYER_MOUNTS = \
 	-v "$(SWARMFORGE_USER_CONFIG_DIR)":/tmp/swarmforge-config/user:ro \
@@ -137,37 +113,7 @@ TONGS_LAYER_ARGS = \
 	$(if $(and $(strip $(SWARMFORGE_ORG_ASSETS_DIR)),$(wildcard $(SWARMFORGE_ORG_ASSETS_DIR)/tongs)),--org-tongs "$(SWARMFORGE_ORG_ASSETS_DIR)/tongs",) \
 	$(if $(and $(strip $(SWARMFORGE_REPO_TONGS_DIR)),$(wildcard $(SWARMFORGE_REPO_TONGS_DIR))),--repo-tongs "$(SWARMFORGE_REPO_TONGS_DIR)",)
 
-OPENCODE_RUN_MOUNTS = \
-	$(SWARMFORGE_LAYER_MOUNTS) \
-	-v "$(DATA_DIR)":$(ANVIL_HOME)/.local/share/opencode
-
-OPENCODE_RUN_ENV = \
-	$(SWARMFORGE_LAYER_ENV)
-
-GROK_RUN_ENV = \
-	-e SWARMFORGE_AGENT_BIN=grok \
-	$(SWARMFORGE_LAYER_ENV)
-
-# Grok reads its skills from ~/.grok/skills natively. Masking that dir and
-# ~/.grok/commands with tmpfs keeps them container-private, so per-repo assets
-# never accumulate in the persistent home. exec: skill packages ship scripts.
-GROK_RUN_MOUNTS = \
-	-v "$(GROK_HOME_DIR)":$(ANVIL_HOME) \
-	--tmpfs $(ANVIL_HOME)/.grok/skills:exec \
-	--tmpfs $(ANVIL_HOME)/.grok/commands \
-	$(SWARMFORGE_LAYER_MOUNTS)
-
-CODEX_RUN_ENV = \
-	-e SWARMFORGE_AGENT_BIN=codex \
-	$(SWARMFORGE_LAYER_ENV)
-
-# Codex's native skills dir is ~/.agents/skills, masked for the reason above.
-CODEX_RUN_MOUNTS = \
-	-v "$(CODEX_HOME_DIR)":$(ANVIL_HOME) \
-	--tmpfs $(ANVIL_HOME)/.agents/skills:exec \
-	$(SWARMFORGE_LAYER_MOUNTS)
-
-.PHONY: opencode_network build_opencode update_opencode build_broker build_grok update_grok build_codex update_codex run_opencode stop_opencode run_grok stop_grok run_codex stop_codex run_ollama logs_ollama stop_ollama gpu_stat clean \
+.PHONY: opencode_network build_broker run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills lint
 
 # The workspace is mounted read-write, but the paths inside its git dir that
@@ -330,99 +276,10 @@ opencode_network:
 # reference, and after opencode_network so it stays the default goal.
 include $(wildcard $(SWARMFORGE_DIR)/swarmforge/harness/*/harness.mk)
 
-build_opencode:
-	docker build \
-	  --target opencode-runtime \
-	  --build-arg AGENT=opencode \
-	  --build-arg OPENCODE_VERSION=$(OPENCODE_VERSION) \
-	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
-	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
-	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
-	  -t $(OPENCODE_IMG) "$(SWARMFORGE_DIR)"
-
-# Rebuild only from the OpenCode install step onward.
-update_opencode:
-	$(MAKE) build_opencode SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
-
 # Build the reference docker-task broker image. It is not used until a broker tong
 # definition is enabled in a layer (see tongs/docker-broker/docker-broker.tong.yaml).
 build_broker:
 	docker build -t $(BROKER_IMG) "$(SWARMFORGE_DIR)/tongs/docker-broker"
-
-build_grok:
-	docker build \
-	  --target grok-runtime \
-	  --build-arg AGENT=grok \
-	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
-	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
-	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
-	  -t $(GROK_IMG) "$(SWARMFORGE_DIR)"
-
-# Rebuild only from the Grok install step onward.
-update_grok:
-	$(MAKE) build_grok SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
-
-build_codex:
-	docker build \
-	  --target codex-runtime \
-	  --build-arg AGENT=codex \
-	  --build-arg DEBIAN_TAG=$(DEBIAN_TAG) \
-	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$(SWARMFORGE_HARNESS_INSTALL_BUST) \
-	  -f "$(SWARMFORGE_DIR)/anvil/Dockerfile" \
-	  -t $(CODEX_IMG) "$(SWARMFORGE_DIR)"
-
-# Rebuild only from the Codex install step onward.
-update_codex:
-	$(MAKE) build_codex SWARMFORGE_HARNESS_INSTALL_BUST=$(shell date +%s)
-
-run_opencode: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.config/opencode
-run_opencode: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode,)
-run_opencode: SWARMFORGE_REPO_CONFIG_DIR ?= $(OPENCODE_CONFIG_DIR)
-run_opencode: SWARMFORGE_CONFIG_DEST ?= $(ANVIL_HOME)/.config/opencode
-run_opencode: SWARMFORGE_CONFIG_RESET ?= 1
-run_opencode: opencode_network
-	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
-	@mkdir -p "$(SWARMFORGE_REPO_CONFIG_DIR)"
-	@mkdir -p "$(DATA_DIR)"
-	$(call run_agent_container,$(OPENCODE_CTR),$(OPENCODE_RUN_ENV),$(OPENCODE_RUN_MOUNTS),$(OPENCODE_IMG),$(PROFILE_FLAG) $(OPENCODE_ARGS),,opencode)
-
-stop_opencode:
-	@docker rm -f $(OPENCODE_CTR) >/dev/null 2>&1 || true
-
-run_grok: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.grok
-run_grok: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.grok,)
-run_grok: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/grok
-run_grok: SWARMFORGE_CONFIG_DEST ?= $(ANVIL_HOME)/.grok
-run_grok: SWARMFORGE_CONFIG_RESET ?= 0
-run_grok: opencode_network
-	@mkdir -p "$(GROK_HOME_DIR)"
-	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
-	@mkdir -p "$(GROK_HOME_DIR)/.swarmforge"
-	@mkdir -p "$(GROK_HOME_DIR)/.swarmforge/skills"
-	@mkdir -p "$(GROK_HOME_DIR)/.swarmforge/command"
-	@mkdir -p "$(GROK_HOME_DIR)/.grok/skills"
-	@mkdir -p "$(GROK_HOME_DIR)/.grok/commands"
-	$(call run_agent_container,$(GROK_CTR),$(GROK_RUN_ENV),$(GROK_RUN_MOUNTS),$(GROK_IMG),$(GROK_ARGS),repo-slug,grok)
-
-stop_grok:
-	@docker rm -f $(GROK_CTR) >/dev/null 2>&1 || true
-
-run_codex: SWARMFORGE_USER_CONFIG_DIR ?= $(HOME)/.codex
-run_codex: SWARMFORGE_ORG_CONFIG_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.codex,)
-run_codex: SWARMFORGE_REPO_CONFIG_DIR ?= $(SWARMFORGE_DIR)/codex
-run_codex: SWARMFORGE_CONFIG_RESET ?= 0
-run_codex: opencode_network
-	@mkdir -p "$(CODEX_HOME_DIR)"
-	@mkdir -p "$(SWARMFORGE_USER_CONFIG_DIR)"
-	@mkdir -p "$(CODEX_HOME_DIR)/.swarmforge"
-	@mkdir -p "$(CODEX_HOME_DIR)/.swarmforge/skills"
-	@mkdir -p "$(CODEX_HOME_DIR)/.swarmforge/command"
-	@mkdir -p "$(CODEX_HOME_DIR)/.agents/skills"
-	@mkdir -p "$(CODEX_HOME_DIR)/.codex"
-	$(call run_agent_container,$(CODEX_CTR),$(CODEX_RUN_ENV),$(CODEX_RUN_MOUNTS),$(CODEX_IMG),$(CODEX_ARGS),repo-slug,codex)
-
-stop_codex:
-	@docker rm -f $(CODEX_CTR) >/dev/null 2>&1 || true
 
 run_ollama: opencode_network
 	@docker rm -f $(OLLAMA_CTR) >/dev/null 2>&1 || true
@@ -445,7 +302,7 @@ stop_ollama:
 gpu_stat:
 	nvidia-smi
 
-clean: stop_opencode stop_claude stop_grok stop_codex stop_ollama
+clean: stop_ollama
 	@docker network rm $(NETWORK) >/dev/null 2>&1 || true
 
 run_llama_3-1-8b:
