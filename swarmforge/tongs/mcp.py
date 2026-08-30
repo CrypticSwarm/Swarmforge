@@ -2,6 +2,10 @@
 
 import re
 
+from swarmforge import harness as harnesses
+from swarmforge.harness import claude as _claude, grok as _grok, opencode as _opencode
+from swarmforge.harness.spec import provided
+
 from .model import ENV_PREFIX, warn
 
 
@@ -179,55 +183,44 @@ def mcp_tongs(merged):
     return out
 
 
-def mcp_config_opencode(merged):
-    """OpenCode `mcp` fragment for the discovered `mcp` tongs.
+def _mcp_servers(merged):
+    """Canonical alias -> endpoint URL for every mcp tong in the merged set."""
+    return {alias: mcp_url(defn, alias) for alias, defn in mcp_tongs(merged).items()}
 
-    Remote (HTTP) MCP servers keyed by canonical alias, shaped for merging into
-    `opencode.json` through the entrypoint's existing merge path. Returns `{}`
-    when no `mcp` tongs exist, so the fragment is omitted entirely.
+
+_MERGED_EMITTERS = {}
+
+
+def _merged_emitter(fragment):
+    """The merged-set emitter for one harness `mcp_fragment`.
+
+    One emitter per distinct fragment function: harnesses that share a
+    fragment (the TOML-config pair) share the emitter object too.
     """
-    servers = {}
-    for alias, defn in mcp_tongs(merged).items():
-        servers[alias] = {"type": "remote", "url": mcp_url(defn, alias), "enabled": True}
-    return {"mcp": servers} if servers else {}
+    if fragment not in _MERGED_EMITTERS:
+        def emitter(merged):
+            """The harness's `mcp_fragment` over the mcp tongs in `merged`."""
+            return fragment(_mcp_servers(merged))
+
+        _MERGED_EMITTERS[fragment] = emitter
+    return _MERGED_EMITTERS[fragment]
 
 
-def mcp_config_claude(merged):
-    """Claude Code `--mcp-config` document for the discovered `mcp` tongs.
-
-    HTTP MCP servers keyed by canonical alias under `mcpServers`, the shape
-    Claude reads from the file passed as `claude --mcp-config <path>`. Returns
-    `{}` when no `mcp` tongs exist.
-    """
-    servers = {}
-    for alias, defn in mcp_tongs(merged).items():
-        servers[alias] = {"type": "http", "url": mcp_url(defn, alias)}
-    return {"mcpServers": servers} if servers else {}
-
-
-def mcp_config_toml(merged):
-    """`mcp_servers` fragment for the discovered `mcp` tongs, TOML-shaped.
-
-    HTTP MCP servers keyed by canonical alias, in the shape Grok Build and
-    Codex CLI share: TOML `[mcp_servers.<name>]` tables, where a `url` key is
-    what selects the remote transport -- there is no type key. The fragment
-    stays JSON here; swarmforge.config.merge_toml_mcp renders it. Returns
-    `{}` when no `mcp` tongs exist.
-    """
-    servers = {}
-    for alias, defn in mcp_tongs(merged).items():
-        servers[alias] = {"url": mcp_url(defn, alias)}
-    return {"mcp_servers": servers} if servers else {}
-
-
-# Per-harness MCP emitters, dispatched by harness name, mirroring the EMITTERS
-# table in swarmforge/agents/translate.py.
+# Per-harness MCP emitters keyed by harness name, read off the harness
+# registry: every harness that declares an `mcp_fragment` gets the merged-set
+# emitter for it, so adding a harness needs no table here.
 MCP_EMITTERS = {
-    "opencode": mcp_config_opencode,
-    "claude": mcp_config_claude,
-    "grok": mcp_config_toml,
-    "codex": mcp_config_toml,
+    name: _merged_emitter(harnesses.get(name).SPEC.mcp_fragment)
+    for name in harnesses.names()
+    if provided(harnesses.get(name).SPEC.mcp_fragment)
 }
+
+# Named emitters for the shapes callers ask for directly: the fragment merged
+# into `opencode.json`, the `--mcp-config` document, and the `mcp_servers`
+# tables Grok Build and Codex CLI share.
+mcp_config_opencode = _merged_emitter(_opencode.SPEC.mcp_fragment)
+mcp_config_claude = _merged_emitter(_claude.SPEC.mcp_fragment)
+mcp_config_toml = _merged_emitter(_grok.SPEC.mcp_fragment)
 
 
 def plan_injection(merged, harness):
@@ -252,6 +245,7 @@ def plan_injection(merged, harness):
                 continue
             env[key] = value
         mounts.extend(anvil_mounts(name, defn))
-    emit = MCP_EMITTERS.get(harness)
-    mcp = emit(merged) if emit else {}
+    module = harnesses.get(harness)
+    fragment = module.SPEC.mcp_fragment if module is not None else None
+    mcp = _merged_emitter(fragment)(merged) if provided(fragment) else {}
     return {"env": env, "mounts": mounts, "mcp": mcp}

@@ -183,8 +183,9 @@ copy_shared_assets() {
 # Unified definitions are markdown files whose YAML frontmatter is a superset
 # of the OpenCode agent schema (description, mode, model, temperature, tools)
 # plus optional per-harness override blocks (claude:, codex:, opencode:).
-# One translator (swarmforge.agents.translate) emits each harness's dialect, so
-# adding a new harness means adding an emitter there plus a case arm here.
+# One translator (swarmforge.agents.translate) drives each harness's registered
+# emitter, so adding a new harness means an emitter in its module under
+# swarmforge/harness/ plus a case arm here.
 #
 # Unified Swarmforge agent definitions live under <dir>/agents in the
 # harness-neutral .swarmforge asset layers, mounted read-only via

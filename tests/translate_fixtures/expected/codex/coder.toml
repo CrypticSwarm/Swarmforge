@@ -1,0 +1,6 @@
+name = "coder"
+developer_instructions = """
+Write the code.
+"""
+description = "Writes code."
+model = "gpt-5.3-codex"
