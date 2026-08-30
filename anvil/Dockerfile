@@ -104,7 +104,11 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/anvil-entrypoint.sh"]
 FROM runtime-base AS agent-runtime
 
 ARG AGENT=opencode
-ARG OPENCODE_VERSION=
+# Version pin for the harness install, empty for the installer's latest.
+# Each install script decides what the pin means for its installer; the
+# user-facing knob keeps its per-harness name in the harness.mk fragment
+# that maps it onto this build arg.
+ARG SWARMFORGE_HARNESS_VERSION=
 ARG SWARMFORGE_HARNESS_INSTALL_BUST=0
 # The package is already in the image from the runtime-base stage, and each
 # harness ships the script that installs its binary inside its own package
