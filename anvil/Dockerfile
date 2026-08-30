@@ -124,20 +124,13 @@ RUN set -eux; \
 
 ENV SWARMFORGE_AGENT_BIN=${AGENT}
 
-FROM agent-runtime AS opencode-runtime
+FROM agent-runtime AS harness-runtime
 
-FROM agent-runtime AS claude-runtime
+ARG AGENT=opencode
+# A harness's build-time asset install is its optional image.sh, run out of
+# the copied package. A harness that ships none adds nothing to the image.
+RUN set -eux; \
+    image_sh="/usr/local/lib/swarmforge/swarmforge/harness/${AGENT}/image.sh"; \
+    if [ -f "${image_sh}" ]; then sh "${image_sh}"; fi
 
-# The status line and the settings that turn it on ship only in this image:
-# no other harness reads Claude's settings.json. The defaults are the lowest
-# config layer, and they are baked in here rather than shipped from the
-# checkout because they name a path only the image has.
-COPY swarmforge/harness/claude/statusline.sh /usr/local/bin/swarmforge-statusline
-COPY swarmforge/harness/claude/claude-settings.json /usr/local/share/swarmforge/claude-settings.json
-RUN chmod +x /usr/local/bin/swarmforge-statusline
-
-FROM agent-runtime AS grok-runtime
-
-FROM agent-runtime AS codex-runtime
-
-FROM opencode-runtime AS default
+FROM harness-runtime AS default

@@ -36,6 +36,9 @@ make update_opencode OPENCODE_VERSION=1.4.14
 
 The images share the same Debian base and toolchain (Node.js + Python; see `anvil/Dockerfile`).
 Build targets pass `AGENT=opencode|claude|grok|codex` so only the requested agent install step runs.
+All four build the same `harness-runtime` stage, selected by `--build-arg AGENT=...`; the Dockerfile
+has no per-harness stages, so a hand-run `docker build` names `--target harness-runtime` with the
+matching `AGENT` build arg rather than `--target claude-runtime` or any other `<name>-runtime`.
 
 3. Run from your project directory:
 
