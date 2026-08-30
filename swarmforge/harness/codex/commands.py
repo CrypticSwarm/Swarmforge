@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Translate portable slash commands into Codex skill packages.
 
-Usage: python3 -m swarmforge.commands.translate <dest_dir> <src_dir>
+Usage: python3 -m swarmforge.harness.codex.commands <dest_dir> <src_dir>
 """
 
 import os
@@ -17,7 +17,7 @@ POSITIONAL_RE = re.compile(r"\$(\d+)")
 
 
 def warn(message):
-    print("swarmforge.commands.translate: %s" % message, file=sys.stderr)
+    print("swarmforge.harness.codex.commands: %s" % message, file=sys.stderr)
 
 
 def describe_positionals(command):

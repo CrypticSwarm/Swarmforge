@@ -46,47 +46,18 @@ import os
 import sys
 
 from swarmforge import harness
-from swarmforge.agents.emit import (
-    OPENCODE_ONLY_FIELDS,
-    PLAIN_SCALAR_RE,
-    TOML_BARE_KEY_RE,
-    emit_map,
-    emit_scalar,
-    emit_toml_key,
-    emit_toml_multiline,
-    emit_toml_string,
-    emit_toml_value,
-    render,
-    split_frontmatter,
-    warn,
-)
-from swarmforge.harness.claude import CLAUDE_TOOL_NAMES, to_claude
-from swarmforge.harness.codex import (
-    CODEX_AGENT_TABLE_FIELDS,
-    normalize_codex_name,
-    render_codex,
-    to_codex,
-)
+from swarmforge.agents.emit import render, split_frontmatter, warn
+from swarmforge.harness.claude import to_claude
+from swarmforge.harness.codex import normalize_codex_name, render_codex, to_codex
 from swarmforge.harness.opencode import to_opencode
 from swarmforge.harness.spec import provided
 from swarmforge.yamlite import parse_map, parse_scalar
 
-# This module's public surface: the rendering helpers and the per-harness
-# emitters stay importable from the CLI's own module name.
+# This module's public surface: the CLI's own entry points, plus the
+# frontmatter helpers and per-harness emitters they run on, which stay
+# importable from the CLI's module name.
 __all__ = [
-    "CLAUDE_TOOL_NAMES",
-    "CODEX_AGENT_TABLE_FIELDS",
     "EMITTERS",
-    "HARNESS_OVERRIDE_KEYS",
-    "OPENCODE_ONLY_FIELDS",
-    "PLAIN_SCALAR_RE",
-    "TOML_BARE_KEY_RE",
-    "emit_map",
-    "emit_scalar",
-    "emit_toml_key",
-    "emit_toml_multiline",
-    "emit_toml_string",
-    "emit_toml_value",
     "load_agents",
     "main",
     "normalize_codex_name",
@@ -101,10 +72,6 @@ __all__ = [
     "to_opencode",
     "warn",
 ]
-
-# Frontmatter keys that are per-harness override blocks, and the emitter
-# for each harness that defines one, both read off the harness registry.
-HARNESS_OVERRIDE_KEYS = harness.agent_override_keys()
 
 EMITTERS = {
     name: harness.get(name).SPEC.agent_emitter

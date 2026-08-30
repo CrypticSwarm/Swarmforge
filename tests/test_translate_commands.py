@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from swarmforge.commands.translate import main
+from swarmforge.harness.codex.commands import main
 
 
 class CodexCommandTranslation(unittest.TestCase):
