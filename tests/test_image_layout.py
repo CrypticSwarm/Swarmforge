@@ -122,10 +122,10 @@ class ImportRootAgreement(unittest.TestCase):
     def test_no_module_run_lets_the_workspace_onto_the_import_path(self):
         """`python3 -m` puts the working directory first on sys.path.
 
-        The entrypoint's working directory is the workspace and these modules
-        run as root, before privileges are dropped -- so without -P a repo
-        containing its own swarmforge/ would shadow the image's copy and be
-        executed.
+        The entrypoint's working directory is the workspace: the config
+        driver runs there as root, and the pre-exec driver as the anvil user
+        whose workspace it is -- so without -P a repo containing its own
+        swarmforge/ would shadow the image's copy and be executed.
         """
         for _, flags, module in self.module_runs():
             self.assertIn(
@@ -346,8 +346,6 @@ class StatusLineAgreement(unittest.TestCase):
         REPO_ROOT, "swarmforge", "harness", "claude", "image.sh")
 
     def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
         with open(self.IMAGE_SH) as handle:
             self.image_sh = handle.read()
 
