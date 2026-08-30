@@ -24,7 +24,7 @@ def provided(value):
 
 @dataclasses.dataclass(frozen=True)
 class Context:
-    """What one config-phase run knows.
+    """What one driver phase knows.
 
     Every field is a string, empty when the run has nothing for it, so a
     harness hook reads an absent layer the same way whichever way it went
@@ -146,7 +146,7 @@ def toml_mcp_fragment(servers):
 class HarnessSpec:
     """Everything Swarmforge needs to know about one harness.
 
-    The fields record the facts the container entrypoint acts on per harness:
+    The fields record the facts the container driver acts on per harness:
     where its config and assets live, how it learns about MCP servers, and how
     unified agent definitions reach it. A field a harness does not implement
     holds a `Waiver` naming the reason.

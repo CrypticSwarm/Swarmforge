@@ -3,8 +3,8 @@
 
 Usage: python3 -m swarmforge.commands.translate <dest_dir> <src_dir>
 
-The implementation lives in swarmforge.harness.codex.commands; this module is
-the stable invocation path the container entrypoint runs.
+The implementation lives in swarmforge.harness.codex.commands; this module
+is the stable `python3 -m` invocation path for it.
 """
 
 import sys

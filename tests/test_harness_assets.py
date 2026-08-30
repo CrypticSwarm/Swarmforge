@@ -37,7 +37,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from swarmforge import harness
-from swarmforge.harness import codex, init
+from swarmforge.harness import codex, init, spec
 from swarmforge.harness.spec import Waiver
 
 # The asset layers, lowest precedence first.
@@ -285,6 +285,23 @@ class WholesaleReplacement(AssetCase):
         self.assertFalse(os.path.islink(os.path.join(dest, "pkg")))
         self.assertEqual(
             read_file(os.path.join(dest, "pkg", "SKILL.md")), "fresh\n")
+
+    def test_a_link_to_a_live_directory_is_severed_not_emptied(self):
+        """Replacing the entry must unlink the symlink itself: following it
+        would empty whatever real directory it points at, which the entry
+        does not own."""
+        real = os.path.join(self.tmp, "real")
+        write_file(os.path.join(real, "keep.md"), "kept\n")
+        dest = self.skills_dest("claude")
+        os.makedirs(dest)
+        os.symlink(real, os.path.join(dest, "pkg"))
+        self.stage_skill("shared", "pkg", "fresh\n")
+
+        self.assertEqual(self.install("claude"), 0)
+        self.assertFalse(os.path.islink(os.path.join(dest, "pkg")))
+        self.assertEqual(
+            read_file(os.path.join(dest, "pkg", "SKILL.md")), "fresh\n")
+        self.assertEqual(read_file(os.path.join(real, "keep.md")), "kept\n")
 
 
 class EntrySelection(AssetCase):
@@ -560,6 +577,34 @@ class FailedCodexTranslation(AssetCase):
         self.assertNotIn(self.WARNING, captured.getvalue())
 
 
+class FatalCopyFailures(AssetCase):
+    """A failed copy stops the container instead of degrading.
+
+    A translation failure costs the session a command it can live without;
+    a failed copy leaves the destination holding neither the old assets nor
+    the new, and a session must not start on it.
+    """
+
+    def test_a_failed_copy_propagates_out_of_the_phase(self):
+        self.stage_skill("user", "pkg", "user copy\n")
+        with mock.patch.object(
+                spec, "copy_dir_entries", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.install("grok")
+
+    def test_a_failed_codex_copy_is_not_taken_for_a_translation_failure(self):
+        """The warning path covers only the translation: the copy beside it
+        must propagate, and under its own name."""
+        self.stage_skill("user", "pkg", "user copy\n")
+        captured = io.StringIO()
+        with mock.patch.object(
+                codex, "copy_dir_entries", side_effect=OSError("disk full")):
+            with contextlib.redirect_stderr(captured):
+                with self.assertRaises(OSError):
+                    self.install("codex")
+        self.assertEqual(captured.getvalue(), "")
+
+
 class PhaseOrder(AssetCase):
     """The driver runs the config phase, the translation, then the install.
 
@@ -580,8 +625,9 @@ class PhaseOrder(AssetCase):
         with mock.patch.object(init, "initialize", record("config", 0)):
             with mock.patch.object(init, "translate_agents", record("agents", 0)):
                 with mock.patch.object(init, "install_assets", record("assets", 0)):
-                    status = init.run(
-                        "claude", self.home, self.env(), self.workspace)
+                    with self.redirected("claude"):
+                        status = init.run(
+                            "claude", self.home, self.env(), self.workspace)
 
         self.assertEqual(status, 0)
         self.assertEqual(calls, ["config", "agents", "assets"])
@@ -594,8 +640,9 @@ class PhaseOrder(AssetCase):
         with mock.patch.object(init, "initialize", return_value=2):
             with mock.patch.object(init, "translate_agents", translated):
                 with mock.patch.object(init, "install_assets", installed):
-                    status = init.run(
-                        "claude", self.home, self.env(), self.workspace)
+                    with self.redirected("claude"):
+                        status = init.run(
+                            "claude", self.home, self.env(), self.workspace)
 
         self.assertEqual(status, 2)
         translated.assert_not_called()
