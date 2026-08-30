@@ -1,6 +1,8 @@
 """The contract a harness module declares to the rest of Swarmforge."""
 
 import dataclasses
+import os
+import shutil
 
 
 @dataclasses.dataclass(frozen=True)
@@ -45,6 +47,70 @@ class Context:
 
     # The generated tong MCP fragment, empty when the run has no tongs.
     tong_mcp_file: str
+
+
+@dataclasses.dataclass(frozen=True)
+class AssetLayer:
+    """One source layer of portable assets, with the resolved destinations.
+
+    Sources may be empty or missing -- a layer contributes only what it has.
+    Destinations are empty strings when the harness waives them.
+    """
+
+    skills_src: str
+    commands_src: str
+    skills_dest: str
+    commands_dest: str
+
+
+def copy_dir_entries(src_dir, dst_dir):
+    """Copy every top-level entry of `src_dir` into `dst_dir`.
+
+    Each entry replaces whatever stands at the destination under that name --
+    a file, a directory, or a stale symlink, dangling or not. The replacement
+    is wholesale rather than a deep merge, so a package a lower layer left
+    behind cannot contribute stray files to a higher layer's copy of the same
+    name, and per-entry symlinks left by earlier runs get cleaned up.
+
+    Symlinks are recreated pointing at the same target rather than followed,
+    directories are copied whole with their own symlinks intact, and files keep
+    their permissions and times. Top-level entries whose name starts with a dot
+    are skipped: the portable asset contract is a directory of named skill and
+    command entries, and dotfiles beside them are the editor and VCS droppings
+    of whoever authored the layer. Hidden files inside a copied entry travel
+    with it. An empty `dst_dir` is a destination the harness waived, and
+    nothing is copied or created for it.
+    """
+    if not src_dir or not os.path.isdir(src_dir):
+        return
+    if not dst_dir:
+        return
+
+    os.makedirs(dst_dir, exist_ok=True)
+
+    for name in sorted(os.listdir(src_dir)):
+        if name.startswith("."):
+            continue
+        entry = os.path.join(src_dir, name)
+        target = os.path.join(dst_dir, name)
+
+        if os.path.isdir(target) and not os.path.islink(target):
+            shutil.rmtree(target)
+        elif os.path.lexists(target):
+            os.remove(target)
+
+        if os.path.islink(entry):
+            os.symlink(os.readlink(entry), target)
+        elif os.path.isdir(entry):
+            shutil.copytree(entry, target, symlinks=True)
+        else:
+            shutil.copy2(entry, target)
+
+
+def install_assets(ctx, layer):
+    """Default install-assets hook: copy the layer's skills, then commands."""
+    copy_dir_entries(layer.skills_src, layer.skills_dest)
+    copy_dir_entries(layer.commands_src, layer.commands_dest)
 
 
 def finalize_agents(dest_dir, emitted, home=""):
@@ -152,6 +218,12 @@ class HarnessSpec:
     # emitted. `home` is the anvil user's home when the container driver runs
     # the translation, and empty for a bare CLI run.
     finalize_agents: object = finalize_agents
+
+    # Hook `(ctx, layer)` run once per asset layer, lowest precedence first,
+    # installing that layer's portable skills and commands. The default copies
+    # into the declared destinations with per-entry replacement; a harness
+    # overrides it when its native asset shape needs more than a copy.
+    install_assets: object = install_assets
 
     # Hook `(ctx)` run after the config layers merge, before the tong MCP
     # servers merge.
