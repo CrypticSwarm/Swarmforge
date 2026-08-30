@@ -264,8 +264,8 @@ def _injection_pre_image_args(injection):
 
 # Where the generated MCP config is mounted in the anvil. A harness whose spec
 # delivers by env var is pointed at that path through the variable below, which
-# the entrypoint reads; one that delivers by flag is pointed at it on its own
-# command line instead.
+# the container's config driver reads; one that delivers by flag is pointed at
+# it on its own command line instead.
 MCP_CONFIG_CONTAINER_PATH = "/tmp/swarmforge-tong-mcp.json"
 MCP_FILE_ENV = "SWARMFORGE_TONG_MCP_FILE"
 
@@ -278,10 +278,11 @@ def _mcp_injection(mcp_config, harness, mcp_dir):
     read-only into the anvil; the harness spec's `mcp_delivery` decides how the
     harness is told where it landed. A `("flag", FLAG)` harness gets `FLAG <path>`
     appended as a harness arg after the image; an `("env", VAR)` harness gets the
-    mount paired with `VAR=<path>`, which the entrypoint reads to merge the
-    fragment into that harness's config. An unregistered harness falls back to
-    the env-var delivery. With an empty fragment nothing is written, mounted, or
-    appended, so the anvil argv is unchanged.
+    mount paired with `VAR=<path>`, which the container's config driver
+    (`swarmforge.harness.init`) reads to merge the fragment into that harness's
+    config the way its spec's `mcp_merge` names. An unregistered harness falls
+    back to the env-var delivery. With an empty fragment nothing is written,
+    mounted, or appended, so the anvil argv is unchanged.
     """
     if not mcp_config:
         return [], []
@@ -455,9 +456,9 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
 
         # `port`/`volume` reachability splices in before the image; the MCP
         # config adds a read-only mount before the image, paired with either the
-        # env var the entrypoint reads or a harness arg after the image,
-        # whichever the harness spec's delivery names. With no `mcp` tongs the
-        # fragment is empty and nothing is written or appended.
+        # env var the container's config driver reads or a harness arg after
+        # the image, whichever the harness spec's delivery names. With no `mcp`
+        # tongs the fragment is empty and nothing is written or appended.
         pre_image_args = _injection_pre_image_args(injection)
         post_image_args = []
         if injection["mcp"]:
