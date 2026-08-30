@@ -279,9 +279,11 @@ class ClaudeConfigHome(unittest.TestCase):
             self.entrypoint)
 
     def test_the_credential_store_outlives_the_container(self):
-        self.assertTrue(
-            self.literal("CLAUDE_SHARED_HOME").startswith("${ANVIL_HOME}/"),
-            "the credential store is not in the shared persistent home")
+        """${ANVIL_HOME}/.claude is the shared persistent home, and it is
+        also the directory the state links point into: the store the exec
+        names and the state the links serve have to stay one directory."""
+        self.assertEqual(
+            self.literal("CLAUDE_SHARED_HOME"), "${ANVIL_HOME}/.claude")
 
 
 class StatusLineAgreement(unittest.TestCase):

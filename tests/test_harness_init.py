@@ -971,12 +971,31 @@ class SpecEntrypointAgreement(unittest.TestCase):
         """The driver writes the wrapper at a path its module names and the
         entrypoint turns it on by putting its own literal ahead of the real
         git on PATH. Drift between the two leaves a wrapper installed that
-        nothing ever runs."""
+        nothing ever runs -- whether the guard or the export is the literal
+        that wandered."""
         match = re.search(
             r'^if \[ -x (\S+) \]; then$', self.entrypoint, re.M)
         self.assertIsNotNone(
             match, "entrypoint tests for no wrapper on PATH")
         self.assertEqual(match.group(1), claude.WRAPPER_DIR + "/git")
+        self.assertIn(
+            'export PATH="%s:${PATH}"' % claude.WRAPPER_DIR, self.entrypoint)
+        self.assertLess(match.start(), self.entrypoint.index("exec gosu"))
+
+    def test_the_entrypoint_invokes_the_driver_the_way_main_reads_argv(self):
+        """The driver's argv is positional -- harness, home, uid, gid -- and
+        the invocation is unguarded: an entrypoint handing it the wrong words
+        is a container that never starts, caught only at run time. The
+        invocation also has to precede the privilege drop, since every phase
+        it drives writes as root."""
+        match = re.search(
+            r"python3 -P -m swarmforge\.harness\.init (.+)$",
+            self.entrypoint, re.M)
+        self.assertIsNotNone(match, "entrypoint does not invoke the driver")
+        self.assertEqual(match.group(1).split(), [
+            '"${AGENT_BIN}"', '"${ANVIL_HOME}"',
+            '"${ANVIL_UID}"', '"${ANVIL_GID}"',
+        ])
         self.assertLess(match.start(), self.entrypoint.index("exec gosu"))
 
 

@@ -368,11 +368,11 @@ def link_state(name, home, environ):
 def root_setup(name, home, environ, cwd=None):
     """Prepare the container for the harness named `name`, as root.
 
-    The last phase, so a hook acts on a container whose config, assets, and
-    state links are already in place, and the last moment root can act at all:
-    what follows it is the privilege drop and the exec. The hook is handed the
-    directory the harness process starts in, which is the one this driver was
-    started in unless the caller names another.
+    Runs on a container whose config, assets, and state links are already in
+    place, just before ownership changes hands -- so whatever the hook creates
+    for root's own keeping stays root's. The hook is handed the directory the
+    harness process starts in, which is the one this driver was started in
+    unless the caller names another.
 
     A failed preparation is not caught: the session would start without
     whatever the hook stands for and only root can supply.
@@ -402,11 +402,15 @@ def ownership_argv(spec, home, owner, workspace):
 def _chown(argv):
     """Run one chown, letting it fail.
 
-    A path that is not there, or a file whose owner cannot be changed, is
-    skipped silently: ownership is handed over best-effort, and the session
-    surfaces the error itself if something it needs is out of reach.
+    A path that is not there, a file whose owner cannot be changed, or a
+    system with no chown binary to run is skipped silently: ownership is
+    handed over best-effort, and the session surfaces the error itself if
+    something it needs is out of reach.
     """
-    subprocess.run(argv, stderr=subprocess.DEVNULL, check=False)
+    try:
+        subprocess.run(argv, stderr=subprocess.DEVNULL, check=False)
+    except OSError:
+        pass
 
 
 def deliver_ownership(name, home, uid, gid, workspace=WORKSPACE, chown=None):

@@ -37,7 +37,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from swarmforge import harness
-from swarmforge.harness import codex, init, spec
+from swarmforge.harness import claude, codex, init, spec
 from swarmforge.harness.spec import Waiver
 
 # The asset layers, lowest precedence first.
@@ -192,6 +192,11 @@ class AssetCase(unittest.TestCase):
         module = harness.get(name)
         self.assertIsNotNone(module, "no harness registered as %s" % name)
         with contextlib.ExitStack() as stack:
+            # The wrapper directory belongs to claude's module and is where
+            # any root phase that writes one puts it, so it moves for every
+            # run.
+            stack.enter_context(mock.patch.object(
+                claude, "WRAPPER_DIR", os.path.join(self.tmp, "wrapper")))
             if name == "claude":
                 stack.enter_context(mock.patch.object(
                     module, "SPEC",
@@ -635,9 +640,12 @@ class PhaseOrder(AssetCase):
     def drive(self, stack):
         """Run the driver for claude with every pinned path moved."""
         stack.enter_context(self.redirected("claude"))
+        # cwd is always named: this checkout is itself a linked worktree,
+        # so a run falling back to the test process's own directory would
+        # read real worktree metadata.
         return init.run(
             "claude", self.home, str(os.getuid()), str(os.getgid()),
-            self.env(), self.workspace)
+            self.env(), self.workspace, cwd=self.workspace)
 
     def test_the_phases_run_in_order(self):
         calls = []

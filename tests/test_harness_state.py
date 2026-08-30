@@ -510,6 +510,29 @@ class RootSetupDescriptor(unittest.TestCase):
                 self.assertIs(harness.get(name).SPEC.root_setup, spec.root_setup)
 
 
+class FailuresPropagate(WorktreeCase):
+    """A failed link or root preparation stops the container.
+
+    Neither phase degrades: a run without its state links loses history and
+    credentials to the container, and a run without the wrapper it needed
+    loses /resume. The entrypoint treats a failed driver as fatal, so the
+    exception has to reach it.
+    """
+
+    def test_a_failed_link_stops_the_run(self):
+        with mock.patch.object(os, "symlink", side_effect=OSError("denied")):
+            with self.assertRaises(OSError):
+                self.link("claude")
+
+    def test_a_missing_git_stops_the_run(self):
+        """The wrapper execs the real git by absolute path, so there being
+        none to name is not a wrapper worth writing."""
+        self.stage_linked_worktree(self.HOST_WORKTREE + "/.git")
+        with mock.patch.object(shutil, "which", return_value=None):
+            with self.assertRaises(FileNotFoundError):
+                self.prepare("claude", self.ws)
+
+
 class OwnershipHandover(StateCase):
     """The chowns the handover runs for one harness, in order.
 
@@ -665,6 +688,22 @@ class OwnershipDelivery(StateCase):
         self.assertEqual(statuses, [0])
         self.assertEqual(noise, "")
         self.assertEqual(tree(self.dest), {})
+
+    def test_a_run_without_a_chown_binary_is_passed_over_in_silence(self):
+        """Resolution happens before the child runs, so a missing binary
+        surfaces as an exception rather than a discarded exit status; the
+        handover is best-effort either way."""
+        workspace = self.stage_workspace()
+        uid, gid = self.owner()
+        empty = os.path.join(self.tmp, "empty-bin")
+        os.makedirs(empty)
+
+        with mock.patch.dict(os.environ, {"PATH": empty}):
+            noise = self.stderr_of(lambda: self.assertEqual(
+                init.deliver_ownership(
+                    "grok", self.home, uid, gid, workspace=workspace), 0))
+
+        self.assertEqual(noise, "")
 
 
 if __name__ == "__main__":
