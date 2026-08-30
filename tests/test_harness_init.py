@@ -948,6 +948,18 @@ class SpecEntrypointAgreement(unittest.TestCase):
                         dest.startswith(mounted),
                         "%s merges into a host mount: %s" % (name, dest))
 
+    def test_the_git_wrapper_is_installed_where_the_entrypoint_switches_it_on(self):
+        """The driver writes the wrapper at a path its module names and the
+        entrypoint turns it on by putting its own literal ahead of the real
+        git on PATH. Drift between the two leaves a wrapper installed that
+        nothing ever runs."""
+        match = re.search(
+            r'^if \[ -x (\S+) \]; then$', self.entrypoint, re.M)
+        self.assertIsNotNone(
+            match, "entrypoint tests for no wrapper on PATH")
+        self.assertEqual(match.group(1), claude.WRAPPER_DIR + "/git")
+        self.assertLess(match.start(), self.entrypoint.index("exec gosu"))
+
     def test_codex_agents_land_where_the_entrypoint_chowns(self):
         """The spec names where the translated agents are generated and the
         entrypoint hands that directory to the anvil uid by its own literal.

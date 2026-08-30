@@ -4,8 +4,9 @@
 Merges the layered config into the harness's destination and runs that
 harness's config hooks, translates the unified agent definitions into the
 harness's native format, installs the portable skills and commands into its
-native asset locations, then links the state the harness keeps across runs into
-its config destination. Invoked as `HARNESS HOME`, with the source
+native asset locations, links the state the harness keeps across runs into its
+config destination, then runs whatever container preparation the harness needs
+root for. Invoked as `HARNESS HOME`, with the source
 locations arriving in the environment: `SWARMFORGE_CONFIG_{USER,ORG,REPO}_DIR`
 name the three config layers, `SWARMFORGE_CONFIG_DEST` and
 `SWARMFORGE_CONFIG_RESET` decide the destination and whether it is rebuilt from
@@ -253,7 +254,7 @@ def translate_agents(name, home, environ, workspace=WORKSPACE):
     return 0
 
 
-def asset_context(spec, home, environ):
+def asset_context(spec, home, environ, cwd=""):
     """What one asset-phase run knows, for the harness's install hooks.
 
     The config layer sources and the tong fragment are the same strings the
@@ -261,7 +262,9 @@ def asset_context(spec, home, environ):
     when the run names no destination and skips itself, while for the asset
     phase "{config}" always stands for a concrete directory -- the pinned one,
     the one the run named, or the harness's default under the home -- because
-    that is where the harness reads its assets from either way.
+    that is where the harness reads its assets from either way. `cwd` is filled
+    in only for the phases that act on the directory the harness process starts
+    in, and empty for the rest.
     """
     return Context(
         harness=spec.name,
@@ -271,6 +274,7 @@ def asset_context(spec, home, environ):
         config_user_src=environ.get("SWARMFORGE_CONFIG_USER_DIR") or "",
         config_org_src=environ.get("SWARMFORGE_CONFIG_ORG_DIR") or "",
         tong_mcp_file=environ.get("SWARMFORGE_TONG_MCP_FILE") or "",
+        cwd=cwd,
     )
 
 
@@ -360,7 +364,25 @@ def link_state(name, home, environ):
     return 0
 
 
-def run(name, home, environ, workspace=WORKSPACE):
+def root_setup(name, home, environ, cwd=None):
+    """Prepare the container for the harness named `name`, as root.
+
+    The last phase, so a hook acts on a container whose config, assets, and
+    state links are already in place, and the last moment root can act at all:
+    what follows it is the privilege drop and the exec. The hook is handed the
+    directory the harness process starts in, which is the one this driver was
+    started in unless the caller names another.
+
+    A failed preparation is not caught: the session would start without
+    whatever the hook stands for and only root can supply.
+    """
+    spec = harness.get(name).SPEC
+    ctx = asset_context(spec, home, environ, cwd=cwd or os.getcwd())
+    spec.root_setup(ctx)
+    return 0
+
+
+def run(name, home, environ, workspace=WORKSPACE, cwd=None):
     """Run the container root phases for the harness registered as `name`."""
     status = initialize(name, home, environ)
     if status != 0:
@@ -368,6 +390,7 @@ def run(name, home, environ, workspace=WORKSPACE):
     translate_agents(name, home, environ, workspace)
     install_assets(name, home, environ, workspace)
     link_state(name, home, environ)
+    root_setup(name, home, environ, cwd)
     return 0
 
 

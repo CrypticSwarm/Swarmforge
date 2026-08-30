@@ -20,6 +20,26 @@ SETTINGS_FILE = "/run/swarmforge/claude-settings.json"
 # image.sh installs to.
 IMAGE_DEFAULT_SETTINGS = "/usr/local/share/swarmforge/claude-settings.json"
 
+# Holds the git wrapper the root phase installs when the workspace needs one.
+# The entrypoint puts this directory ahead of the real git on PATH exactly when
+# the wrapper is standing there.
+WRAPPER_DIR = "/usr/local/libexec/swarmforge"
+
+# The wrapper's text, given the real git, the worktree path recorded on the
+# host, and the directory the same checkout is mounted at in the container.
+GIT_WRAPPER = """\
+#!/bin/sh
+# Swarmforge git wrapper: rewrite worktree paths for container compatibility.
+case "$*" in
+  *worktree*list*--porcelain*)
+    "%(git)s" "$@" | sed "s|^worktree %(host)s$|worktree %(workspace)s|"
+    ;;
+  *)
+    exec "%(git)s" "$@"
+    ;;
+esac
+"""
+
 # State only: nothing claude loads as configuration or code belongs here.
 STATE_DIRS = (
     "projects",
@@ -216,6 +236,84 @@ def link_state(ctx):
                    os.path.join(ctx.config_dest, entry))
 
 
+def worktree_pointer(dotgit):
+    """The git directory `dotgit` points at, empty when it points at none.
+
+    A linked worktree carries a `.git` file naming its administrative
+    directory. A regular checkout has a `.git` directory instead, and a file
+    holding anything else names nothing.
+    """
+    if not os.path.isfile(dotgit):
+        return ""
+    with open(dotgit, "r", encoding="utf-8") as handle:
+        text = handle.read()
+    prefix = "gitdir:"
+    found = [
+        line[len(prefix):].lstrip(" ")
+        for line in text.split("\n")
+        if line.startswith(prefix)
+    ]
+    return "\n".join(found).rstrip("\n")
+
+
+def root_setup(ctx):
+    """Install a git wrapper that rewrites the workspace's worktree paths.
+
+    Claude Code's /resume discovers sessions by running `git worktree list
+    --porcelain` and matching the paths it prints against the project
+    directories under ~/.claude/projects. A workspace that is a linked
+    worktree of a bare repo carries worktree metadata recording the HOST path
+    of the checkout, which does not exist inside the container, so the
+    CWD-match finds nothing and /resume reports "No conversations found to
+    resume".
+
+    The wrapper stands in front of the real git and rewrites that one host
+    path to the directory the same checkout is mounted at, in the output of
+    that one command. It is written only when the workspace is a linked
+    worktree whose recorded path differs from the container's, so a plain
+    checkout and a worktree mounted at its host path both run the real git
+    untouched. A missing git is fatal: the session's harness cannot work
+    without one.
+    """
+    workspace = ctx.cwd
+    dotgit = workspace + "/.git"
+
+    gitdir_ptr = worktree_pointer(dotgit)
+    if not gitdir_ptr:
+        return
+
+    # The administrative directory points back at the worktree's own .git,
+    # which is where the host path is recorded.
+    reverse_file = gitdir_ptr + "/gitdir"
+    if not os.path.isfile(reverse_file):
+        return
+
+    with open(reverse_file, "r", encoding="utf-8") as handle:
+        host_dotgit = handle.read().rstrip("\n")
+    host_worktree = os.path.dirname(host_dotgit)
+    if host_worktree == workspace:
+        return
+
+    real_git = shutil.which("git")
+    if real_git is None:
+        raise FileNotFoundError("git not found on PATH")
+
+    os.makedirs(WRAPPER_DIR, exist_ok=True)
+    path = WRAPPER_DIR + "/git"
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(GIT_WRAPPER % {
+            "git": real_git,
+            "host": host_worktree,
+            "workspace": workspace,
+        })
+
+    # `chmod +x`: the execute bits the umask in force allows, added to
+    # whatever the file already carries.
+    umask = os.umask(0o022)
+    os.umask(umask)
+    os.chmod(path, (os.stat(path).st_mode & 0o7777) | (0o111 & ~umask))
+
+
 SPEC = HarnessSpec(
     name="claude",
     binary="claude",
@@ -247,4 +345,5 @@ SPEC = HarnessSpec(
     extra_chown_paths=("/run/swarmforge/claude-config",),
     finalize_config=finalize_config,
     link_state=link_state,
+    root_setup=root_setup,
 )

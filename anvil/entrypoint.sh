@@ -59,8 +59,9 @@ fi
 # The root phases: merge the layered config (repo, then user, then org) into
 # the harness's destination and run the harness's config hooks, translate the
 # unified agent definitions into the harness's native destination, install the
-# portable skills and commands into the harness's native asset locations, then
-# link the state the harness keeps across runs into its config destination.
+# portable skills and commands into the harness's native asset locations, link
+# the state the harness keeps across runs into its config destination, then run
+# whatever container preparation the harness needs root for.
 # The SWARMFORGE_CONFIG_*, SWARMFORGE_ASSETS_*, and SWARMFORGE_DOTAGENTS_*
 # layer variables, SWARMFORGE_SKILLS_DIR, SWARMFORGE_COMMAND_DIR, and
 # SWARMFORGE_TONG_MCP_FILE are read from the environment. This runs as root,
@@ -72,58 +73,11 @@ chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CLAUDE_CONFIG_HOME}" 2>/dev/null || tru
 chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CODEX_AGENTS_HOME}" 2>/dev/null || true
 chown -R "${ANVIL_UID}:${ANVIL_GID}" /workspace 2>/dev/null || true
 
-if [ "${AGENT_BIN}" = "claude" ]; then
-  # Fix git worktree path resolution for bare-repo + worktree setups.
-  #
-  # Claude Code's /resume discovers sessions by running
-  # `git worktree list --porcelain` and matching the output paths against
-  # project directories in ~/.claude/projects/.  When the workspace is a
-  # git worktree checked out from a bare repo, the worktree metadata stores
-  # HOST paths.  Inside the container these paths don't exist, so Claude's
-  # CWD-match fails and /resume reports "No conversations found to resume."
-  #
-  # Fix: install a thin git wrapper that rewrites the current worktree's
-  # host path to the container CWD in `worktree list --porcelain` output.
-  install_git_worktree_wrapper() {
-    workspace="$(pwd)"
-    dotgit="${workspace}/.git"
-
-    # Only needed when .git is a file (i.e. a linked worktree).
-    [ -f "${dotgit}" ] || return 0
-
-    gitdir_ptr="$(sed -n 's/^gitdir: *//p' "${dotgit}")"
-    [ -n "${gitdir_ptr}" ] || return 0
-
-    # Read the reverse pointer to find the host-side worktree path.
-    reverse_file="${gitdir_ptr}/gitdir"
-    [ -f "${reverse_file}" ] || return 0
-
-    host_dotgit="$(cat "${reverse_file}")"
-    host_worktree="$(dirname "${host_dotgit}")"
-
-    # Nothing to fix if paths already match.
-    [ "${host_worktree}" != "${workspace}" ] || return 0
-
-    real_git="$(command -v git)"
-    wrapper_dir="/usr/local/libexec/swarmforge"
-    mkdir -p "${wrapper_dir}"
-
-    cat > "${wrapper_dir}/git" <<WRAPPER_EOF
-#!/bin/sh
-# Swarmforge git wrapper: rewrite worktree paths for container compatibility.
-case "\$*" in
-  *worktree*list*--porcelain*)
-    "${real_git}" "\$@" | sed "s|^worktree ${host_worktree}\$|worktree ${workspace}|"
-    ;;
-  *)
-    exec "${real_git}" "\$@"
-    ;;
-esac
-WRAPPER_EOF
-    chmod +x "${wrapper_dir}/git"
-    export PATH="${wrapper_dir}:${PATH}"
-  }
-  install_git_worktree_wrapper
+# The driver leaves a git wrapper here when the workspace's worktree paths
+# need rewriting for the session; standing ahead of the real git on PATH is
+# what turns it on.
+if [ -x /usr/local/libexec/swarmforge/git ]; then
+  export PATH="/usr/local/libexec/swarmforge:${PATH}"
 fi
 
 # Command-line settings outrank every file, so the org layer beats even the

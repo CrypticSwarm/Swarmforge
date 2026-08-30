@@ -15,9 +15,16 @@ stopped being linked, a link pointed at the wrong side, or a stale destination
 entry left standing fails a test rather than surfacing as a session that lost
 its history.
 
+The root phase that follows the links is checked the same way. Claude installs
+a git wrapper there when the workspace is a linked worktree recording a path
+that does not exist in the container, so its /resume finds the session
+directories belonging to the checkout it is actually running in; every other
+shape of workspace has to leave the wrapper directory alone, or a session runs
+its git through a rewrite nothing asked for.
+
 Nothing here may write outside the temporary directory: claude pins a config
-destination under /run/swarmforge, and it is replaced for the duration of each
-run.
+destination under /run/swarmforge and a wrapper directory under
+/usr/local/libexec, and both are replaced for the duration of each run.
 
 Run: python3 tests/test_harness_state.py
 """
@@ -28,6 +35,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -42,6 +50,7 @@ if REPO_ROOT not in sys.path:
 
 from swarmforge import harness
 from swarmforge.harness import claude, init, spec
+from swarmforge.harness.spec import HarnessSpec, Waiver
 
 # Every harness that keeps nothing across runs of its own.
 UNLINKED = ("codex", "grok", "opencode")
@@ -84,6 +93,28 @@ def tree(root):
     return found
 
 
+def fake_spec(**overrides):
+    """A registrable spec that declares nothing but the hooks under test."""
+    fields = dict(
+        name="fake",
+        binary="fake",
+        config_dest=Waiver("the run's SWARMFORGE_CONFIG_DEST names the destination"),
+        config_reset=False,
+        layer_excludes=(),
+        keyed_files=(),
+        skills_dest=Waiver("no portable skills destination is declared"),
+        commands_dest=Waiver("no portable commands destination is declared"),
+        agents_dest=Waiver("unified agent definitions are not delivered"),
+        mcp_fragment=lambda servers: {},
+        mcp_delivery=("env", "SWARMFORGE_TONG_MCP_FILE"),
+        mcp_merge=Waiver("nothing merges the fragment into a config file"),
+        agent_emitter=Waiver("no emitter is defined"),
+        extra_chown_paths=(),
+    )
+    fields.update(overrides)
+    return HarnessSpec(**fields)
+
+
 class StateCase(unittest.TestCase):
     """Runs the link phase over a staged home inside a temporary directory.
 
@@ -99,6 +130,7 @@ class StateCase(unittest.TestCase):
         os.makedirs(self.home)
         self.shared = os.path.join(self.home, ".claude")
         self.dest = os.path.join(self.tmp, "dest")
+        self.wrapper = os.path.join(self.tmp, "wrapper")
 
     def env(self, **overrides):
         """The environment the entrypoint hands the driver."""
@@ -112,6 +144,10 @@ class StateCase(unittest.TestCase):
         module = harness.get(name)
         self.assertIsNotNone(module, "no harness registered as %s" % name)
         with contextlib.ExitStack() as stack:
+            # The wrapper directory belongs to claude's module and is where any
+            # root phase that writes one puts it, so it moves for every run.
+            stack.enter_context(
+                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper))
             if name == "claude":
                 stack.enter_context(mock.patch.object(
                     module, "SPEC",
@@ -122,6 +158,24 @@ class StateCase(unittest.TestCase):
         """Run the driver's link phase for `name` with every pinned path moved."""
         with self.redirected(name):
             return init.link_state(name, self.home, self.env())
+
+    def prepare(self, name, cwd):
+        """Run the driver's root phase for `name` over the workspace `cwd`.
+
+        The working directory is always named: this checkout is itself a
+        linked worktree, so a phase falling back to the test process's own
+        directory would read real worktree metadata and write a real wrapper.
+        """
+        with self.redirected(name):
+            return init.root_setup(name, self.home, self.env(), cwd=cwd)
+
+    def snapshot(self):
+        """Every path under the staging tree, so any write at all shows."""
+        found = set()
+        for dirpath, dirnames, filenames in os.walk(self.tmp):
+            for name in dirnames + filenames:
+                found.add(os.path.join(dirpath, name))
+        return found
 
     def expected_links(self):
         """The whole destination tree the link phase produces."""
@@ -260,14 +314,6 @@ class HarnessesWithoutState(StateCase):
     destination nothing reads.
     """
 
-    def snapshot(self):
-        """Every path under the staging tree, so any write at all shows."""
-        found = set()
-        for dirpath, dirnames, filenames in os.walk(self.tmp):
-            for name in dirnames + filenames:
-                found.add(os.path.join(dirpath, name))
-        return found
-
     def test_nothing_is_linked_for_the_harnesses_that_declare_no_hook(self):
         for name in UNLINKED:
             with self.subTest(harness=name):
@@ -279,6 +325,178 @@ class HarnessesWithoutState(StateCase):
                 self.assertEqual(self.link(name), 0)
                 self.assertEqual(self.snapshot(), before)
                 self.assertEqual(tree(self.dest), {"config.toml": "\n"})
+
+
+class WorktreeCase(StateCase):
+    """Stages a workspace the root phase runs over.
+
+    The workspace is a directory of its own under the staging tree rather than
+    the directory the tests run in: this checkout is a linked worktree itself,
+    so a phase reading the process's own working directory would find real
+    metadata to rewrite.
+    """
+
+    # The path the host has the checkout at, which nothing in the container
+    # resolves.
+    HOST_WORKTREE = "/host/repos/proj/wt"
+
+    def setUp(self):
+        super().setUp()
+        self.ws = os.path.join(self.tmp, "ws")
+        os.makedirs(self.ws)
+        self.admin = os.path.join(self.tmp, "bare", "worktrees", "wt")
+
+    def stage_linked_worktree(self, host_dotgit):
+        """A `.git` file pointing at an administrative dir that points back."""
+        write_file(os.path.join(self.ws, ".git"), "gitdir: %s\n" % self.admin)
+        write_file(os.path.join(self.admin, "gitdir"), host_dotgit + "\n")
+
+
+class WorktreeWrapperGuards(WorktreeCase):
+    """No wrapper for a workspace whose worktree paths already resolve.
+
+    Every git command the session runs goes through whatever stands first on
+    PATH, so a wrapper written for a workspace that does not need one puts a
+    rewrite in front of the real git for the whole run. Each shape below
+    reaches a different point of the walk from the workspace to the recorded
+    host path, and all of them have to leave the wrapper directory as they
+    found it.
+    """
+
+    def assert_nothing_installed(self):
+        self.assertEqual(self.prepare("claude", self.ws), 0)
+        self.assertEqual(tree(self.wrapper), {})
+
+    def test_a_workspace_without_a_git_entry_gets_no_wrapper(self):
+        self.assert_nothing_installed()
+
+    def test_a_regular_checkout_gets_no_wrapper(self):
+        """Its `.git` is a directory, which records no path to rewrite."""
+        os.makedirs(os.path.join(self.ws, ".git"))
+        self.assert_nothing_installed()
+
+    def test_a_git_file_naming_no_gitdir_gets_no_wrapper(self):
+        write_file(os.path.join(self.ws, ".git"), "ref: refs/heads/main\n")
+        self.assert_nothing_installed()
+
+    def test_an_administrative_dir_without_a_reverse_pointer_gets_no_wrapper(self):
+        """Nothing records the host path, so there is none to rewrite."""
+        write_file(os.path.join(self.ws, ".git"), "gitdir: %s\n" % self.admin)
+        os.makedirs(self.admin)
+        self.assert_nothing_installed()
+
+    def test_a_worktree_recorded_at_the_container_path_gets_no_wrapper(self):
+        """The recorded path resolves inside the container as it stands, so
+        claude's own CWD-match already finds the session directories."""
+        self.stage_linked_worktree(os.path.join(self.ws, ".git"))
+        self.assert_nothing_installed()
+
+
+class WorktreeWrapperInstall(WorktreeCase):
+    """The wrapper a linked worktree from a bare repo gets, byte for byte.
+
+    The recorded path is the host's and does not exist in the container, so
+    claude's /resume matches nothing until the porcelain output names the
+    directory the checkout is actually mounted at. The whole file is asserted:
+    it is shell that runs for every git command of the session, and a drifted
+    case pattern or an unquoted path is a broken git rather than a failed
+    rewrite.
+    """
+
+    def test_the_wrapper_rewrites_the_recorded_host_path(self):
+        self.stage_linked_worktree(self.HOST_WORKTREE + "/.git")
+        umask = os.umask(0o022)
+        self.addCleanup(os.umask, umask)
+
+        self.assertEqual(self.prepare("claude", self.ws), 0)
+
+        expected = (
+            '#!/bin/sh\n'
+            '# Swarmforge git wrapper: rewrite worktree paths for container'
+            ' compatibility.\n'
+            'case "$*" in\n'
+            '  *worktree*list*--porcelain*)\n'
+            '    "%(git)s" "$@" | sed "s|^worktree %(host)s$|worktree'
+            ' %(workspace)s|"\n'
+            '    ;;\n'
+            '  *)\n'
+            '    exec "%(git)s" "$@"\n'
+            '    ;;\n'
+            'esac\n'
+        ) % {
+            "git": shutil.which("git"),
+            "host": self.HOST_WORKTREE,
+            "workspace": self.ws,
+        }
+        self.assertEqual(tree(self.wrapper), {"git": expected})
+
+    def test_the_wrapper_is_executable(self):
+        """PATH only reaches a file the shell may run."""
+        self.stage_linked_worktree(self.HOST_WORKTREE + "/.git")
+        umask = os.umask(0o022)
+        self.addCleanup(os.umask, umask)
+
+        self.assertEqual(self.prepare("claude", self.ws), 0)
+        mode = os.stat(os.path.join(self.wrapper, "git")).st_mode
+        self.assertEqual(mode & 0o777, 0o755)
+
+
+class RootSetupContext(StateCase):
+    """The hook is handed the directory the harness process starts in.
+
+    That directory is the run's own workdir, not a fixed mount, and it is what
+    the rewrite has to name -- so the phase carries it into the context rather
+    than leaving a hook to read the driver's own.
+    """
+
+    def test_the_working_directory_reaches_the_hook(self):
+        seen = []
+        module = types.SimpleNamespace(SPEC=fake_spec(root_setup=seen.append))
+        workdir = os.path.join(self.tmp, "repos", "proj")
+
+        with mock.patch.dict(harness._REGISTRY, {"fake": module}):
+            status = init.root_setup(
+                "fake", self.home, self.env(), cwd=workdir)
+
+        self.assertEqual(status, 0)
+        self.assertEqual([ctx.cwd for ctx in seen], [workdir])
+        self.assertEqual([ctx.home for ctx in seen], [self.home])
+
+
+class HarnessesWithoutRootSetup(WorktreeCase):
+    """The default hook writes nothing at all.
+
+    The worktree rewrite is claude's alone, so the same workspace that earns a
+    wrapper there has to leave every staged path untouched for the rest.
+    """
+
+    def test_nothing_is_prepared_for_the_harnesses_that_declare_no_hook(self):
+        for name in UNLINKED:
+            with self.subTest(harness=name):
+                self.setUp()
+                self.stage_linked_worktree(self.HOST_WORKTREE + "/.git")
+
+                before = self.snapshot()
+                self.assertEqual(self.prepare(name, self.ws), 0)
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(tree(self.wrapper), {})
+
+
+class RootSetupDescriptor(unittest.TestCase):
+    """Which harnesses prepare anything as root at all.
+
+    The hook runs after the privilege check the container cannot repeat, so a
+    harness that silently loses it loses the preparation with no other way to
+    get it back.
+    """
+
+    def test_claude_installs_its_own_git_wrapper(self):
+        self.assertIs(harness.get("claude").SPEC.root_setup, claude.root_setup)
+
+    def test_every_other_harness_prepares_nothing(self):
+        for name in UNLINKED:
+            with self.subTest(harness=name):
+                self.assertIs(harness.get(name).SPEC.root_setup, spec.root_setup)
 
 
 if __name__ == "__main__":
