@@ -22,6 +22,7 @@ SWARMFORGE_HARNESS_INSTALL_BUST ?= 0
 MODEL        ?=
 EVAL_MODEL   ?= $(MODEL)
 TEST_SKILL   ?=
+# DATA_DIR is opencode's data-dir knob, declared in its harness.mk fragment.
 TEST_DATA_DIR ?= $(DATA_DIR)
 TEST_ENABLE_JUDGE ?=
 TEST_TIMEOUT_S ?= 600
@@ -233,10 +234,13 @@ harness_mkdir_lines = $(subst $(harness_space)$(harness_nl),$(harness_nl),$(fore
 # Generates one harness's build/update/run/stop targets from the knobs its
 # harness.mk fragment declares. $(1) is the harness name as it appears in
 # target names, --build-arg AGENT, and the Dockerfile stage; $(2) is the
-# fragment's variable prefix (CLAUDE, OPENCODE, ...). Fragment knobs stay
-# $$-deferred in the generated recipes, so command-line and environment
-# overrides behave exactly as they would on a hand-written rule. .PHONY
-# and clean accumulate across evals, one contribution per harness.
+# fragment's variable prefix (CLAUDE, OPENCODE, ...). Fragment knobs are
+# referenced by name in the generated recipes and expand when a recipe
+# runs, so command-line and environment overrides behave exactly as they
+# would on a rule written out in full. The one knob spliced verbatim at
+# eval time is $(2)_MKDIRS, whose entries therefore carry $$-escaped
+# references. .PHONY and clean accumulate across evals, one contribution
+# per harness.
 define harness_rules
 .PHONY: build_$(1) update_$(1) run_$(1) stop_$(1)
 
@@ -244,7 +248,7 @@ build_$(1):
 	docker build $(harness_bs)
 	  --target $(1)-runtime $(harness_bs)
 	  --build-arg AGENT=$(1) $(harness_bs)
-$(if $($(2)_EXTRA_BUILD_ARGS),	  $($(2)_EXTRA_BUILD_ARGS) $(harness_bs)$(harness_nl))	  --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) $(harness_bs)
+$(if $($(2)_EXTRA_BUILD_ARGS),	  $$($(2)_EXTRA_BUILD_ARGS) $(harness_bs)$(harness_nl))	  --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) $(harness_bs)
 	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) $(harness_bs)
 	  -f "$$(SWARMFORGE_DIR)/anvil/Dockerfile" $(harness_bs)
 	  -t $$($(2)_IMG) "$$(SWARMFORGE_DIR)"
@@ -273,8 +277,14 @@ opencode_network:
 
 # Per-harness fragments declare that harness's knobs and eval harness_rules to
 # generate its targets. They are read after the shared variables and macros they
-# reference, and after opencode_network so it stays the default goal.
-include $(wildcard $(SWARMFORGE_DIR)/swarmforge/harness/*/harness.mk)
+# reference, and after opencode_network so it stays the default goal. An
+# empty glob would silently drop every harness target, so it is an error
+# instead.
+HARNESS_FRAGMENTS := $(wildcard $(SWARMFORGE_DIR)/swarmforge/harness/*/harness.mk)
+ifeq ($(strip $(HARNESS_FRAGMENTS)),)
+$(error No harness fragments found under $(SWARMFORGE_DIR)/swarmforge/harness)
+endif
+include $(HARNESS_FRAGMENTS)
 
 # Build the reference docker-task broker image. It is not used until a broker tong
 # definition is enabled in a layer (see tongs/docker-broker/docker-broker.tong.yaml).
@@ -341,7 +351,8 @@ lint:
 
 # Skill evaluation: runs scenario prompts from skills/<name>/tests/*.json
 # against a real model inside the opencode image and checks what came
-# back, so it needs a model and a running network.
+# back, so it needs a model and a running network. OPENCODE_IMG and
+# DATA_DIR are declared in swarmforge/harness/opencode/harness.mk.
 test-skills: opencode_network
 	@if [ -z "$(strip $(MODEL))" ]; then \
 		printf '%s\n' "MODEL is required (example: make test-skills MODEL=ollama/llama3.1)"; \
