@@ -12,7 +12,8 @@ whose subagents are quietly missing.
 
 Nothing here may write outside the temporary directory: the harnesses that pin
 a config or agents destination under /run/swarmforge have those destinations,
-and Claude's two settings paths, redirected for the duration of each run.
+Claude's two settings paths, and the directory its root phase writes a git
+wrapper to, redirected for the duration of each run.
 
 Run: python3 tests/test_harness_agents.py
 """
@@ -97,6 +98,7 @@ class TranslationCase(unittest.TestCase):
         self.agents_dest = os.path.join(self.tmp, "codex-agents")
         self.settings_file = os.path.join(self.tmp, "claude-settings.json")
         self.image_defaults = os.path.join(self.tmp, "image-defaults.json")
+        self.wrapper_dir = os.path.join(self.tmp, "wrapper")
 
     def source(self, layer):
         """The agents directory of one asset source, created on first use."""
@@ -138,6 +140,8 @@ class TranslationCase(unittest.TestCase):
                     mock.patch.object(claude, "SETTINGS_FILE", self.settings_file))
                 stack.enter_context(mock.patch.object(
                     claude, "IMAGE_DEFAULT_SETTINGS", self.image_defaults))
+                stack.enter_context(
+                    mock.patch.object(claude, "WRAPPER_DIR", self.wrapper_dir))
             if name == "codex":
                 stack.enter_context(mock.patch.object(
                     module, "SPEC",
