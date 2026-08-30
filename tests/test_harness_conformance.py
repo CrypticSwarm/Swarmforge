@@ -252,10 +252,13 @@ class DescriptorContract(unittest.TestCase):
                         "%s.%s resolves relative: %s"
                         % (name, field, resolved))
 
-    def test_the_mcp_fragment_is_callable(self):
+    def test_the_mcp_fragment_is_callable_or_waived(self):
         for name, spec in specs():
             with self.subTest(harness=name):
-                self.assertTrue(callable(spec.mcp_fragment))
+                if provided(spec.mcp_fragment):
+                    self.assertTrue(callable(spec.mcp_fragment))
+                else:
+                    self.assertIsInstance(spec.mcp_fragment, Waiver)
 
     def test_mcp_delivery_names_a_variable_or_a_flag(self):
         """The two deliveries are the only ones the drivers implement: an env
@@ -337,12 +340,15 @@ class ContainerRun(unittest.TestCase):
     """
 
     def setUp(self):
+        self.stage()
+
+    def stage(self):
+        """Lay out a fresh staging tree; each per-harness run gets its own."""
         self.tmp = os.path.realpath(
             tempfile.mkdtemp(prefix="swarmforge-conformance-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.home = os.path.join(self.tmp, "home")
         self.dest = os.path.join(self.tmp, "dest")
-        self.agents_dest = os.path.join(self.tmp, "agents-dest")
         self.handover = os.path.join(self.tmp, "handover")
         self.workspace = os.path.join(self.tmp, "workspace")
         self.settings_file = os.path.join(self.tmp, "claude-settings.json")
@@ -350,9 +356,15 @@ class ContainerRun(unittest.TestCase):
         os.makedirs(self.home)
         os.makedirs(self.workspace)
 
+        # layered.txt is contested by all three config layers; between.txt only
+        # by the lower two, so the merge order is pinned pairwise rather than
+        # only at the top.
         for layer in ("repo", "user", "org"):
             write_file(
                 os.path.join(self.tmp, "config-" + layer, "layered.txt"), layer)
+        for layer in ("repo", "user"):
+            write_file(
+                os.path.join(self.tmp, "config-" + layer, "between.txt"), layer)
         for layer in ("user", "org"):
             root = os.path.join(self.tmp, "dotagents-" + layer)
             write_file(
@@ -416,11 +428,13 @@ class ContainerRun(unittest.TestCase):
         if provided(spec.config_dest):
             replacements["config_dest"] = self.dest
         # A destination that names a directory outright rather than through a
-        # placeholder is the one the config redirection above cannot reach.
-        if (provided(spec.agents_dest)
-                and "{" not in spec.agents_dest
-                and not self.inside(spec.agents_dest)):
-            replacements["agents_dest"] = self.agents_dest
+        # placeholder is one the config redirection above cannot reach.
+        for field in ("skills_dest", "commands_dest", "agents_dest"):
+            template = getattr(spec, field)
+            if (provided(template)
+                    and "{" not in template
+                    and not self.inside(template)):
+                replacements[field] = os.path.join(self.tmp, field)
         extras = tuple(
             path if self.inside(path) else self.rooted(path)
             for path in spec.extra_chown_paths
@@ -432,14 +446,17 @@ class ContainerRun(unittest.TestCase):
             if replacements:
                 stack.enter_context(mock.patch.object(
                     module, "SPEC", dataclasses.replace(spec, **replacements)))
-            # Claude names its built settings file and the image's defaults as
-            # module constants rather than spec fields, so the generic
-            # replacement above cannot reach them; both point into paths a
-            # host running Swarmforge itself really has.
+            # Claude names its built settings file, the image's defaults, and
+            # the git wrapper directory as module constants rather than spec
+            # fields, so the generic replacement above cannot reach them; all
+            # three point into paths a host running Swarmforge itself really
+            # has.
             stack.enter_context(
                 mock.patch.object(claude, "SETTINGS_FILE", self.settings_file))
             stack.enter_context(mock.patch.object(
                 claude, "IMAGE_DEFAULT_SETTINGS", self.image_defaults))
+            stack.enter_context(mock.patch.object(
+                claude, "WRAPPER_DIR", os.path.join(self.tmp, "wrapper")))
             yield stack
 
     def run_driver(self, name):
@@ -464,18 +481,22 @@ class ContainerRun(unittest.TestCase):
         return init.resolve_dest(
             template, self.home, init.config_root(spec, self.home, self.env()))
 
-    def test_the_org_layer_wins_the_config_merge_for_every_harness(self):
+    def test_the_config_layers_stack_repo_below_user_below_org(self):
         """The layers stack by trust -- repo, then user, then org -- and the
         order is the same whichever harness the run is for. A harness whose
         merge inverted it would run the session under the checkout's own
-        permissions, hooks, and env."""
+        permissions, hooks, and env. The file only the lower two layers
+        contest pins the repo-user order the top layer's win says nothing
+        about."""
         for name in harness.names():
             with self.subTest(harness=name):
-                self.setUp()
+                self.stage()
                 spec = self.run_driver(name)
-                merged = os.path.join(
-                    init.config_root(spec, self.home, self.env()), "layered.txt")
-                self.assertEqual(read_file(merged), "org")
+                config = init.config_root(spec, self.home, self.env())
+                self.assertEqual(
+                    read_file(os.path.join(config, "layered.txt")), "org")
+                self.assertEqual(
+                    read_file(os.path.join(config, "between.txt")), "user")
 
     def test_the_workspace_layer_wins_the_portable_skills_for_every_harness(self):
         """Assets stack the other way from config, by specificity: the
@@ -485,7 +506,7 @@ class ContainerRun(unittest.TestCase):
             if not provided(harness.get(name).SPEC.skills_dest):
                 continue
             with self.subTest(harness=name):
-                self.setUp()
+                self.stage()
                 spec = self.run_driver(name)
                 installed = os.path.join(
                     self.resolved(spec, spec.skills_dest), "demo", "SKILL.md")
@@ -500,7 +521,7 @@ class ContainerRun(unittest.TestCase):
             if not provided(harness.get(name).SPEC.commands_dest):
                 continue
             with self.subTest(harness=name):
-                self.setUp()
+                self.stage()
                 spec = self.run_driver(name)
                 installed = os.path.join(
                     self.resolved(spec, spec.commands_dest), "democmd.md")
@@ -516,7 +537,7 @@ class ContainerRun(unittest.TestCase):
             if not provided(harness.get(name).SPEC.agents_dest):
                 continue
             with self.subTest(harness=name):
-                self.setUp()
+                self.stage()
                 spec = self.run_driver(name)
                 dest = self.resolved(spec, spec.agents_dest)
                 emitted = [
@@ -535,7 +556,7 @@ class ContainerRun(unittest.TestCase):
             if provided(spec.agents_dest):
                 continue
             with self.subTest(harness=name):
-                self.setUp()
+                self.stage()
                 captured = io.StringIO()
                 with self.redirected(name), contextlib.redirect_stderr(captured):
                     status = init.translate_agents(
@@ -551,7 +572,7 @@ class McpContract(unittest.TestCase):
     is written to a file the run delivers by the route the spec names. A
     fragment that does not serialize, that loses the alias, or that is
     delivered by a route nothing merges is a session whose sidecars are
-    simply absent, with nothing in the log to say so.
+    absent, with nothing in the log to say so.
     """
 
     SERVERS = {"gh": "http://tong-gh:3000/mcp"}
@@ -633,7 +654,10 @@ class ExecPassthrough(unittest.TestCase):
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.wrapper = os.path.join(self.tmp, "wrapper")
-        self.settings = os.path.join(self.tmp, "claude-settings.json")
+        # A built settings file stands ready, so a hook that splices flags for
+        # one does its splicing in these runs rather than skipping the branch.
+        self.settings = write_file(
+            os.path.join(self.tmp, "claude-settings.json"), "{}\n")
         self.recorded = []
         # The driver defaults the interpreter's ignored dispositions before
         # the exec, and the recording execve returns instead of replacing the
@@ -699,12 +723,13 @@ class ExecPassthrough(unittest.TestCase):
                     "%s dropped or reordered the session arguments: %s"
                     % (name, argv))
 
-    def test_no_harness_inherits_the_home_or_the_import_root_of_the_launch(self):
+    def test_no_harness_inherits_the_variables_of_the_launch(self):
         for name in harness.names():
             with self.subTest(harness=name):
                 _, _, env = self.run_driver(name)
                 self.assertEqual(env["HOME"], self.home)
-                self.assertNotIn("PYTHONPATH", env)
+                for var in execute.LAUNCH_VARS:
+                    self.assertNotIn(var, env)
 
 
 def launcher_argv(argv):
@@ -803,31 +828,38 @@ class RunTargetArgv(unittest.TestCase):
     def test_every_container_mounts_the_workspace_and_the_shared_assets(self):
         for target, name, _ in self.targets():
             argv = docker_argv(RUN_ARGV[target])
-            mounted = dict(volumes(argv))
+            mounted = volumes(argv)
             for path in SHARED_MOUNTS:
                 with self.subTest(harness=name, mount=path):
-                    self.assertIn(path, mounted)
+                    self.assertIn(path, [entry for entry, _ in mounted])
             for path in SHARED_READONLY_MOUNTS:
                 with self.subTest(harness=name, mount=path):
-                    self.assertIn(path, mounted)
-                    self.assertIn(
-                        "ro", mounted[path],
-                        "%s mounts %s writable" % (name, path))
+                    options = [opts for entry, opts in mounted
+                               if entry == path]
+                    self.assertTrue(options, "%s never mounts %s" % (name, path))
+                    for opts in options:
+                        self.assertIn(
+                            "ro", opts, "%s mounts %s writable" % (name, path))
 
-    def test_the_container_is_told_which_binary_to_start(self):
-        """The entrypoint reads SWARMFORGE_AGENT_BIN and falls back to
-        `opencode` when it is unset, which is why the opencode target records
-        no such variable."""
+    def test_the_container_is_told_which_harness_to_start(self):
+        """The entrypoint reads SWARMFORGE_AGENT_BIN, falling back to
+        `opencode` when it is unset -- which is why the opencode target
+        records no such variable -- and hands the same word to both drivers
+        as the registry key while checking for it under /usr/local/bin. The
+        recorded value therefore has to be the harness's registry name and
+        its binary at once, or the container refuses to start."""
         for target, name, spec in self.targets():
             with self.subTest(harness=name):
                 recorded = env_value(docker_argv(RUN_ARGV[target]),
                                      "SWARMFORGE_AGENT_BIN")
-                if recorded is None:
-                    self.assertEqual(
-                        spec.binary, "opencode",
-                        "%s starts without naming its binary" % name)
-                else:
-                    self.assertEqual(recorded, spec.binary)
+                selected = "opencode" if recorded is None else recorded
+                self.assertEqual(
+                    selected, name,
+                    "%s records a word the registry does not know" % name)
+                self.assertEqual(
+                    selected, spec.binary,
+                    "%s records a word the image installs no binary for"
+                    % name)
 
     def asset_dests(self, name, spec, argv):
         """Where this run's assets land inside the container.
@@ -851,22 +883,26 @@ class RunTargetArgv(unittest.TestCase):
     def test_asset_destinations_inside_a_writable_mount_are_masked(self):
         """A writable bind mount is a host directory that outlives the
         container, and the home is one every session for this user shares.
-        An asset destination that resolves into one needs a mask of its own,
-        or this repo's skills, commands, and agents are what the next repo's
-        session starts with."""
+        An asset destination that resolves into one needs a tmpfs standing
+        over it -- another bind mount is another host directory, not a mask
+        -- or this repo's skills, commands, and agents are what the next
+        repo's session starts with. The rule reads the `-v` and `--tmpfs`
+        forms the fragments write; a fragment moving to `--mount` moves this
+        parsing with it."""
         for target, name, spec in self.targets():
             argv = docker_argv(RUN_ARGV[target])
             writable = [path for path, options in volumes(argv)
                         if "ro" not in options]
-            masked = set(tmpfs_paths(argv)) | {path for path, _ in volumes(argv)}
+            tmpfs = tmpfs_paths(argv)
             for dest in self.asset_dests(name, spec, argv):
                 carried = [path for path in writable
                            if dest == path or dest.startswith(path + "/")]
                 if not carried:
                     continue
                 with self.subTest(harness=name, dest=dest):
-                    self.assertIn(
-                        dest, masked,
+                    self.assertTrue(
+                        any(dest == path or dest.startswith(path + "/")
+                            for path in tmpfs),
                         "%s writes assets into %s, which %s carries to the "
                         "next run" % (name, dest, carried[0]))
 
