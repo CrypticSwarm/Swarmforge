@@ -15,12 +15,6 @@ CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
 CLAUDE_SHARED_HOME="${ANVIL_HOME}/.claude"
 CODEX_AGENTS_HOME="/run/swarmforge/codex-agents"
 
-# State only: nothing claude loads as configuration or code belongs here.
-CLAUDE_STATE_DIRS="projects sessions file-history session-env shell-snapshots
-plans tasks todos backups cache paste-cache plugins"
-CLAUDE_STATE_FILES="history.jsonl stats-cache.json keybindings.json
-.last-cleanup scheduled_tasks.lock"
-
 configure_timezone() {
   timezone="${TZ:-}"
 
@@ -34,33 +28,6 @@ configure_timezone() {
 
   ln -snf "${zoneinfo_path}" /etc/localtime
   printf '%s\n' "${timezone}" >/etc/timezone
-}
-
-# Only the allowlisted state outlives the run: claude loads configuration and
-# code out of this dir, and a shared one would hand a session's writes to the
-# next container. A link holds only what claude writes in place -- an entry
-# rewritten by rename replaces it. A directory must exist before it is linked,
-# or claude's own mkdir fails on the link. Runs after the config merge, which
-# wipes this destination under SWARMFORGE_CONFIG_RESET.
-link_claude_state() {
-  mkdir -p "${CLAUDE_CONFIG_HOME}"
-
-  # The one piece of state claude keeps beside its config dir, not inside it.
-  link_claude_entry "${ANVIL_HOME}/.claude.json" ".claude.json"
-
-  for entry in ${CLAUDE_STATE_DIRS}; do
-    mkdir -p "${CLAUDE_SHARED_HOME}/${entry}" 2>/dev/null || true
-    link_claude_entry "${CLAUDE_SHARED_HOME}/${entry}" "${entry}"
-  done
-
-  for entry in ${CLAUDE_STATE_FILES}; do
-    link_claude_entry "${CLAUDE_SHARED_HOME}/${entry}" "${entry}"
-  done
-}
-
-link_claude_entry() {
-  rm -rf "${CLAUDE_CONFIG_HOME}/${2}"
-  ln -s "${1}" "${CLAUDE_CONFIG_HOME}/${2}"
 }
 
 if [ ! -x "${AGENT_BIN_PATH}" ]; then
@@ -91,17 +58,14 @@ fi
 
 # The root phases: merge the layered config (repo, then user, then org) into
 # the harness's destination and run the harness's config hooks, translate the
-# unified agent definitions into the harness's native destination, then install
-# the portable skills and commands into the harness's native asset locations.
+# unified agent definitions into the harness's native destination, install the
+# portable skills and commands into the harness's native asset locations, then
+# link the state the harness keeps across runs into its config destination.
 # The SWARMFORGE_CONFIG_*, SWARMFORGE_ASSETS_*, and SWARMFORGE_DOTAGENTS_*
 # layer variables, SWARMFORGE_SKILLS_DIR, SWARMFORGE_COMMAND_DIR, and
 # SWARMFORGE_TONG_MCP_FILE are read from the environment. This runs as root,
 # before the privilege drop, and a failure here stops the container.
 PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}"
-
-if [ "${AGENT_BIN}" = "claude" ]; then
-  link_claude_state
-fi
 
 chown -R "${ANVIL_UID}:${ANVIL_GID}" "${ANVIL_HOME}" 2>/dev/null || true
 chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CLAUDE_CONFIG_HOME}" 2>/dev/null || true

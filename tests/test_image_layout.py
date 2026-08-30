@@ -224,14 +224,14 @@ class ClaudeSettingsDelivery(unittest.TestCase):
 
 
 class ClaudeConfigHome(unittest.TestCase):
-    """Claude's config dir dies with the container; state is linked back in.
+    """Claude's config dir dies with the container; its credentials do not.
 
-    Only the state allowlist survives, so a path claude learns to load in a
-    later release stays inert until listed.
+    The entrypoint's own literals have to agree with the spec on where that
+    directory is, name it to claude, and keep it out of every host mount, or
+    the session reads its configuration and assets from somewhere else. The
+    credential store is named in the persistent home instead, since a
+    rename-based write replaces a link.
     """
-
-    LOADED = ("settings.json", "CLAUDE.md", "rules", "workflows",
-              "output-styles", "routines", "skills", "commands", "agents")
 
     def setUp(self):
         with open(ENTRYPOINT) as handle:
@@ -252,12 +252,6 @@ class ClaudeConfigHome(unittest.TestCase):
             self.assertFalse(
                 path.startswith(mounted),
                 "claude config dir lands in a host mount: %s" % path)
-
-    def test_the_state_allowlist_carries_nothing_claude_loads(self):
-        listed = (self.literal("CLAUDE_STATE_DIRS").split()
-                  + self.literal("CLAUDE_STATE_FILES").split())
-        for name in self.LOADED:
-            self.assertNotIn(name, listed)
 
     def test_every_asset_destination_resolves_to_the_config_home(self):
         """The destinations and the config dir are one guarantee: assets in
@@ -283,21 +277,11 @@ class ClaudeConfigHome(unittest.TestCase):
         self.assertIn(
             'export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SHARED_HOME}"',
             self.entrypoint)
-        self.assertNotIn(
-            ".credentials.json", self.literal("CLAUDE_STATE_FILES"))
 
     def test_the_credential_store_outlives_the_container(self):
         self.assertTrue(
             self.literal("CLAUDE_SHARED_HOME").startswith("${ANVIL_HOME}/"),
             "the credential store is not in the shared persistent home")
-
-    def test_state_is_linked_after_the_config_home_is_built(self):
-        """The driver invocation is the whole build -- the config merge, the
-        agent translation, and the asset install -- and the merge wipes its
-        destination under SWARMFORGE_CONFIG_RESET; a link removed there costs
-        the run its history and credentials."""
-        call = self.entrypoint.rindex("link_claude_state")
-        self.assertLess(self.entrypoint.rindex("-m swarmforge.harness.init"), call)
 
 
 class CodexConfigDelivery(unittest.TestCase):

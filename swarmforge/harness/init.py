@@ -3,8 +3,9 @@
 
 Merges the layered config into the harness's destination and runs that
 harness's config hooks, translates the unified agent definitions into the
-harness's native format, then installs the portable skills and commands into
-its native asset locations. Invoked as `HARNESS HOME`, with the source
+harness's native format, installs the portable skills and commands into its
+native asset locations, then links the state the harness keeps across runs into
+its config destination. Invoked as `HARNESS HOME`, with the source
 locations arriving in the environment: `SWARMFORGE_CONFIG_{USER,ORG,REPO}_DIR`
 name the three config layers, `SWARMFORGE_CONFIG_DEST` and
 `SWARMFORGE_CONFIG_RESET` decide the destination and whether it is rebuilt from
@@ -342,6 +343,23 @@ def install_assets(name, home, environ, workspace=WORKSPACE):
     return 0
 
 
+def link_state(name, home, environ):
+    """Link the persistent state of the harness named `name` into its config.
+
+    A harness whose config destination is rebuilt for every run keeps what has
+    to outlive it in the persistent home and links those entries back in; one
+    whose config already lives in that home has nothing to link and declares no
+    hook. Linking runs after the config merge that rebuilds the destination,
+    so a link is not among what the merge wipes.
+
+    A failed link is not caught: the state it stands for would silently die
+    with the container.
+    """
+    spec = harness.get(name).SPEC
+    spec.link_state(asset_context(spec, home, environ))
+    return 0
+
+
 def run(name, home, environ, workspace=WORKSPACE):
     """Run the container root phases for the harness registered as `name`."""
     status = initialize(name, home, environ)
@@ -349,6 +367,7 @@ def run(name, home, environ, workspace=WORKSPACE):
         return status
     translate_agents(name, home, environ, workspace)
     install_assets(name, home, environ, workspace)
+    link_state(name, home, environ)
     return 0
 
 

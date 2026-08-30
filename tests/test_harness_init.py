@@ -912,9 +912,9 @@ class SpecEntrypointAgreement(unittest.TestCase):
     """The paths the driver writes and the entrypoint acts on are one string.
 
     The driver merges into a destination its harness module names, while the
-    entrypoint links state into it, hands it to the anvil uid, and exports it
-    to claude -- each from its own literal. A drift between the two is silent:
-    the merge lands somewhere nothing reads.
+    entrypoint hands it to the anvil uid and exports it to claude -- each from
+    its own literal. A drift between the two is silent: the merge lands
+    somewhere nothing reads.
     """
 
     def setUp(self):

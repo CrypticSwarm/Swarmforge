@@ -606,11 +606,14 @@ class FatalCopyFailures(AssetCase):
 
 
 class PhaseOrder(AssetCase):
-    """The driver runs the config phase, the translation, then the install.
+    """The driver runs the config phase, the translation, the install, the links.
 
     Two harnesses resolve their asset destinations out of the merged config
     destination, and the merge rebuilds that directory -- so an install
-    reaching it first writes into a directory about to be wiped.
+    reaching it first writes into a directory about to be wiped. The links go
+    in last for the same reason: the merge wipes its destination under
+    SWARMFORGE_CONFIG_RESET, and a link removed there costs the run its
+    history.
     """
 
     def test_the_phases_run_in_order(self):
@@ -625,28 +628,32 @@ class PhaseOrder(AssetCase):
         with mock.patch.object(init, "initialize", record("config", 0)):
             with mock.patch.object(init, "translate_agents", record("agents", 0)):
                 with mock.patch.object(init, "install_assets", record("assets", 0)):
-                    with self.redirected("claude"):
-                        status = init.run(
-                            "claude", self.home, self.env(), self.workspace)
+                    with mock.patch.object(init, "link_state", record("link", 0)):
+                        with self.redirected("claude"):
+                            status = init.run(
+                                "claude", self.home, self.env(), self.workspace)
 
         self.assertEqual(status, 0)
-        self.assertEqual(calls, ["config", "agents", "assets"])
+        self.assertEqual(calls, ["config", "agents", "assets", "link"])
 
     def test_a_failed_config_phase_stops_the_run(self):
         """The config phase failing takes the container down, so the phases
         after it must not run at all."""
         translated = mock.Mock()
         installed = mock.Mock()
+        linked = mock.Mock()
         with mock.patch.object(init, "initialize", return_value=2):
             with mock.patch.object(init, "translate_agents", translated):
                 with mock.patch.object(init, "install_assets", installed):
-                    with self.redirected("claude"):
-                        status = init.run(
-                            "claude", self.home, self.env(), self.workspace)
+                    with mock.patch.object(init, "link_state", linked):
+                        with self.redirected("claude"):
+                            status = init.run(
+                                "claude", self.home, self.env(), self.workspace)
 
         self.assertEqual(status, 2)
         translated.assert_not_called()
         installed.assert_not_called()
+        linked.assert_not_called()
 
 
 class RecordedInstalls(AssetCase):
