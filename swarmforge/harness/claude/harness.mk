@@ -11,7 +11,7 @@ CLAUDE_RUN_ENV = \
 	-e SWARMFORGE_AGENT_BIN=claude \
 	$(SWARMFORGE_LAYER_ENV)
 
-# Claude's config dir is container-local (see the entrypoint), so nothing
+# Claude's config dir is container-local (the spec pins it), so nothing
 # under .claude here is loaded as config. plugins/ remounts read-only: a
 # session must not rewrite what the next container executes.
 CLAUDE_RUN_MOUNTS = \

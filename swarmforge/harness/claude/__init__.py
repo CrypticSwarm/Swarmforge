@@ -12,7 +12,7 @@ from swarmforge.harness.spec import HarnessSpec, Waiver
 # off the persistent home -- one directory shared by every container for this
 # user, where it would carry an org layer's permissions, hooks, and env into
 # later runs that do not mount that layer -- and rides claude's command line
-# instead, delivered by the entrypoint's exec.
+# instead, spliced into the argv by the pre-exec hook.
 SETTINGS_FILE = "/run/swarmforge/claude-settings.json"
 
 # The image's own defaults, and the bottom settings layer: any higher and the
@@ -21,8 +21,8 @@ SETTINGS_FILE = "/run/swarmforge/claude-settings.json"
 IMAGE_DEFAULT_SETTINGS = "/usr/local/share/swarmforge/claude-settings.json"
 
 # Holds the git wrapper the root phase installs when the workspace needs one.
-# The entrypoint puts this directory ahead of the real git on PATH exactly when
-# the wrapper is standing there.
+# The pre-exec hook puts this directory ahead of the real git on PATH exactly
+# when the wrapper is standing there.
 WRAPPER_DIR = "/usr/local/libexec/swarmforge"
 
 # The wrapper's text, given the real git, the worktree path recorded on the
