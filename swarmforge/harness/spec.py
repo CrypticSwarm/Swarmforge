@@ -141,6 +141,11 @@ def root_setup(ctx):
     """Default root-setup hook: nothing needs root preparation before privileges drop."""
 
 
+def pre_exec(ctx, argv, env):
+    """Default pre-exec hook: the harness starts exactly as invoked."""
+    return argv, env
+
+
 def toml_mcp_fragment(servers):
     """`mcp_servers` fragment for the given servers, TOML-shaped.
 
@@ -256,3 +261,9 @@ class HarnessSpec:
     # Hook `(ctx)` run after state is linked, for container preparation only
     # root can do.
     root_setup: object = root_setup
+
+    # Hook `(ctx, argv, env) -> (argv, env)` with the last word on the argv
+    # and the environment the harness binary is exec'd with. It runs as the
+    # anvil user, after the root phases, in the process that becomes the
+    # harness.
+    pre_exec: object = pre_exec

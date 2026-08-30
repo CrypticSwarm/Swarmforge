@@ -314,6 +314,38 @@ def root_setup(ctx):
     os.chmod(path, (os.stat(path).st_mode & 0o7777) | (0o111 & ~umask))
 
 
+def pre_exec(ctx, argv, env):
+    """Shape the argv and environment claude is exec'd with.
+
+    The wrapper directory goes ahead of the real git on PATH exactly when the
+    root phase left a wrapper standing there; that placement is what turns the
+    rewrite on.
+
+    The settings file rides the command line, where settings outrank every
+    file, so the org layer beats even the checkout's own .claude/settings.json.
+    `user` stays among the sources: that scope carries skills, commands, and
+    agents discovery. The flags go ahead of the caller's arguments, which
+    leaves the session's own trailing arguments the last word.
+
+    The config directory is the destination the root phases merged. The
+    credential store is named rather than linked, because credentials are
+    written by rename and a rename replaces a link with a container-local
+    file; claude's token-refresh lock sits in the same directory, so
+    concurrent containers rotate the shared token one at a time.
+    """
+    env = dict(env)
+    if os.access(WRAPPER_DIR + "/git", os.X_OK):
+        env["PATH"] = WRAPPER_DIR + ":" + env["PATH"]
+    if os.path.isfile(SETTINGS_FILE):
+        argv = argv[:1] + [
+            "--settings", SETTINGS_FILE,
+            "--setting-sources", "user,project,local",
+        ] + argv[1:]
+    env["CLAUDE_CONFIG_DIR"] = ctx.config_dest
+    env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = ctx.home + "/.claude"
+    return argv, env
+
+
 SPEC = HarnessSpec(
     name="claude",
     binary="claude",
@@ -346,4 +378,5 @@ SPEC = HarnessSpec(
     finalize_config=finalize_config,
     link_state=link_state,
     root_setup=root_setup,
+    pre_exec=pre_exec,
 )
