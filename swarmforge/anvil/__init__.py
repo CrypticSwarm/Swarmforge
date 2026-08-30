@@ -57,13 +57,14 @@ half-wired.
 MCP config
 ----------
 An `mcp` tong is an HTTP MCP server reachable at its canonical alias on the
-session network. The launcher generates the per-harness MCP config (an
-`opencode.json` `mcp` fragment for OpenCode, an `mcpServers` document for Claude
-Code) for the discovered `mcp` tongs, writes it to a host temp file mounted
-read-only into the anvil, and points the harness at it: the container's config
-driver merges OpenCode's fragment via `SWARMFORGE_TONG_MCP_FILE`, while Claude
-Code is passed `--mcp-config <path>`. With no `mcp` tongs nothing is written, mounted, or
-appended, so the anvil argv is unchanged.
+session network. The launcher shapes the discovered `mcp` tongs into the
+fragment the harness's spec declares, writes it to a host temp file mounted
+read-only into the anvil, and points the harness at it by the spec's delivery:
+for a harness delivering by `SWARMFORGE_TONG_MCP_FILE` the container's config
+driver merges the fragment into its config (OpenCode's `opencode.json` `mcp`
+entries, the managed `[mcp_servers]` block for Grok Build and Codex CLI),
+while Claude Code is passed `--mcp-config <path>`. With no `mcp` tongs
+nothing is written, mounted, or appended, so the anvil argv is unchanged.
 
 Secret delivery
 ---------------
