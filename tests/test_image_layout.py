@@ -535,6 +535,50 @@ class StatusLineAgreement(unittest.TestCase):
         )
 
 
+class HarnessInstallLayout(unittest.TestCase):
+    """The build finds each harness's install script where the package lands.
+
+    The image installs the agent binary by running a script out of the copied
+    package, so two unrelated strings have to agree: the COPY destination and
+    the path the install RUN assembles. They are in the same file but nothing
+    ties them together, and a mismatch is an image with no harness binary.
+    """
+
+    HARNESS_DIR = os.path.join(REPO_ROOT, "swarmforge", "harness")
+
+    def setUp(self):
+        with open(DOCKERFILE) as handle:
+            self.dockerfile = handle.read()
+
+    def test_the_install_run_reads_from_the_copy_destination(self):
+        match = re.search(r'install_sh="([^"]+)"', self.dockerfile)
+        self.assertIsNotNone(match, "Dockerfile assembles no install_sh path")
+        copies = dockerfile_copies()
+        self.assertIn(
+            "swarmforge/", copies, "Dockerfile has no `COPY swarmforge/ <dest>` line")
+        package_dest = copies["swarmforge/"].rstrip("/") + "/"
+        self.assertEqual(
+            match.group(1), package_dest + "harness/${AGENT}/install.sh")
+
+    def test_every_buildable_harness_ships_an_install_script(self):
+        """A harness.mk is what generates the harness's `build_<name>` target.
+
+        The Makefile globs the fragments, so adding one advertises a build
+        that only discovers the missing script partway through the image.
+        """
+        fragments = sorted(
+            name for name in os.listdir(self.HARNESS_DIR)
+            if os.path.isfile(os.path.join(self.HARNESS_DIR, name, "harness.mk"))
+        )
+        self.assertTrue(fragments, "no harness declares a harness.mk")
+        for name in fragments:
+            self.assertTrue(
+                os.path.isfile(
+                    os.path.join(self.HARNESS_DIR, name, "install.sh")),
+                "harness %s has a build target but no install.sh" % name,
+            )
+
+
 class BuildRecipeCase(unittest.TestCase):
     """Runs a build_* target and exposes the docker argv it assembled."""
 
