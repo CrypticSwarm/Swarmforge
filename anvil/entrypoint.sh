@@ -13,7 +13,6 @@ AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
 CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
 CLAUDE_SHARED_HOME="${ANVIL_HOME}/.claude"
-CODEX_CONFIG_FILE="${ANVIL_HOME}/.codex/config.toml"
 CODEX_AGENTS_HOME="/run/swarmforge/codex-agents"
 
 # State only: nothing claude loads as configuration or code belongs here.
@@ -176,76 +175,6 @@ copy_shared_assets() {
   fi
 }
 
-# Translate unified Swarmforge agent definitions into the running harness's
-# native subagent format.
-#
-# Unified definitions are markdown files whose YAML frontmatter is a superset
-# of the OpenCode agent schema (description, mode, model, temperature, tools)
-# plus optional per-harness override blocks (claude:, codex:, opencode:).
-# One translator (swarmforge.agents.translate) drives each harness's registered
-# emitter, so adding a new harness means an emitter in its module under
-# swarmforge/harness/ plus a case arm here.
-#
-# Unified Swarmforge agent definitions live under <dir>/agents in the
-# harness-neutral .swarmforge asset layers, mounted read-only via
-# SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR, plus <workspace>/.swarmforge/agents.
-# One definition serves every harness; native agents/ directories inside
-# harness config dirs are never transported by this asset pipeline. For
-# OpenCode they still reach the harness through the layered config merge
-# (the merged config dir is OpenCode's own discovery; see
-# swarmforge.harness.init), while for Claude they are excluded from the merge
-# as well -- Claude-native definitions belong to Claude's own discovery
-# (for example <workspace>/.claude/agents).
-#
-# Sources are identical for every harness and applied lowest- to
-# highest-precedence (later files win by name): user, org, repo asset
-# layers, then the workspace overlay. Only the destination differs.
-prepare_unified_agents() {
-  workspace_dir="${1:-/workspace}"
-  translator="/usr/local/lib/swarmforge/swarmforge/agents/translate.py"
-
-  [ -f "${translator}" ] || return 0
-
-  case "${AGENT_BIN}" in
-    claude)
-      agents_dst="${CLAUDE_CONFIG_HOME}/agents"
-      ;;
-    opencode)
-      agents_dst="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}/agents"
-      ;;
-    codex)
-      agents_dst="${CODEX_AGENTS_HOME}"
-      ;;
-    *)
-      return 0
-      ;;
-  esac
-
-  # The container-side python is the swarmforge package the Dockerfile copies
-  # to /usr/local/lib/swarmforge; -P keeps the working directory off sys.path,
-  # so a workspace that happens to contain a swarmforge/ directory cannot
-  # shadow it. These run as root, before the drop to the invoking user.
-  if ! PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.agents.translate \
-    "${AGENT_BIN}" "${agents_dst}" \
-    "${SWARMFORGE_ASSETS_USER_DIR:-}/agents" \
-    "${SWARMFORGE_ASSETS_ORG_DIR:-}/agents" \
-    "${SWARMFORGE_ASSETS_REPO_DIR:-}/agents" \
-    "${workspace_dir}/.swarmforge/agents"; then
-    printf '%s\n' "Warning: unified agent translation failed for ${AGENT_BIN}; continuing" >&2
-    return 0
-  fi
-}
-
-register_codex_agents() {
-  [ "${AGENT_BIN}" = "codex" ] || return 0
-  [ -f "${CODEX_AGENTS_HOME}/config.toml" ] || return 0
-
-  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_toml \
-    --build "${CODEX_CONFIG_FILE}" \
-    "${CODEX_AGENTS_HOME}/config.toml" "${CODEX_CONFIG_FILE}" \
-    || printf '%s\n' "Warning: Codex agent registration failed; continuing" >&2
-}
-
 if [ ! -x "${AGENT_BIN_PATH}" ]; then
   printf '%s\n' "Agent binary not found: ${AGENT_BIN_PATH}" >&2
   exit 127
@@ -272,14 +201,13 @@ if ! getent passwd "${ANVIL_UID}" >/dev/null 2>&1; then
     "${ANVIL_USER}" >/dev/null 2>&1 || true
 fi
 
-# The config phase: merge the layered config (repo, then user, then org)
-# into the harness's destination and run the harness's config hooks. The
-# SWARMFORGE_CONFIG_* layer variables and SWARMFORGE_TONG_MCP_FILE are read
-# from the environment. This runs as root, before the privilege drop, and a
-# failure here stops the container.
+# The root phases: merge the layered config (repo, then user, then org) into
+# the harness's destination and run the harness's config hooks, then translate
+# the unified agent definitions into the harness's native destination. The
+# SWARMFORGE_CONFIG_* and SWARMFORGE_ASSETS_* layer variables and
+# SWARMFORGE_TONG_MCP_FILE are read from the environment. This runs as root,
+# before the privilege drop, and a failure here stops the container.
 PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}"
-prepare_unified_agents
-register_codex_agents
 copy_shared_assets
 
 if [ "${AGENT_BIN}" = "claude" ]; then

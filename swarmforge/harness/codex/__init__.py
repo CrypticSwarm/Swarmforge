@@ -3,6 +3,7 @@
 import os
 import re
 import shutil
+import sys
 
 from swarmforge.agents.emit import (
     emit_toml_key,
@@ -94,8 +95,14 @@ def agent_emitter(name, meta, body):
     return "%s.toml" % normalize_codex_name(name), render_codex(out)
 
 
-def finalize_agents(dest_dir, emitted):
-    """Register every emitted agent in a config.toml beside the agent files."""
+def finalize_agents(dest_dir, emitted, home=""):
+    """Register every emitted agent so codex discovers it.
+
+    The registrations are written to a config.toml beside the agent files and
+    merged into the published `<home>/.codex/config.toml`, which is where
+    codex looks for them. A failed merge degrades to a warning: the session
+    still runs, only without subagents.
+    """
     registrations = {}
     for name, meta, path in emitted:
         registrations[registered_name(name, meta)] = {
@@ -106,6 +113,24 @@ def finalize_agents(dest_dir, emitted):
     config_path = os.path.join(dest_dir, "config.toml")
     with open(config_path, "w", encoding="utf-8") as handle:
         handle.write(render_codex({"agents": registrations}))
+
+    if not home:
+        return
+    config_file = home + "/.codex/config.toml"
+    # Imported at call time: the launcher imports this module on whatever
+    # python3 the host has, while merge_toml needs the container's tomllib
+    # (3.11+) and this merge only ever runs there.
+    from swarmforge.config import merge_toml
+
+    try:
+        # Sources lowest precedence first: the published config's own keys
+        # outrank the generated registrations.
+        merge_toml.build_file(config_file, [config_path, config_file])
+    except Exception:
+        print(
+            "Warning: Codex agent registration failed; continuing",
+            file=sys.stderr,
+        )
 
 
 def build_config(ctx):

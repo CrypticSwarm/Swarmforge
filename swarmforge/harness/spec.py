@@ -47,7 +47,7 @@ class Context:
     tong_mcp_file: str
 
 
-def finalize_agents(dest_dir, emitted):
+def finalize_agents(dest_dir, emitted, home=""):
     """Default finalize-agents hook: nothing follows the emitted files."""
 
 
@@ -147,8 +147,10 @@ class HarnessSpec:
     # privileges drop.
     extra_chown_paths: tuple
 
-    # Hook `(dest_dir, emitted)` run after every agent file is written, where
-    # `emitted` lists `(name, meta, path)` for the agents actually emitted.
+    # Hook `(dest_dir, emitted, home)` run after every agent file is written,
+    # where `emitted` lists `(name, meta, path)` for the agents actually
+    # emitted. `home` is the anvil user's home when the container driver runs
+    # the translation, and empty for a bare CLI run.
     finalize_agents: object = finalize_agents
 
     # Hook `(ctx)` run after the config layers merge, before the tong MCP
