@@ -10,6 +10,9 @@ SPEC = HarnessSpec(
         "variable skips the config phase"
     ),
     config_reset=False,
+    # bin/downloads/completions are the host installer's own artifacts and
+    # the dest is a persistent home: the container has its own
+    # /usr/local/bin/grok, so copying them in would only leave them there.
     layer_excludes=("./skills", "./commands", "./bin", "./downloads", "./completions"),
     keyed_files=("opencode.json",),
     skills_dest="{home}/.grok/skills",

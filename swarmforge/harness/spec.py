@@ -20,8 +20,47 @@ def provided(value):
     return value is not None and not isinstance(value, Waiver)
 
 
+@dataclasses.dataclass(frozen=True)
+class Context:
+    """What one config-phase run knows.
+
+    Every field is a string, empty when the run has nothing for it, so a
+    harness hook reads an absent layer the same way whichever way it went
+    missing.
+    """
+
+    # The name the harness is registered and selected by.
+    harness: str
+
+    # The anvil user's home inside the container, such as /home/anvil.
+    home: str
+
+    # Directory the layered config is merged into for this run.
+    config_dest: str
+
+    # The three config layer source dirs, lowest precedence first.
+    config_repo_src: str
+    config_user_src: str
+    config_org_src: str
+
+    # The generated tong MCP fragment, empty when the run has no tongs.
+    tong_mcp_file: str
+
+
 def finalize_agents(dest_dir, emitted):
     """Default finalize-agents hook: nothing follows the emitted files."""
+
+
+def build_config(ctx):
+    """Default build-config hook: the layer merge is the whole build."""
+
+
+def finalize_config(ctx):
+    """Default finalize-config hook: nothing follows the MCP merge."""
+
+
+def publish_config(ctx):
+    """Default publish-config hook: the merged destination is the delivery."""
 
 
 def toml_mcp_fragment(servers):
@@ -63,7 +102,13 @@ class HarnessSpec:
     config_reset: bool
 
     # Additions to the shared config-layer tar excludes ("./opencode.json",
-    # "./.swarmforge"), applied when a config layer is merged.
+    # "./.swarmforge"), applied when a config layer is merged. Entries are
+    # tar patterns and must carry the "./" prefix, or they would match at any
+    # depth. Every harness lists the native skills/commands dirs it has: the
+    # asset copy is their only transport, so all layers get the same
+    # per-entry replacement semantics (a higher layer's skill package
+    # replaces the whole package, never file-merges into it), where the tar
+    # merge would union layers file-by-file.
     layer_excludes: tuple
 
     # Files merged key-by-key per layer rather than overlaid whole.
@@ -84,7 +129,7 @@ class HarnessSpec:
 
     # How the anvil learns the generated MCP config path: ("flag", FLAG)
     # appends `FLAG <path>` to the harness argv, ("env", VAR) sets
-    # `VAR=<path>` for the entrypoint to merge.
+    # `VAR=<path>` for the config driver to merge.
     mcp_delivery: tuple
 
     # How the delivered fragment merges into the harness config:
@@ -105,3 +150,13 @@ class HarnessSpec:
     # Hook `(dest_dir, emitted)` run after every agent file is written, where
     # `emitted` lists `(name, meta, path)` for the agents actually emitted.
     finalize_agents: object = finalize_agents
+
+    # Hook `(ctx)` run after the config layers merge, before the tong MCP
+    # servers merge.
+    build_config: object = build_config
+
+    # Hook `(ctx)` run after the tong MCP servers merge.
+    finalize_config: object = finalize_config
+
+    # Hook `(ctx)` run last, after the whole config phase.
+    publish_config: object = publish_config
