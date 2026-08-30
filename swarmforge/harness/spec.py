@@ -48,6 +48,10 @@ class Context:
     # The generated tong MCP fragment, empty when the run has no tongs.
     tong_mcp_file: str
 
+    # The working directory the harness process will start in; empty for
+    # phases that do not act on it.
+    cwd: str = ""
+
 
 @dataclasses.dataclass(frozen=True)
 class AssetLayer:
@@ -127,6 +131,14 @@ def finalize_config(ctx):
 
 def publish_config(ctx):
     """Default publish-config hook: the merged destination is the delivery."""
+
+
+def link_state(ctx):
+    """Default link-state hook: no state is linked into the config destination."""
+
+
+def root_setup(ctx):
+    """Default root-setup hook: nothing needs root preparation before privileges drop."""
 
 
 def toml_mcp_fragment(servers):
@@ -210,7 +222,9 @@ class HarnessSpec:
     agent_emitter: object
 
     # Container paths outside the home handed to the anvil uid before
-    # privileges drop.
+    # privileges drop, after every root-phase write. They are changed without
+    # following symlinks, so a state link changes owner itself while what it
+    # points at is the home pass's business.
     extra_chown_paths: tuple
 
     # Hook `(dest_dir, emitted, home)` run after every agent file is written,
@@ -234,3 +248,11 @@ class HarnessSpec:
 
     # Hook `(ctx)` run last, after the whole config phase.
     publish_config: object = publish_config
+
+    # Hook `(ctx)` run after the asset phase, linking whatever state the
+    # harness keeps across runs into its config destination.
+    link_state: object = link_state
+
+    # Hook `(ctx)` run after state is linked, for container preparation only
+    # root can do.
+    root_setup: object = root_setup

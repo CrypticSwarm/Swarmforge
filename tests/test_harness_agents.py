@@ -12,7 +12,8 @@ whose subagents are quietly missing.
 
 Nothing here may write outside the temporary directory: the harnesses that pin
 a config or agents destination under /run/swarmforge have those destinations,
-and Claude's two settings paths, redirected for the duration of each run.
+Claude's two settings paths, and the directory its root phase writes a git
+wrapper to, redirected for the duration of each run.
 
 Run: python3 tests/test_harness_agents.py
 """
@@ -97,6 +98,7 @@ class TranslationCase(unittest.TestCase):
         self.agents_dest = os.path.join(self.tmp, "codex-agents")
         self.settings_file = os.path.join(self.tmp, "claude-settings.json")
         self.image_defaults = os.path.join(self.tmp, "image-defaults.json")
+        self.wrapper_dir = os.path.join(self.tmp, "wrapper")
 
     def source(self, layer):
         """The agents directory of one asset source, created on first use."""
@@ -133,18 +135,24 @@ class TranslationCase(unittest.TestCase):
             if name == "claude":
                 stack.enter_context(mock.patch.object(
                     module, "SPEC",
-                    dataclasses.replace(module.SPEC, config_dest=self.dest)))
+                    dataclasses.replace(
+                        module.SPEC,
+                        config_dest=self.dest,
+                        extra_chown_paths=(self.dest,))))
                 stack.enter_context(
                     mock.patch.object(claude, "SETTINGS_FILE", self.settings_file))
                 stack.enter_context(mock.patch.object(
                     claude, "IMAGE_DEFAULT_SETTINGS", self.image_defaults))
+                stack.enter_context(
+                    mock.patch.object(claude, "WRAPPER_DIR", self.wrapper_dir))
             if name == "codex":
                 stack.enter_context(mock.patch.object(
                     module, "SPEC",
                     dataclasses.replace(
                         module.SPEC,
                         config_dest=self.dest,
-                        agents_dest=self.agents_dest)))
+                        agents_dest=self.agents_dest,
+                        extra_chown_paths=(self.agents_dest,))))
             yield
 
     def translate_agents(self, name, environ=None):
@@ -340,7 +348,9 @@ class CodexRegistration(TranslationCase):
         )
 
         with self.redirected("codex"):
-            status = init.run("codex", self.home, environ, self.workspace)
+            status = init.run(
+                "codex", self.home, str(os.getuid()), str(os.getgid()),
+                environ, self.workspace, cwd=self.workspace)
         self.assertEqual(status, 0)
 
         published = self.read_published()
@@ -436,7 +446,9 @@ class PhaseOrder(TranslationCase):
                 with mock.patch.object(init, "install_assets", record("assets", 0)):
                     with self.redirected("claude"):
                         status = init.run(
-                            "claude", self.home, self.env(), self.workspace)
+                            "claude", self.home, str(os.getuid()),
+                            str(os.getgid()), self.env(), self.workspace,
+                            cwd=self.workspace)
 
         self.assertEqual(status, 0)
         self.assertEqual(calls, ["config", "agents", "assets"])
@@ -452,7 +464,9 @@ class PhaseOrder(TranslationCase):
                 with mock.patch.object(init, "install_assets", installed):
                     with self.redirected("claude"):
                         status = init.run(
-                            "claude", self.home, self.env(), self.workspace)
+                            "claude", self.home, str(os.getuid()),
+                            str(os.getgid()), self.env(), self.workspace,
+                            cwd=self.workspace)
 
         self.assertEqual(status, 2)
         translated.assert_not_called()
