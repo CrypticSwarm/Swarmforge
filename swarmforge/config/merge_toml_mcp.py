@@ -4,7 +4,7 @@
 Grok Build and Codex CLI both read MCP servers from TOML
 ``[mcp_servers.<name>]`` tables, where a ``url`` key is what selects the
 remote transport -- there is no type key. The launcher emits the discovered
-tongs as JSON; this module renders them into the file the entrypoint names.
+tongs as JSON; this module renders them into the file the config driver names.
 
 Both harnesses merge into a persistent home, so the servers cannot simply be
 appended: they go in a sentinel-delimited managed block, rewritten on every

@@ -635,19 +635,22 @@ class ContainerImportLayout(unittest.TestCase):
             ignore=shutil.ignore_patterns("__pycache__"),
         )
 
-    def run_module(self, module, *args):
+    def run_module(self, module, *args, env=None):
         # -P mirrors the entrypoint, which uses it to keep the workspace off
         # sys.path; here it also stops the staging dir from becoming a second
         # way for the import to resolve. The image's python always has it; the
         # host running these tests may predate it, and the staging dir holds
         # no swarmforge/ for the working directory to resolve through anyway.
         harden = ["-P"] if sys.version_info >= (3, 11) else []
+        # Only the staged import root, and a working directory outside the
+        # checkout: nothing here may reach the repo's own swarmforge/. A
+        # module the entrypoint hands more of the container's environment gets
+        # it on top of that.
+        environ = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": self.libdir}
+        environ.update(env or {})
         return subprocess.run(
             [sys.executable, *harden, "-m", module, *args],
-            # Only the staged import root, and a working directory outside the
-            # checkout: nothing here may reach the repo's own swarmforge/.
-            env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": self.libdir},
-            cwd=self.tmp, capture_output=True, text=True,
+            env=environ, cwd=self.tmp, capture_output=True, text=True,
         )
 
     def test_translator_runs_against_the_staged_package(self):
@@ -749,6 +752,52 @@ class ContainerImportLayout(unittest.TestCase):
                     "model": "sonnet",
                 },
             )
+
+    def test_root_phase_driver_runs_against_the_staged_package(self):
+        """The root-phase driver, run the way the entrypoint runs it.
+
+        It is the first python the container executes and it reaches across
+        the whole package -- the registry, the harness modules, the agent
+        translator, and the config merges -- so it is the invocation that
+        proves every import resolves from the staged import root rather than
+        from a checkout that happens to be the working directory.
+
+        The uid and gid it hands over to are this process's own, and the chown
+        it resolves from PATH is a stub that only records that it ran: the
+        workspace path is a fixed string, so the real binary would reach
+        whatever the machine running the tests has standing there.
+        """
+        home = os.path.join(self.tmp, "home")
+        os.makedirs(home)
+        dest = os.path.join(self.tmp, "dest")
+        org = os.path.join(self.tmp, "layer-org")
+        os.makedirs(org)
+        with open(os.path.join(org, "marker.txt"), "w") as handle:
+            handle.write("org")
+
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        stub = os.path.join(bindir, "chown")
+        with open(stub, "w") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(stub, 0o755)
+
+        completed = self.run_module(
+            "swarmforge.harness.init", "grok", home,
+            str(os.getuid()), str(os.getgid()),
+            env={
+                "PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+                "SWARMFORGE_CONFIG_ORG_DIR": org,
+                "SWARMFORGE_CONFIG_DEST": dest,
+                "SWARMFORGE_CONFIG_RESET": "0",
+            },
+        )
+        self.assertEqual(
+            completed.returncode, 0,
+            "root-phase driver failed:\n%s" % completed.stderr,
+        )
+        with open(os.path.join(dest, "marker.txt")) as handle:
+            self.assertEqual(handle.read(), "org")
 
 
 if __name__ == "__main__":

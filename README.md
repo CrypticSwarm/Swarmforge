@@ -113,7 +113,7 @@ The repo is mounted at a stable path derived from the git remote slug (with `/wo
 ### Shared assets (skills, commands, agents)
 
 Every harness mounts this repo's `skills/` and `commands/` into the container, exported as `SWARMFORGE_SKILLS_DIR` and `SWARMFORGE_COMMAND_DIR`.
-The entrypoint copies them into each harness's native location: the container-local config dir for Claude (see [The config directory](#the-config-directory)), the merged config dir for OpenCode (`~/.config/opencode/skills/`) and Grok (`~/.grok/skills/`), and `~/.agents/skills/` for Codex, whose native user location is the `.agents` convention itself.
+At container startup they are copied into each harness's native location: the container-local config dir for Claude (see [The config directory](#the-config-directory)), the merged config dir for OpenCode (`~/.config/opencode/skills/`) and Grok (`~/.grok/skills/`), and `~/.agents/skills/` for Codex, whose native user location is the `.agents` convention itself.
 For Claude, Grok, and Codex those dirs are container-private and rebuilt each run, so per-repo assets never accumulate in the persistent home or leak into other repos' sessions.
 Codex has no user-defined slash commands, so portable commands become
 same-named skills. Translation removes command-only metadata and adapts
@@ -140,7 +140,7 @@ Three sources merge into Claude's config dir at startup (lowest to highest prece
 
 Skills, commands, and `agents/` are excluded from this merge — they travel through the asset pipeline above.
 
-Note that config layers stack in the opposite order to the assets above: assets order by specificity, so a repo's own skill wins, while config orders by **trust**, because these files carry permissions, hooks, and env. A checkout is whatever repo you cloned and sits at the bottom; the org layer is installed deliberately and sits on top.
+Config layers stack in the opposite order to the assets above: assets order by specificity, so a repo's own skill wins, while config orders by **trust**, because these files carry permissions, hooks, and env. A checkout is whatever repo you cloned and sits at the bottom; the org layer is installed deliberately and sits on top.
 
 #### The config directory
 
@@ -156,7 +156,7 @@ Credentials are that second kind, so `CLAUDE_SECURESTORAGE_CONFIG_DIR` names the
 
 `settings.json` is the exception to the file-replacement rule above: like `opencode.json`, it is merged **by key**, and it is rebuilt from scratch on every run rather than merged into whatever the last run left behind. Below the three layers sits a fourth the image ships (`swarmforge/harness/claude/claude-settings.json`), which is where the status line default comes from.
 
-The result never touches the host or the shared home: the entrypoint writes it to a container-local path and starts claude with `--settings <path> --setting-sources user,project,local`. `user` stays in the sources because that scope carries skills, commands, and agents discovery. Three consequences worth knowing:
+The result never touches the host or the shared home: it is built at a container-local path during the config phase, and `--settings <path> --setting-sources user,project,local` is spliced onto claude's command line ahead of the session's own arguments. `user` stays in the sources because that scope carries skills, commands, and agents discovery. Three consequences:
 
 - The built file sits at command-line precedence, above the workspace's own `.claude/settings.json` and `settings.local.json` (both still load natively) — a key an org layer sets cannot be overridden from a checkout.
 - A key edited from inside a session (`/config`, the statusline-setup skill) lands in the container-local `settings.json` and dies with the container. Put it in a config layer instead.
@@ -217,8 +217,8 @@ Codex config layering uses the same three sources and order of trust as Claude (
 - `SWARMFORGE_USER_CONFIG_DIR` (default `~/.codex`)
 - `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.codex` when that root is set)
 
-The entrypoint builds `config.toml` from scratch in repo → user → org order,
-merging by key, then copies it to Codex's native path. The canonical output
+Each launch builds `config.toml` from scratch in repo → user → org order,
+merging by key, and copies it to Codex's native path. The canonical output
 preserves values and tables, but not comments or formatting. The native file
 remains writable for Codex's atomic settings updates, but the next launch
 rebuilds it; put durable settings in a source layer. Rebuild only the Codex
@@ -228,9 +228,29 @@ The merge skips `packages/` -- the host installer's release tree, which the cont
 Codex brings its own sandbox, which is redundant inside an anvil and may not initialize in one at all, since its Landlock and `bwrap` paths need kernel permissions a container is not guaranteed.
 Relax it per run with `CODEX_ARGS='--dangerously-bypass-approvals-and-sandbox'`, or per install by setting `sandbox_mode` in a config layer.
 
+## Harness lifecycle
+
+A harness is one directory, `swarmforge/harness/<name>/`, holding everything Swarmforge knows about it: the spec module (`__init__.py`, a `HarnessSpec` plus the hook functions it points at), the `harness.mk` fragment the Makefile includes to generate `build_<name>`, `update_<name>`, `run_<name>`, and `stop_<name>`, the `install.sh` the image build runs, and any build-time assets with the `image.sh` that installs them (Claude ships `statusline.sh` and `claude-settings.json` this way). `swarmforge/harness/__init__.py` maps each name to its module in a static dict, so the set of harnesses is greppable and closed at image build time.
+
+The image build runs the harness's `install.sh`, which leaves its binary under `/usr/local/bin/`, then its `image.sh` when it declares one.
+
+Every run walks the same phases against that spec:
+
+- **initialize** — merge the three config layers into the harness's config destination, build its config, merge the tong MCP servers the way its `mcp_merge` names, then finalize and publish.
+- **translate-agents** — write the unified agent definitions into the harness's native format and destination.
+- **install-assets** — install the portable skills and commands into its native asset locations, layer by layer.
+- **link-state** — link the state that has to outlive the container back into the config destination.
+- **root-setup** — whatever container preparation the harness needs root for (Claude's git worktree wrapper).
+- **handover** — chown the home, the paths the harness builds outside it, and the workspace to the anvil uid.
+- **pre-exec** — after privileges drop, the harness's `pre_exec` hook has the last word on the argv and the environment the binary is exec'd with.
+
+`anvil/entrypoint.sh` carries no harness-specific logic: it configures the timezone, creates the user, and invokes the two drivers — `swarmforge.harness.init` as root, then `swarmforge.harness.execute` as the anvil user.
+
+Adding a harness is one new directory and one line in the registry dict. `tests/test_harness_conformance.py` runs over the registry, so the new spec's completeness, its behavior in each phase, and its recorded run argv are checked with no test to write.
+
 ## Agents
 
-Subagent definitions live under `agents/` in a single unified format and are rewritten to each harness's native dialect by the container entrypoint (`swarmforge/agents/translate.py`).
+Subagent definitions live under `agents/` in a single unified format and are rewritten to each harness's native dialect at container startup, by `swarmforge/agents/translate.py` through the emitter the harness's spec declares.
 
 A unified agent is a markdown file whose body is the system prompt and whose YAML frontmatter is a superset of the OpenCode agent schema. The filename is the agent's identity (`reviewer.md` -> agent `reviewer`):
 
@@ -272,7 +292,7 @@ Unified agents live in harness-neutral `.swarmforge/agents/` directories across 
 - **repo** — `agents/` in the checkout (override with `SWARMFORGE_REPO_AGENTS_DIR`, which points directly at an agents dir so the rest of the checkout is never mounted)
 - **workspace** — `<workspace>/.swarmforge/agents/`
 
-Layers mount read-only under `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the in-container `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` env vars point at the layer roots). The entrypoint translates them into `~/.config/opencode/agents/` for OpenCode, the container-private `~/.claude/agents/` for Claude, and temporary registered role files for Codex. Later layers override earlier ones by filename.
+Layers mount read-only under `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the in-container `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` env vars point at the layer roots). Startup translates them into `~/.config/opencode/agents/` for OpenCode, `agents/` inside Claude's container-local config dir (the one `CLAUDE_CONFIG_DIR` names), and temporary registered role files for Codex. Later layers override earlier ones by filename.
 Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude directly, outside this pipeline.
 
 The translator is covered by the unit suite; run it with `make test`.
@@ -511,7 +531,7 @@ The example definition is **not** auto-discovered from the checkout (it lives a 
 
 The launcher, the tongs layer, and the container-side translators are covered by stdlib `unittest` tests in `tests/test_*.py`. A test module is named for the source module it covers — `tests/test_tongs_<module>.py` for `swarmforge/tongs/<module>.py`, `tests/test_anvil_<module>.py` for `swarmforge/anvil/<module>.py` — so the file that covers a change is the one named after it. Two modules have no namesake file because they have nothing to assert on their own: `swarmforge/anvil/readiness.py` is exercised through `run_with_tongs`, and `swarmforge/anvil/errors.py` holds one exception class. Fixtures that more than one test module needs live in `tests/tongs_fixtures.py` and `tests/anvil_fixtures.py`, which the discovery glob skips.
 
-Two files assert on the shape of the repo rather than on any one module. `tests/test_image_layout.py` holds the Dockerfile and the entrypoint to the same import root, and `tests/test_package_layering.py` keeps the package's imports acyclic and keeps loading a module from a file path out of everything but the `bin/` shims. Both fail the way a build should — before anything reaches a container.
+Three files assert on the shape of the repo rather than on any one module. `tests/test_image_layout.py` holds the Dockerfile and the entrypoint to the same import root, `tests/test_package_layering.py` keeps the package's imports acyclic and keeps loading a module from a file path out of everything but the `bin/` shims, and `tests/test_harness_conformance.py` holds every registered harness to the contract described under [Harness lifecycle](#harness-lifecycle). All three fail the way a build should — before anything reaches a container.
 
 - Run them: `make test`
 

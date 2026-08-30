@@ -172,7 +172,7 @@ class HarnessSpec:
     # The name the harness is registered and selected by.
     name: str
 
-    # The executable under /usr/local/bin the entrypoint execs.
+    # The executable under /usr/local/bin the pre-exec driver execs.
     binary: str
 
     # Container path the layered config is merged into when the harness forces
