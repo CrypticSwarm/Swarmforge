@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""The container's root-phase config driver.
+"""The container's root-phase driver.
 
 Merges the layered config into the harness's destination and runs that
-harness's config hooks. Invoked as `HARNESS HOME`, with the layer locations
-arriving in the environment: `SWARMFORGE_CONFIG_{USER,ORG,REPO}_DIR` name the
-three layers, `SWARMFORGE_CONFIG_DEST` and `SWARMFORGE_CONFIG_RESET` decide
-the destination and whether it is rebuilt from scratch for a harness that
-leaves those to the run, and `SWARMFORGE_TONG_MCP_FILE` names the generated
-tong MCP fragment.
+harness's config hooks, translates the unified agent definitions into the
+harness's native format, then installs the portable skills and commands into
+its native asset locations. Invoked as `HARNESS HOME`, with the source
+locations arriving in the environment: `SWARMFORGE_CONFIG_{USER,ORG,REPO}_DIR`
+name the three config layers, `SWARMFORGE_CONFIG_DEST` and
+`SWARMFORGE_CONFIG_RESET` decide the destination and whether it is rebuilt from
+scratch for a harness that leaves those to the run, `SWARMFORGE_TONG_MCP_FILE`
+names the generated tong MCP fragment, `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR`
+name the harness-neutral asset layers the agent definitions come from, and
+`SWARMFORGE_DOTAGENTS_{USER,ORG}_DIR` plus `SWARMFORGE_SKILLS_DIR` and
+`SWARMFORGE_COMMAND_DIR` name the portable skill and command layers.
 """
 
 import os
@@ -16,10 +21,15 @@ import subprocess
 import sys
 
 from swarmforge import harness
+from swarmforge.agents import translate
 from swarmforge.config import merge_json, merge_toml_mcp
-from swarmforge.harness.spec import Context, provided
+from swarmforge.harness.spec import AssetLayer, Context, provided
 
 USAGE = "usage: python3 -m swarmforge.harness.init HARNESS HOME"
+
+# The container mounts the checkout here; a parameter below so a test can
+# stage one of its own.
+WORKSPACE = "/workspace"
 
 
 def layer_exclude_args(spec):
@@ -170,11 +180,183 @@ def initialize(name, home, environ):
     return 0
 
 
+def config_root(spec, home, environ):
+    """The directory "{config}" stands for in a harness's asset destinations.
+
+    The pinned destination when the harness forces one, otherwise the one the
+    run named, falling back to the harness's own default config location under
+    the home when the run names none.
+    """
+    if provided(spec.config_dest):
+        return spec.config_dest
+    return (environ.get("SWARMFORGE_CONFIG_DEST")
+            or home + "/.config/" + spec.name)
+
+
+def resolve_dest(template, home, config):
+    """A destination template with its placeholders filled in."""
+    return template.replace("{home}", home).replace("{config}", config)
+
+
+def translate_agents(name, home, environ, workspace=WORKSPACE):
+    """Translate the unified agent definitions for the harness named `name`.
+
+    Unified definitions are markdown files whose YAML frontmatter is a superset
+    of the OpenCode agent schema (description, mode, model, temperature, tools)
+    plus optional per-harness override blocks (claude:, codex:, opencode:).
+    They live under <dir>/agents in the harness-neutral .swarmforge asset
+    layers, mounted read-only via SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR, plus
+    <workspace>/.swarmforge/agents. One definition serves every harness; native
+    agents/ directories inside harness config dirs are never transported by
+    this asset pipeline. For OpenCode they still reach the harness through the
+    layered config merge (the merged config dir is OpenCode's own discovery),
+    while for Claude they are excluded from the merge as well -- Claude-native
+    definitions belong to Claude's own discovery (for example
+    <workspace>/.claude/agents).
+
+    Sources are identical for every harness and applied lowest- to
+    highest-precedence (later files win by name): user, org, repo asset layers,
+    then the workspace overlay. Only the destination differs, and dispatch to
+    the emitter that writes it is through the registered spec. A failure
+    degrades to a warning: the session can run without subagents, while a
+    stopped container serves nobody.
+    """
+    spec = harness.get(name).SPEC
+    # The Waiver is the opt-out on record: unified agent definitions are not
+    # delivered to this harness, so nothing is written and nothing is warned.
+    if not provided(spec.agents_dest):
+        return 0
+
+    dest = resolve_dest(
+        spec.agents_dest, home, config_root(spec, home, environ))
+    sources = [
+        # Concatenated rather than joined: an empty layer variable yields an
+        # absolute "/agents" that no directory check passes, where a join
+        # would name a path relative to the workspace this runs in.
+        (environ.get("SWARMFORGE_ASSETS_USER_DIR") or "") + "/agents",
+        (environ.get("SWARMFORGE_ASSETS_ORG_DIR") or "") + "/agents",
+        (environ.get("SWARMFORGE_ASSETS_REPO_DIR") or "") + "/agents",
+        workspace + "/.swarmforge/agents",
+    ]
+
+    try:
+        status = translate.run(name, dest, sources, home=home)
+    except Exception:
+        status = 1
+    if status != 0:
+        print(
+            "Warning: unified agent translation failed for %s; continuing"
+            % name,
+            file=sys.stderr,
+        )
+    return 0
+
+
+def asset_context(spec, home, environ):
+    """What one asset-phase run knows, for the harness's install hooks.
+
+    The config layer sources and the tong fragment are the same strings the
+    config phase read. `config_dest` differs: the config phase leaves it empty
+    when the run names no destination and skips itself, while for the asset
+    phase "{config}" always stands for a concrete directory -- the pinned one,
+    the one the run named, or the harness's default under the home -- because
+    that is where the harness reads its assets from either way.
+    """
+    return Context(
+        harness=spec.name,
+        home=home,
+        config_dest=config_root(spec, home, environ),
+        config_repo_src=environ.get("SWARMFORGE_CONFIG_REPO_DIR") or "",
+        config_user_src=environ.get("SWARMFORGE_CONFIG_USER_DIR") or "",
+        config_org_src=environ.get("SWARMFORGE_CONFIG_ORG_DIR") or "",
+        tong_mcp_file=environ.get("SWARMFORGE_TONG_MCP_FILE") or "",
+    )
+
+
+def install_assets(name, home, environ, workspace=WORKSPACE):
+    """Install the portable skills and commands for the harness named `name`.
+
+    Skills and commands are portable across harnesses, so copying them into
+    the harness's native locations is the whole translation. The config merge
+    excludes both from every layer, which makes this their only transport.
+
+    Sources are identical for every harness and applied lowest- to
+    highest-precedence:
+
+      1. The portable .agents layers, user then org, mounted via
+         SWARMFORGE_DOTAGENTS_USER_DIR and SWARMFORGE_DOTAGENTS_ORG_DIR. They
+         follow the harness-neutral .agents/{skills,commands} convention, so
+         the source directory names are the same for every harness.
+      2. The shared Swarmforge assets, the repo's own skills/ and commands/,
+         mounted via SWARMFORGE_SKILLS_DIR and SWARMFORGE_COMMAND_DIR.
+      3. The workspace overlay, <workspace>/.agents/{skills,commands}.
+
+    Harness-native config dirs inside a layer (such as <layer>/.claude) are
+    never consumed for skills or commands; those formats are portable and live
+    under the .agents convention instead. Claude's destinations resolve into
+    the container-local config dir, so each run starts empty and a repo's
+    assets never leak into the next repo's session.
+
+    A failed install is not caught: the container stops rather than starting a
+    session whose assets are half-written.
+    """
+    spec = harness.get(name).SPEC
+    config = config_root(spec, home, environ)
+    skills_dest = (resolve_dest(spec.skills_dest, home, config)
+                   if provided(spec.skills_dest) else "")
+    commands_dest = (resolve_dest(spec.commands_dest, home, config)
+                     if provided(spec.commands_dest) else "")
+
+    def dotagents(variable):
+        # Concatenated rather than joined: an empty layer variable yields an
+        # absolute "/skills" that no directory check passes, where a join
+        # would name a path relative to the workspace this runs in.
+        root = environ.get(variable) or ""
+        return AssetLayer(
+            skills_src=root + "/skills",
+            commands_src=root + "/commands",
+            skills_dest=skills_dest,
+            commands_dest=commands_dest,
+        )
+
+    layers = [
+        dotagents("SWARMFORGE_DOTAGENTS_USER_DIR"),
+        dotagents("SWARMFORGE_DOTAGENTS_ORG_DIR"),
+        AssetLayer(
+            skills_src=environ.get("SWARMFORGE_SKILLS_DIR") or "",
+            commands_src=environ.get("SWARMFORGE_COMMAND_DIR") or "",
+            skills_dest=skills_dest,
+            commands_dest=commands_dest,
+        ),
+        AssetLayer(
+            skills_src=workspace + "/.agents/skills",
+            commands_src=workspace + "/.agents/commands",
+            skills_dest=skills_dest,
+            commands_dest=commands_dest,
+        ),
+    ]
+
+    ctx = asset_context(spec, home, environ)
+    for layer in layers:
+        spec.install_assets(ctx, layer)
+    return 0
+
+
+def run(name, home, environ, workspace=WORKSPACE):
+    """Run the container root phases for the harness registered as `name`."""
+    status = initialize(name, home, environ)
+    if status != 0:
+        return status
+    translate_agents(name, home, environ, workspace)
+    install_assets(name, home, environ, workspace)
+    return 0
+
+
 def main(argv):
     if len(argv) != 2:
         print(USAGE, file=sys.stderr)
         return 2
-    return initialize(argv[0], argv[1], os.environ)
+    return run(argv[0], argv[1], os.environ)
 
 
 if __name__ == "__main__":

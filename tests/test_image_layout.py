@@ -30,6 +30,7 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from swarmforge import harness
 from swarmforge.harness import claude
 
 import make_argv_fixtures
@@ -94,18 +95,7 @@ class ImportRootAgreement(unittest.TestCase):
     def package_dest(self):
         return self.copy_dest("swarmforge/").rstrip("/")
 
-    def shell_function_around(self, needle):
-        """The body of the entrypoint function containing `needle`.
-
-        Entrypoint functions are `name() {` with the closing brace at column
-        zero, which is what delimits the slice.
-        """
-        at = self.entrypoint.index(needle)
-        return self.entrypoint[
-            self.entrypoint.rindex("() {", 0, at):self.entrypoint.index("\n}\n", at)
-        ]
-
-    def module_runs(self, shell=None):
+    def module_runs(self):
         """Every `python3 ... -m <module>` in the entrypoint, with its context.
 
         Yields (import root, flags, module). An absent PYTHONPATH gives a root
@@ -115,7 +105,7 @@ class ImportRootAgreement(unittest.TestCase):
         """
         code = "\n".join(
             re.sub(r"(?:^|\s)#.*", "", line)
-            for line in (self.entrypoint if shell is None else shell).splitlines()
+            for line in self.entrypoint.splitlines()
         )
         return [
             (match.group("root"), (match.group("flags") or "").split(),
@@ -171,35 +161,6 @@ class ImportRootAgreement(unittest.TestCase):
                 root, import_root,
                 "%s runs without the import root on PYTHONPATH" % module,
             )
-
-    def test_the_translator_guard_covers_the_module_it_guards(self):
-        """The entrypoint skips translation when the translator is missing.
-
-        The guard is a literal path while the run beside it names a module, so
-        the two can drift apart with nothing to catch it -- and a guard that
-        never fires reads exactly like an image with no agents to translate.
-        """
-        match = re.search(r'translator="([^"]+)"', self.entrypoint)
-        self.assertIsNotNone(match, "entrypoint has no translator guard")
-        guard = match.group(1)
-        import_root = posixpath.dirname(self.package_dest()) + "/"
-        self.assertTrue(
-            guard.startswith(import_root),
-            "translator guard %s is not under %s" % (guard, import_root),
-        )
-        guarded = guard[len(import_root):].removesuffix(".py").replace("/", ".")
-        # Only the runs the guard actually stands in front of: naming some
-        # other module the entrypoint happens to run elsewhere would leave
-        # the translator itself unguarded.
-        guarded_runs = [
-            module for _, _, module
-            in self.module_runs(self.shell_function_around(match.group(0)))
-        ]
-        self.assertEqual(
-            guarded_runs, [guarded],
-            "translator guard covers %s, but its function runs %s"
-            % (guarded, guarded_runs),
-        )
 
 
 class ClaudeSettingsDelivery(unittest.TestCase):
@@ -298,15 +259,20 @@ class ClaudeConfigHome(unittest.TestCase):
         for name in self.LOADED:
             self.assertNotIn(name, listed)
 
-    def test_the_asset_pipeline_installs_into_the_config_home(self):
+    def test_every_asset_destination_resolves_to_the_config_home(self):
         """The destinations and the config dir are one guarantee: assets in
-        the shared home would be read from nowhere and kept forever."""
-        dests = re.findall(
-            r'_dst="\$\{(\w+)\}/(skills|commands|agents)"', self.entrypoint)
+        the shared home would be read from nowhere and kept forever.
+
+        Skills, commands, and translated agents all resolve "{config}" to
+        claude's pinned destination, which is the config dir this class
+        covers.
+        """
+        spec = harness.get("claude").SPEC
+        self.assertEqual(spec.skills_dest, "{config}/skills")
+        self.assertEqual(spec.commands_dest, "{config}/commands")
+        self.assertEqual(spec.agents_dest, "{config}/agents")
         self.assertEqual(
-            sorted(name for home, name in dests
-                   if home == "CLAUDE_CONFIG_HOME"),
-            ["agents", "commands", "skills"])
+            spec.config_dest, self.literal("CLAUDE_CONFIG_HOME"))
 
     def test_claude_is_told_where_its_config_lives(self):
         self.assertIn(
@@ -326,30 +292,25 @@ class ClaudeConfigHome(unittest.TestCase):
             "the credential store is not in the shared persistent home")
 
     def test_state_is_linked_after_the_config_home_is_built(self):
-        """The merge wipes its destination under SWARMFORGE_CONFIG_RESET; a
-        link removed there costs the run its history and credentials."""
+        """The driver invocation is the whole build -- the config merge, the
+        agent translation, and the asset install -- and the merge wipes its
+        destination under SWARMFORGE_CONFIG_RESET; a link removed there costs
+        the run its history and credentials."""
         call = self.entrypoint.rindex("link_claude_state")
         self.assertLess(self.entrypoint.rindex("-m swarmforge.harness.init"), call)
-        for earlier in ("prepare_unified_agents", "copy_shared_assets"):
-            self.assertLess(
-                self.entrypoint.rindex("\n%s\n" % earlier), call)
 
 
 class CodexConfigDelivery(unittest.TestCase):
-    """Codex's translated agents are generated, registered, and handed over.
+    """Codex's generated agents live outside the home and change hands.
 
-    They are written outside the persistent home, registered into the
-    config.toml codex reads, and chowned to the anvil uid before privileges
-    drop -- three steps in three places, in that order or not at all.
+    They are written outside the persistent home, so they die with the
+    container, and handed to the anvil uid before privileges drop, so the
+    session can read what root generated.
     """
 
     def setUp(self):
         with open(ENTRYPOINT) as handle:
             self.entrypoint = handle.read()
-
-    def function_body(self, name):
-        body = self.entrypoint[self.entrypoint.index("%s() {" % name):]
-        return body[:body.index("\n}\n")]
 
     def test_generated_codex_agents_stay_outside_host_mounts(self):
         agents_home = re.search(
@@ -358,20 +319,6 @@ class CodexConfigDelivery(unittest.TestCase):
         self.assertIsNotNone(agents_home)
         for mounted in ("/home/", "/workspace"):
             self.assertFalse(agents_home.group(1).startswith(mounted))
-
-    def test_generated_codex_agents_register_in_published_config(self):
-        translate = self.function_body("prepare_unified_agents")
-        register = self.function_body("register_codex_agents")
-        self.assertIn('agents_dst="${CODEX_AGENTS_HOME}"', translate)
-        self.assertIn('"${CODEX_AGENTS_HOME}/config.toml"', register)
-        self.assertIn('"${CODEX_CONFIG_FILE}"', register)
-
-    def test_registration_runs_after_translation_and_before_assets(self):
-        register = self.entrypoint.rindex("\nregister_codex_agents\n")
-        self.assertLess(
-            self.entrypoint.rindex("\nprepare_unified_agents\n"), register
-        )
-        self.assertLess(register, self.entrypoint.rindex("\ncopy_shared_assets\n"))
 
     def test_generated_roles_are_chowned_before_the_uid_drop(self):
         chown = (

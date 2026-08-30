@@ -948,9 +948,14 @@ class SpecEntrypointAgreement(unittest.TestCase):
                         dest.startswith(mounted),
                         "%s merges into a host mount: %s" % (name, dest))
 
-    def test_codex_publishes_where_the_entrypoint_names_its_config(self):
-        self.assertIn(
-            'CODEX_CONFIG_FILE="${ANVIL_HOME}/.codex/config.toml"', self.entrypoint)
+    def test_codex_agents_land_where_the_entrypoint_chowns(self):
+        """The spec names where the translated agents are generated and the
+        entrypoint hands that directory to the anvil uid by its own literal.
+        Drift between the two leaves the generated agents owned by root."""
+        self.assertEqual(
+            harness.get("codex").SPEC.agents_dest,
+            self.literal("CODEX_AGENTS_HOME"),
+        )
 
 
 if __name__ == "__main__":

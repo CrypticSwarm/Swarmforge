@@ -3,6 +3,7 @@
 import os
 import re
 import shutil
+import sys
 
 from swarmforge.agents.emit import (
     emit_toml_key,
@@ -10,7 +11,13 @@ from swarmforge.agents.emit import (
     emit_toml_value,
     warn,
 )
-from swarmforge.harness.spec import HarnessSpec, Waiver, toml_mcp_fragment
+from swarmforge.harness.codex import commands
+from swarmforge.harness.spec import (
+    HarnessSpec,
+    Waiver,
+    copy_dir_entries,
+    toml_mcp_fragment,
+)
 
 CODEX_AGENT_TABLE_FIELDS = {
     "default_subagent_model",
@@ -94,8 +101,14 @@ def agent_emitter(name, meta, body):
     return "%s.toml" % normalize_codex_name(name), render_codex(out)
 
 
-def finalize_agents(dest_dir, emitted):
-    """Register every emitted agent in a config.toml beside the agent files."""
+def finalize_agents(dest_dir, emitted, home=""):
+    """Register every emitted agent so codex discovers it.
+
+    The registrations are written to a config.toml beside the agent files and
+    merged into the published `<home>/.codex/config.toml`, which is where
+    codex looks for them. A failed merge degrades to a warning: the session
+    still runs, only without subagents.
+    """
     registrations = {}
     for name, meta, path in emitted:
         registrations[registered_name(name, meta)] = {
@@ -106,6 +119,48 @@ def finalize_agents(dest_dir, emitted):
     config_path = os.path.join(dest_dir, "config.toml")
     with open(config_path, "w", encoding="utf-8") as handle:
         handle.write(render_codex({"agents": registrations}))
+
+    if not home:
+        return
+    config_file = home + "/.codex/config.toml"
+    try:
+        # Imported at call time: the launcher imports this module on whatever
+        # python3 the host has, while merge_toml needs the container's tomllib
+        # (3.11+) and this merge only ever runs there. Inside the try so a
+        # python without it fails the registration, not the translation.
+        from swarmforge.config import merge_toml
+
+        # Sources lowest precedence first: the published config's own keys
+        # outrank the generated registrations.
+        merge_toml.build_file(config_file, [config_path, config_file])
+    except Exception:
+        print(
+            "Warning: Codex agent registration failed; continuing",
+            file=sys.stderr,
+        )
+
+
+def install_assets(ctx, layer):
+    """Translate the layer's portable commands, then copy its skills.
+
+    Codex uses skills as its sole extension point, so portable commands
+    become skill packages under the skills destination. Translation runs
+    first within each layer: a skill package the same layer ships under a
+    command's name replaces the translated command, while a later layer's
+    translated command still replaces an earlier layer's package. A failed
+    translation degrades to a warning -- the session runs without those
+    commands -- where a failed copy stops the container.
+    """
+    try:
+        status = commands.main([layer.skills_dest, layer.commands_src])
+    except Exception:
+        status = 1
+    if status != 0:
+        print(
+            "Warning: command translation failed for Codex; continuing",
+            file=sys.stderr,
+        )
+    copy_dir_entries(layer.skills_src, layer.skills_dest)
 
 
 def build_config(ctx):
@@ -173,6 +228,7 @@ SPEC = HarnessSpec(
     mcp_merge="toml-managed-block",
     agent_emitter=agent_emitter,
     finalize_agents=finalize_agents,
+    install_assets=install_assets,
     extra_chown_paths=("/run/swarmforge/codex-agents",),
     build_config=build_config,
     publish_config=publish_config,
