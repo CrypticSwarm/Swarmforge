@@ -1,8 +1,7 @@
 # OpenCode's make interface: the user knobs, run env/mounts, and layer
 # defaults for the targets harness_rules generates (build_opencode,
-# update_opencode, run_opencode, stop_opencode). OpenCode predates the
-# per-harness knob naming: its data dir and profile knobs are the bare
-# DATA_DIR and PROFILE.
+# update_opencode, run_opencode, stop_opencode). Its data dir and profile
+# knobs are the user-facing names DATA_DIR and PROFILE, unprefixed.
 OPENCODE_IMG ?= opencode:local
 OPENCODE_CTR ?= opencode-$(PROJECT_NAME)
 PROFILE      ?=
@@ -24,7 +23,7 @@ OPENCODE_RUN_MOUNTS = \
 OPENCODE_RUN_ENV = \
 	$(SWARMFORGE_LAYER_ENV)
 
-OPENCODE_EXTRA_BUILD_ARGS = --build-arg OPENCODE_VERSION=$$(OPENCODE_VERSION)
+OPENCODE_EXTRA_BUILD_ARGS = --build-arg OPENCODE_VERSION=$(OPENCODE_VERSION)
 OPENCODE_RUN_ARGS = $(PROFILE_FLAG) $(OPENCODE_ARGS)
 OPENCODE_WORKDIR_MODE =
 OPENCODE_USER_CONFIG_DIR = $(HOME)/.config/opencode
