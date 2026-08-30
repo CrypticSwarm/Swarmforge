@@ -236,7 +236,7 @@ The image build runs the harness's `install.sh`, which leaves its binary under `
 
 Every run walks the same phases against that spec:
 
-- **initialize** — merge the three config layers into the harness's config destination, run its config hooks, and merge the tong MCP servers the way its `mcp_merge` names.
+- **initialize** — merge the three config layers into the harness's config destination, build its config, merge the tong MCP servers the way its `mcp_merge` names, then finalize and publish.
 - **translate-agents** — write the unified agent definitions into the harness's native format and destination.
 - **install-assets** — install the portable skills and commands into its native asset locations, layer by layer.
 - **link-state** — link the state that has to outlive the container back into the config destination.
@@ -531,7 +531,7 @@ The example definition is **not** auto-discovered from the checkout (it lives a 
 
 The launcher, the tongs layer, and the container-side translators are covered by stdlib `unittest` tests in `tests/test_*.py`. A test module is named for the source module it covers — `tests/test_tongs_<module>.py` for `swarmforge/tongs/<module>.py`, `tests/test_anvil_<module>.py` for `swarmforge/anvil/<module>.py` — so the file that covers a change is the one named after it. Two modules have no namesake file because they have nothing to assert on their own: `swarmforge/anvil/readiness.py` is exercised through `run_with_tongs`, and `swarmforge/anvil/errors.py` holds one exception class. Fixtures that more than one test module needs live in `tests/tongs_fixtures.py` and `tests/anvil_fixtures.py`, which the discovery glob skips.
 
-Two files assert on the shape of the repo rather than on any one module. `tests/test_image_layout.py` holds the Dockerfile and the entrypoint to the same import root, and `tests/test_package_layering.py` keeps the package's imports acyclic and keeps loading a module from a file path out of everything but the `bin/` shims. Both fail the way a build should — before anything reaches a container.
+Three files assert on the shape of the repo rather than on any one module. `tests/test_image_layout.py` holds the Dockerfile and the entrypoint to the same import root, `tests/test_package_layering.py` keeps the package's imports acyclic and keeps loading a module from a file path out of everything but the `bin/` shims, and `tests/test_harness_conformance.py` holds every registered harness to the contract described under [Harness lifecycle](#harness-lifecycle). All three fail the way a build should — before anything reaches a container.
 
 - Run them: `make test`
 
