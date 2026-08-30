@@ -13,7 +13,6 @@ AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
 CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
 CLAUDE_SHARED_HOME="${ANVIL_HOME}/.claude"
-CODEX_CONFIG_HOME="/run/swarmforge/codex-config"
 CODEX_CONFIG_FILE="${ANVIL_HOME}/.codex/config.toml"
 CODEX_AGENTS_HOME="/run/swarmforge/codex-agents"
 
@@ -194,7 +193,7 @@ copy_shared_assets() {
 # harness config dirs are never transported by this asset pipeline. For
 # OpenCode they still reach the harness through the layered config merge
 # (the merged config dir is OpenCode's own discovery; see
-# merge_config_layer), while for Claude they are excluded from the merge
+# swarmforge.harness.init), while for Claude they are excluded from the merge
 # as well -- Claude-native definitions belong to Claude's own discovery
 # (for example <workspace>/.claude/agents).
 #
@@ -247,232 +246,6 @@ register_codex_agents() {
     || printf '%s\n' "Warning: Codex agent registration failed; continuing" >&2
 }
 
-merge_config_layer() {
-  src_dir="${1}"
-  dst_dir="${2}"
-
-  [ -n "${src_dir}" ] || return 0
-  [ -d "${src_dir}" ] || return 0
-
-  # Skip when src and dst resolve to the same underlying directory (for
-  # example when CLAUDE_HOME_DIR=$HOME makes both layer paths bind-mounts of
-  # the host's ~/.claude). Otherwise tar would try to extract entries on top
-  # of themselves and abort.
-  src_id="$(stat -c '%d:%i' "${src_dir}" 2>/dev/null || true)"
-  dst_id="$(stat -c '%d:%i' "${dst_dir}" 2>/dev/null || true)"
-  if [ -n "${src_id}" ] && [ "${src_id}" = "${dst_id}" ]; then
-    return 0
-  fi
-
-  # .swarmforge/ asset dirs are read via their own mounts, never through the
-  # config merge, so transporting them here would only litter the dest (or,
-  # for Claude, accumulate junk in the persistent home).
-  #
-  # Skills and commands are excluded for every harness: they are populated
-  # exclusively by copy_shared_assets so all layers get the same per-entry
-  # replacement semantics (a higher layer's skill package replaces the whole
-  # package, never file-merges into it). The tar merge would instead union
-  # layers file-by-file.
-  #
-  # agents/ is excluded for Claude only -- prepare_unified_agents is its
-  # sole source. OpenCode's merged config dir is native discovery, so layer
-  # agents/ still merge through.
-  #
-  # settings.json is excluded for Claude for the same reason opencode.json
-  # is excluded everywhere: it merges by key, through build_claude_settings.
-  #
-  # .credentials.json: the default user layer is the host's own ~/.claude, and
-  # the store is named elsewhere, so a merged copy is a secret nothing reads.
-  exclude_args="--exclude=./opencode.json --exclude=./.swarmforge"
-  case "${AGENT_BIN:-}" in
-    claude)
-      exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./agents"
-      exclude_args="${exclude_args} --exclude=./settings.json --exclude=./.credentials.json"
-      ;;
-    grok)
-      # bin/downloads/completions are the host installer's own artifacts and
-      # this dest is a persistent home: the container has its own
-      # /usr/local/bin/grok, so copying them in would only leave them there.
-      exclude_args="${exclude_args} --exclude=./skills --exclude=./commands --exclude=./bin --exclude=./downloads --exclude=./completions"
-      ;;
-    codex)
-      exclude_args="${exclude_args} --exclude=./skills --exclude=./packages"
-      exclude_args="${exclude_args} --exclude=./sessions --exclude=./history.jsonl --exclude=./log"
-      exclude_args="${exclude_args} --exclude=./config.toml"
-      ;;
-    opencode)
-      exclude_args="${exclude_args} --exclude=./skills --exclude=./command"
-      ;;
-  esac
-
-  # Use a tar stream to avoid bind-mount same-file copy errors.
-  # shellcheck disable=SC2086 # exclude_args intentionally word-split
-  (
-    cd "${src_dir}" && tar ${exclude_args} -cf - .
-  ) | (
-    cd "${dst_dir}" && tar -xf -
-  )
-}
-
-merge_config_file() {
-  src_file="${1}"
-  dst_file="${2}"
-  replace_mcp_entries="${3:-0}"
-
-  [ -n "${src_file}" ] || return 0
-  [ -f "${src_file}" ] || return 0
-
-  if [ ! -f "${dst_file}" ]; then
-    cp -f "${src_file}" "${dst_file}"
-    return 0
-  fi
-
-  if [ "${replace_mcp_entries}" = "1" ]; then
-    PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_json \
-      "${dst_file}" "${src_file}" --replace-mcp-entries
-  else
-    PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_json \
-      "${dst_file}" "${src_file}"
-  fi
-}
-
-# Derived from the layers on every run; the destination is never read. The
-# result stays off the persistent home -- one directory shared by every
-# container for this user, where it would carry an org layer's permissions,
-# hooks, and env into later runs that do not mount that layer -- and rides
-# claude's command line instead (see the exec at the bottom).
-build_claude_settings() {
-  settings_dst="${1}"
-  settings_repo_src="${2:-}"
-  settings_user_src="${3:-}"
-  settings_org_src="${4:-}"
-
-  [ "${AGENT_BIN}" = "claude" ] || return 0
-
-  image_defaults="/usr/local/share/swarmforge/claude-settings.json"
-
-  mkdir -p "$(dirname "${settings_dst}")"
-
-  # A failed build must still leave valid JSON at the path the exec hands
-  # claude. An empty object is the safe reading of "no layer could be
-  # applied".
-  if ! PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_json \
-    --build "${settings_dst}" \
-    "${image_defaults}" \
-    "${settings_repo_src}/settings.json" \
-    "${settings_user_src}/settings.json" \
-    "${settings_org_src}/settings.json"
-  then
-    printf '%s\n' "Warning: could not build Claude settings.json; continuing" >&2
-    printf '%s\n' '{}' > "${settings_dst}" || true
-  fi
-}
-
-build_codex_config() {
-  config_dst="${1}"
-  config_repo_src="${2:-}"
-  config_user_src="${3:-}"
-  config_org_src="${4:-}"
-
-  [ "${AGENT_BIN}" = "codex" ] || return 0
-
-  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_toml \
-    --build "${config_dst}/config.toml" \
-    "${config_repo_src:+${config_repo_src}/config.toml}" \
-    "${config_user_src:+${config_user_src}/config.toml}" \
-    "${config_org_src:+${config_org_src}/config.toml}"
-}
-
-prepare_layered_config() {
-  config_dst="${1}"
-  user_config_src="${2:-}"
-  org_config_src="${3:-}"
-  repo_config_src="${4:-}"
-  reset_config="${5:-0}"
-
-  if [ "${reset_config}" = "1" ]; then
-    rm -rf "${config_dst}"
-  fi
-
-  mkdir -p "${config_dst}"
-
-  # Merge order (lowest to highest precedence): repo -> user -> org.
-  #
-  # Ordered by trust, not by specificity, because these files carry
-  # permissions, hooks, and env: a checkout is whatever repo you cloned, and
-  # the org layer is installed deliberately. That inverts the order the asset
-  # pipelines use for skills, commands, and agents, where a repo's own
-  # definitions are the most specific thing available and rightly win.
-  merge_config_layer "${repo_config_src}" "${config_dst}"
-  merge_config_file "${repo_config_src}/opencode.json" "${config_dst}/opencode.json"
-  merge_config_layer "${user_config_src}" "${config_dst}"
-  merge_config_file "${user_config_src}/opencode.json" "${config_dst}/opencode.json"
-  merge_config_layer "${org_config_src}" "${config_dst}"
-  merge_config_file "${org_config_src}/opencode.json" "${config_dst}/opencode.json"
-
-  build_codex_config \
-    "${config_dst}" \
-    "${repo_config_src}" \
-    "${user_config_src}" \
-    "${org_config_src}"
-
-  # Sidecar MCP servers merge last but yield to same-named layer entries.
-  # Only harnesses handled here receive the bind-mounted fragment, and each
-  # merges it into its own config file.
-  case "${AGENT_BIN:-}" in
-    grok|codex)
-      # Servers go in a managed block the module rewrites each run rather than
-      # being appended; this also removes stale entries when no tongs are set.
-      PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_toml_mcp \
-        "${config_dst}/config.toml" ${SWARMFORGE_TONG_MCP_FILE:+"${SWARMFORGE_TONG_MCP_FILE}"}
-      ;;
-    *)
-      # A no-op without the variable: merge_config_file ignores an empty or
-      # missing source.
-      merge_config_file "${SWARMFORGE_TONG_MCP_FILE:-}" "${config_dst}/opencode.json" 1
-      ;;
-  esac
-
-  build_claude_settings \
-    "${CLAUDE_SETTINGS_FILE}" \
-    "${repo_config_src}" \
-    "${user_config_src}" \
-    "${org_config_src}"
-}
-
-prepare_agent_config() {
-  config_dest="${SWARMFORGE_CONFIG_DEST:-}"
-  reset_config="${SWARMFORGE_CONFIG_RESET:-0}"
-
-  # Not the caller's to choose: a merged layer landing in the shared home
-  # would outlive the container.
-  [ "${AGENT_BIN}" != "claude" ] || config_dest="${CLAUDE_CONFIG_HOME}"
-
-  # Rebuild Codex config outside its persistent home, which also holds state.
-  # Copying the result back keeps config.toml writable for atomic updates.
-  if [ "${AGENT_BIN}" = "codex" ]; then
-    config_dest="${CODEX_CONFIG_HOME}"
-    reset_config=1
-  fi
-
-  [ -n "${config_dest}" ] || return 0
-
-  prepare_layered_config \
-    "${config_dest}" \
-    "${SWARMFORGE_CONFIG_USER_DIR:-}" \
-    "${SWARMFORGE_CONFIG_ORG_DIR:-}" \
-    "${SWARMFORGE_CONFIG_REPO_DIR:-}" \
-    "${reset_config}"
-
-  if [ "${AGENT_BIN}" = "codex" ]; then
-    # Truncation clears the prior run even when no layer supplies config.toml.
-    : > "${CODEX_CONFIG_FILE}"
-    if [ -f "${CODEX_CONFIG_HOME}/config.toml" ]; then
-      cp "${CODEX_CONFIG_HOME}/config.toml" "${CODEX_CONFIG_FILE}"
-    fi
-  fi
-}
-
 if [ ! -x "${AGENT_BIN_PATH}" ]; then
   printf '%s\n' "Agent binary not found: ${AGENT_BIN_PATH}" >&2
   exit 127
@@ -499,7 +272,12 @@ if ! getent passwd "${ANVIL_UID}" >/dev/null 2>&1; then
     "${ANVIL_USER}" >/dev/null 2>&1 || true
 fi
 
-prepare_agent_config
+# The config phase: merge the layered config (repo, then user, then org)
+# into the harness's destination and run the harness's config hooks. The
+# SWARMFORGE_CONFIG_* layer variables and SWARMFORGE_TONG_MCP_FILE are read
+# from the environment. This runs as root, before the privilege drop, and a
+# failure here stops the container.
+PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}"
 prepare_unified_agents
 register_codex_agents
 copy_shared_assets

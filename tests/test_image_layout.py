@@ -21,10 +21,19 @@ import sys
 import tempfile
 import unittest
 
-import make_argv_fixtures
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
+
+# The launcher's entry-point shim puts the repo root on the path; standing in
+# for it here keeps this file runnable on its own, not just under a discovery
+# run that already set it.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from swarmforge.harness import claude
+
+import make_argv_fixtures
+
 MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
 DOCKERFILE = os.path.join(REPO_ROOT, "anvil", "Dockerfile")
 ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
@@ -193,126 +202,12 @@ class ImportRootAgreement(unittest.TestCase):
         )
 
 
-class ConfigLayerOrder(unittest.TestCase):
-    """The entrypoint stacks the config layers in order of trust.
-
-    Precedence decides whose permissions, hooks, and env a session runs
-    under, and nothing expresses it but the order of a few calls in one
-    shell function -- where a reorder reads as a harmless tidy-up. That
-    function cannot run outside a container, so the order is read off the
-    source instead.
-    """
-
-    LAYERS = ("repo", "user", "org")
-
-    def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
-        self.body = self.function_body("prepare_layered_config")
-
-    def function_body(self, name):
-        """The text of the entrypoint shell function called `name`.
-
-        Entrypoint functions are `name() {` with the closing brace at column
-        zero, which is what delimits the slice.
-        """
-        body = self.entrypoint[self.entrypoint.index("%s() {" % name):]
-        return body[:body.index("\n}\n")]
-
-    def merged_layers(self, function):
-        """The layer each `<function> "${<layer>_config_src}"...` call names."""
-        return re.findall(
-            r'%s "\$\{(\w+)_config_src\}' % re.escape(function), self.body)
-
-    def test_config_dirs_stack_lowest_trust_first(self):
-        self.assertEqual(self.merged_layers("merge_config_layer"), list(self.LAYERS))
-
-    def test_the_key_wise_file_merge_stacks_in_the_same_order(self):
-        """The key-wise merge and the file overlay travel through separate
-        calls, so one file can end up obeying a precedence the rest do not."""
-        self.assertEqual(
-            self.merged_layers("merge_config_file"), list(self.LAYERS))
-
-    def test_the_generated_tong_servers_merge_after_every_layer(self):
-        """The fragment describes containers this run started, so a layer
-        naming the same server is describing something else."""
-        self.assertLess(
-            self.body.index('"${org_config_src}/opencode.json"'),
-            self.body.index("SWARMFORGE_TONG_MCP_FILE"),
-        )
-
-    def test_codex_toml_config_stacks_lowest_trust_first(self):
-        call = self.body[self.body.index("build_codex_config"):]
-        self.assertEqual(
-            re.findall(r'"\$\{(\w+)_config_src\}"', call)[:3],
-            list(self.LAYERS),
-        )
-
-    def test_absent_codex_layers_do_not_resolve_from_the_root(self):
-        body = self.function_body("build_codex_config")
-        for layer in self.LAYERS:
-            expected = (
-                "$" + "{config_%s_src:+" % layer
-                + "$" + "{config_%s_src}/config.toml}" % layer
-            )
-            self.assertIn(expected, body)
-
-    def test_codex_toml_build_precedes_generated_tong_servers(self):
-        self.assertLess(
-            self.body.index("build_codex_config"),
-            self.body.index("SWARMFORGE_TONG_MCP_FILE"),
-        )
-
-    def test_claude_settings_stack_the_image_defaults_below_every_layer(self):
-        """The image's defaults are a layer, and the bottom one.
-
-        Any higher and the image would overrule a key a session chose.
-        """
-        body = self.function_body("build_claude_settings")
-        sources = re.findall(r'"\$\{settings_(\w+)_src\}/settings\.json"', body)
-        self.assertEqual(sources, list(self.LAYERS))
-        self.assertLess(
-            body.index('"${image_defaults}"'),
-            body.index('"${settings_%s_src}/settings.json"' % self.LAYERS[0]),
-        )
-
-    def test_the_settings_build_is_handed_the_layers_in_that_order(self):
-        """The caller decides which directory arrives as which argument, so
-        swapping two there is invisible from the function itself."""
-        call = self.body[self.body.index("build_claude_settings"):]
-        self.assertEqual(
-            re.findall(r"\$\{(\w+)_config_src\}", call), list(self.LAYERS))
-
-    def test_claude_settings_are_built_after_every_layer_has_landed(self):
-        """A layer's own settings.json has to be on disk to be read."""
-        self.assertLess(
-            self.body.rindex("merge_config_layer"),
-            self.body.index("build_claude_settings"),
-        )
-
-    def test_claude_excludes_the_built_settings_from_the_file_overlay(self):
-        """The overlay replaces whole files, so it would undo the build."""
-        body = self.function_body("merge_config_layer")
-        claude = body[body.index("claude)"):body.index("opencode)")]
-        self.assertIn("--exclude=./settings.json", claude)
-
-    def test_claude_excludes_credentials_from_the_file_overlay(self):
-        """The user layer is the host's own ~/.claude, the store is not."""
-        body = self.function_body("merge_config_layer")
-        claude = body[body.index("claude)"):body.index("grok)")]
-        self.assertIn("--exclude=./.credentials.json", claude)
-
-    def test_codex_excludes_the_built_config_from_the_file_overlay(self):
-        body = self.function_body("merge_config_layer")
-        codex = body[body.index("codex)"):body.index("opencode)")]
-        self.assertIn("--exclude=./config.toml", codex)
-
-
 class ClaudeSettingsDelivery(unittest.TestCase):
     """The built settings reach claude as arguments, not as a file in the home.
 
-    The build and the exec share a path only through a shell variable; `user`
-    stays in the sources because that scope carries asset discovery.
+    The build names the path as a module constant and the exec as a shell
+    literal, which is all that ties them together; `user` stays in the sources
+    because that scope carries asset discovery.
     """
 
     def setUp(self):
@@ -344,10 +239,9 @@ class ClaudeSettingsDelivery(unittest.TestCase):
                 "settings build lands in a host mount: %s" % path)
 
     def test_the_exec_hands_claude_the_file_the_build_writes(self):
-        """Two sites name the path; the shared variable is what ties them."""
-        self.assertIn(
-            'build_claude_settings \\\n    "${CLAUDE_SETTINGS_FILE}"',
-            self.entrypoint)
+        """The build writes a module constant and the exec names a shell
+        literal; the two strings are all that tie them together."""
+        self.assertEqual(claude.SETTINGS_FILE, self.settings_path())
         self.assertIn('--settings "${CLAUDE_SETTINGS_FILE}"', self.injection())
 
     def test_the_setting_sources_name_every_scope(self):
@@ -435,14 +329,19 @@ class ClaudeConfigHome(unittest.TestCase):
         """The merge wipes its destination under SWARMFORGE_CONFIG_RESET; a
         link removed there costs the run its history and credentials."""
         call = self.entrypoint.rindex("link_claude_state")
-        for earlier in ("prepare_agent_config", "prepare_unified_agents",
-                        "copy_shared_assets"):
+        self.assertLess(self.entrypoint.rindex("-m swarmforge.harness.init"), call)
+        for earlier in ("prepare_unified_agents", "copy_shared_assets"):
             self.assertLess(
                 self.entrypoint.rindex("\n%s\n" % earlier), call)
 
 
 class CodexConfigDelivery(unittest.TestCase):
-    """Codex layers are rebuilt off-home before config.toml is published."""
+    """Codex's translated agents are generated, registered, and handed over.
+
+    They are written outside the persistent home, registered into the
+    config.toml codex reads, and chowned to the anvil uid before privileges
+    drop -- three steps in three places, in that order or not at all.
+    """
 
     def setUp(self):
         with open(ENTRYPOINT) as handle:
@@ -451,13 +350,6 @@ class CodexConfigDelivery(unittest.TestCase):
     def function_body(self, name):
         body = self.entrypoint[self.entrypoint.index("%s() {" % name):]
         return body[:body.index("\n}\n")]
-
-    def test_build_directory_is_outside_host_mounts(self):
-        match = re.search(
-            r'^CODEX_CONFIG_HOME="([^"$]+)"$', self.entrypoint, re.M)
-        self.assertIsNotNone(match)
-        for mounted in ("/home/", "/workspace"):
-            self.assertFalse(match.group(1).startswith(mounted))
 
     def test_generated_codex_agents_stay_outside_host_mounts(self):
         agents_home = re.search(
@@ -489,24 +381,13 @@ class CodexConfigDelivery(unittest.TestCase):
         self.assertIn(chown, self.entrypoint)
         self.assertLess(self.entrypoint.index(chown), self.entrypoint.index("exec gosu"))
 
-    def test_codex_forces_a_fresh_build_and_publishes_last(self):
-        body = self.function_body("prepare_agent_config")
-        self.assertIn('config_dest="${CODEX_CONFIG_HOME}"', body)
-        self.assertIn("reset_config=1", body)
-        prepare = body.index("prepare_layered_config")
-        truncate = body.index(': > "${CODEX_CONFIG_FILE}"')
-        publish = body.index(
-            'cp "${CODEX_CONFIG_HOME}/config.toml" "${CODEX_CONFIG_FILE}"')
-        self.assertLess(prepare, truncate)
-        self.assertLess(truncate, publish)
-
 
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
     Three strings have to line up: where the claude harness's image.sh
     installs the script, where it installs the defaults naming it, and where
-    the entrypoint reads those defaults from. A mismatch is silent -- a
+    the settings build reads those defaults from. A mismatch is silent -- a
     defaults file that is not there is just a layer contributing nothing.
     """
 
@@ -539,10 +420,10 @@ class StatusLineAgreement(unittest.TestCase):
             {"type": "command", "command": self.install_dest("statusline.sh")},
         )
 
-    def test_entrypoint_reads_the_defaults_where_image_sh_installs_them(self):
-        self.assertIn(
-            'image_defaults="%s"' % self.install_dest("claude-settings.json"),
-            self.entrypoint,
+    def test_the_settings_build_reads_the_defaults_where_image_sh_installs_them(self):
+        self.assertEqual(
+            claude.IMAGE_DEFAULT_SETTINGS,
+            self.install_dest("claude-settings.json"),
         )
 
     def test_image_sh_reads_its_assets_from_the_copy_destination(self):
