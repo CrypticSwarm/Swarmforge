@@ -10,9 +10,9 @@ find its secrets or silently runs on the checkout's own settings.
 
 The other half of the contract is that no harness inherits claude's plumbing.
 Every harness but claude keeps the default hook, so its exec has to stay
-byte-identical to the direct one the entrypoint used to perform -- the same
-file, the same argv, and the same environment save for the home and the two
-variables the driver's own launch adds. Those two are asserted absent for every
+byte-identical to a direct exec of the binary -- the same file, the same
+argv, and the same environment save for the home and the two variables the
+driver's own launch adds. Those two are asserted absent for every
 harness: they exist only because this driver is a python module, and a harness
 that inherits them is one running with an import root pointing at Swarmforge's
 own package.
@@ -34,6 +34,7 @@ import dataclasses
 import io
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -91,6 +92,13 @@ class ExecuteCase(unittest.TestCase):
         self.settings = os.path.join(self.tmp, "claude-settings.json")
         self.libdir = os.path.join(self.tmp, "lib")
         self.recorded = []
+        # The driver defaults the interpreter's ignored dispositions before
+        # the exec, and the recording execve returns instead of replacing the
+        # process -- so this process keeps running with them defaulted, and
+        # the first EPIPE write would kill the suite. Put them back after
+        # every test.
+        for sig in execute.IGNORED_SIGNALS:
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
 
     def env(self, **overrides):
         """The environment the container hands the driver's launch.
@@ -169,13 +177,17 @@ class HarnessPassthrough(ExecuteCase):
     the exec indistinguishable from a direct one. Anything the driver adds here
     is claude's plumbing reaching a harness that never asked for it, and the
     environment is compared whole so a stray variable fails rather than
-    surviving unnoticed.
+    surviving unnoticed. Claude's own artifacts are staged where its hook
+    would find them, so the passthrough is proven against the run most
+    tempted to decorate it.
     """
 
     def test_every_plain_harness_execs_its_own_binary_unchanged(self):
         for name in PLAIN:
             with self.subTest(harness=name):
                 self.setUp()
+                self.stage_settings()
+                self.stage_wrapper()
                 environ = self.env()
                 binary = "/usr/local/bin/" + harness.get(name).SPEC.binary
 
@@ -195,6 +207,31 @@ class HarnessPassthrough(ExecuteCase):
                 _, _, env = self.execute(name)
                 for var in ("PYTHONPATH", "PYTHONCOERCECLOCALE"):
                     self.assertNotIn(var, env)
+
+    def test_the_ignored_signal_dispositions_are_defaulted_for_the_exec(self):
+        """The interpreter ignores SIGPIPE and SIGXFSZ at startup, and an
+        ignored disposition survives exec: left in place, every harness --
+        and every process it spawns -- would see EPIPE write errors where a
+        direct exec died silently on a closed pipe."""
+        self.assertEqual(
+            execute.IGNORED_SIGNALS, (signal.SIGPIPE, signal.SIGXFSZ))
+        for sig in execute.IGNORED_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)
+
+        seen = {}
+
+        def record(file, argv, env):
+            for sig in execute.IGNORED_SIGNALS:
+                seen[sig] = signal.getsignal(sig)
+
+        with self.redirected("grok"):
+            status = execute.run(
+                "grok", self.home, [], self.env(), execv=record)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            seen,
+            {sig: signal.SIG_DFL for sig in execute.IGNORED_SIGNALS})
 
 
 class ClaudeSettingsArgv(ExecuteCase):
@@ -304,6 +341,32 @@ class ClaudeEnvironment(ExecuteCase):
         }
         self.assertEqual(parents, {env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]})
 
+    def test_the_whole_exec_with_every_delta_active(self):
+        """Every claude delta at once, argv and environment compared whole.
+
+        The deltas are exercised one at a time above; a run on a linked
+        worktree has them all live together, and this is the exec that run
+        performs -- so an interaction between them, or a delta the piecewise
+        tests missed, fails here.
+        """
+        self.stage_settings()
+        self.stage_wrapper()
+        environ = self.env()
+
+        file, argv, env = self.execute("claude", environ=environ)
+
+        self.assertEqual(file, "/usr/local/bin/claude")
+        self.assertEqual(argv, [
+            "/usr/local/bin/claude",
+            "--settings", self.settings,
+            "--setting-sources", "user,project,local",
+        ] + self.ARGS)
+        expected = self.passed_through(environ)
+        expected["PATH"] = self.wrapper + ":" + environ["PATH"]
+        expected["CLAUDE_CONFIG_DIR"] = self.dest
+        expected["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = self.shared
+        self.assertEqual(env, expected)
+
 
 class DriverArgv(ExecuteCase):
     """The entrypoint's invocation is unguarded, so its argv has to hold.
@@ -372,6 +435,15 @@ class DriverArgv(ExecuteCase):
 
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn(execute.USAGE, completed.stderr)
+
+    def test_every_harness_is_selected_by_the_name_of_its_binary(self):
+        """The entrypoint guards /usr/local/bin/<selector> and the driver
+        execs /usr/local/bin/<spec.binary> after looking the selector up as
+        a registry name; the two are one path only while every harness's
+        name is its binary."""
+        for name in harness.names():
+            with self.subTest(harness=name):
+                self.assertEqual(harness.get(name).SPEC.binary, name)
 
 
 class PreExecDescriptor(unittest.TestCase):

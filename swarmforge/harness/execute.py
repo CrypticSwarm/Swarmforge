@@ -16,6 +16,7 @@ harness as though the container had been given it.
 """
 
 import os
+import signal
 import sys
 
 from swarmforge import harness
@@ -27,8 +28,14 @@ USAGE = "usage: python3 -m swarmforge.harness.execute HARNESS HOME -- [ARG...]"
 BIN_DIR = "/usr/local/bin"
 
 # The variables this driver's own launch adds, which the exec it performs must
-# not pass on.
+# not pass on. A value the run itself carried is dropped with them: by the
+# time this runs, the two are indistinguishable.
 LAUNCH_VARS = ("PYTHONPATH", "PYTHONCOERCECLOCALE")
+
+# Signals the interpreter sets to "ignore" at startup. An ignored disposition
+# survives exec, so left alone the binary -- and every process it spawns --
+# would start with signal handling a direct exec never gave it.
+IGNORED_SIGNALS = (signal.SIGPIPE, signal.SIGXFSZ)
 
 
 def run(name, home, args, environ, execv=os.execve):
@@ -51,6 +58,8 @@ def run(name, home, args, environ, execv=os.execve):
     binary = BIN_DIR + "/" + spec.binary
     ctx = init.asset_context(spec, home, environ, cwd=os.getcwd())
     argv, env = spec.pre_exec(ctx, [binary] + list(args), env)
+    for sig in IGNORED_SIGNALS:
+        signal.signal(sig, signal.SIG_DFL)
     execv(binary, argv, env)
     return 0
 
