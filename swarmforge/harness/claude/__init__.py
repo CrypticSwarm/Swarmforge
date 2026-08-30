@@ -1,6 +1,7 @@
 """The Claude Code harness."""
 
 import os
+import shutil
 import sys
 
 from swarmforge.agents.emit import OPENCODE_ONLY_FIELDS, render, warn
@@ -18,6 +19,29 @@ SETTINGS_FILE = "/run/swarmforge/claude-settings.json"
 # image would overrule a key a session chose. This is the path claude's
 # image.sh installs to.
 IMAGE_DEFAULT_SETTINGS = "/usr/local/share/swarmforge/claude-settings.json"
+
+# State only: nothing claude loads as configuration or code belongs here.
+STATE_DIRS = (
+    "projects",
+    "sessions",
+    "file-history",
+    "session-env",
+    "shell-snapshots",
+    "plans",
+    "tasks",
+    "todos",
+    "backups",
+    "cache",
+    "paste-cache",
+    "plugins",
+)
+STATE_FILES = (
+    "history.jsonl",
+    "stats-cache.json",
+    "keybindings.json",
+    ".last-cleanup",
+    "scheduled_tasks.lock",
+)
 
 # OpenCode tool id -> Claude Code tool name. Ids mapping to None have no
 # Claude equivalent and are dropped.
@@ -140,6 +164,58 @@ def finalize_config(ctx):
             pass
 
 
+def link_entry(target, path):
+    """Point `path` at `target`, replacing whatever stands there.
+
+    A directory is removed whole, and anything else -- a file, a symlink,
+    dangling or not -- is unlinked. A symlink to a directory is unlinked
+    rather than emptied: the entry owns the link, never what it points at.
+    """
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        os.remove(path)
+    os.symlink(target, path)
+
+
+def link_state(ctx):
+    """Link the state that outlives the run into the config destination.
+
+    Only the allowlisted state survives: claude loads configuration and code
+    out of this dir, and a shared one would hand a session's writes to the
+    next container. A link holds only what claude writes in place -- an entry
+    rewritten by rename replaces it. A directory must exist in the shared home
+    before it is linked, or claude's own mkdir fails on the link. This runs
+    after the config merge, which wipes this destination under
+    SWARMFORGE_CONFIG_RESET.
+
+    A link that cannot be made stops the container: a session started without
+    it writes its history into a directory that dies with the run.
+    """
+    shared = ctx.home + "/.claude"
+    os.makedirs(ctx.config_dest, exist_ok=True)
+
+    # The one piece of state claude keeps beside its config dir, not inside it.
+    link_entry(ctx.home + "/.claude.json",
+               os.path.join(ctx.config_dest, ".claude.json"))
+
+    for entry in STATE_DIRS:
+        try:
+            os.makedirs(shared + "/" + entry, exist_ok=True)
+        except OSError:
+            # Something already stands at that name, a file among them; the
+            # entry is linked to it either way.
+            pass
+        link_entry(shared + "/" + entry,
+                   os.path.join(ctx.config_dest, entry))
+
+    for entry in STATE_FILES:
+        # The link dangles until claude writes the file, which is what an
+        # untouched piece of state looks like.
+        link_entry(shared + "/" + entry,
+                   os.path.join(ctx.config_dest, entry))
+
+
 SPEC = HarnessSpec(
     name="claude",
     binary="claude",
@@ -170,4 +246,5 @@ SPEC = HarnessSpec(
     agent_emitter=agent_emitter,
     extra_chown_paths=("/run/swarmforge/claude-config",),
     finalize_config=finalize_config,
+    link_state=link_state,
 )
