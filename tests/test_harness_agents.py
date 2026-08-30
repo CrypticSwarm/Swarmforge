@@ -372,6 +372,20 @@ class CodexRegistration(TranslationCase):
         self.assertTrue(
             os.path.isfile(os.path.join(self.agents_dest, "config.toml")))
 
+    def test_a_published_registration_outranks_the_generated_one(self):
+        """The published config is the higher-precedence merge source, so a
+        registration it already carries survives the generated one."""
+        write_file(
+            self.published(),
+            '[agents.reviewer]\nconfig_file = "/pinned/reviewer.toml"\n')
+        self.stage("user", "reviewer.md", AGENT_MD)
+
+        self.assertEqual(self.translate_agents("codex"), 0)
+        self.assertEqual(
+            self.read_published()["agents"]["reviewer"]["config_file"],
+            "/pinned/reviewer.toml",
+        )
+
     def test_no_emitted_agents_leaves_the_published_config_untouched(self):
         """An empty registration is not an empty `agents` table: a session
         with no definitions must read the config it would have read anyway."""
@@ -419,22 +433,30 @@ class PhaseOrder(TranslationCase):
 
         with mock.patch.object(init, "initialize", record("config", 0)):
             with mock.patch.object(init, "translate_agents", record("agents", 0)):
-                status = init.run("claude", self.home, self.env(), self.workspace)
+                with mock.patch.object(init, "install_assets", record("assets", 0)):
+                    with self.redirected("claude"):
+                        status = init.run(
+                            "claude", self.home, self.env(), self.workspace)
 
         self.assertEqual(status, 0)
-        self.assertEqual(calls, ["config", "agents"])
+        self.assertEqual(calls, ["config", "agents", "assets"])
 
     def test_a_failed_config_phase_stops_the_run(self):
         """The config phase failing takes the container down, so the phases
         after it must not run at all: a session on unmerged config is a
         session running under somebody else's permissions."""
         translated = mock.Mock()
+        installed = mock.Mock()
         with mock.patch.object(init, "initialize", return_value=2):
             with mock.patch.object(init, "translate_agents", translated):
-                status = init.run("claude", self.home, self.env(), self.workspace)
+                with mock.patch.object(init, "install_assets", installed):
+                    with self.redirected("claude"):
+                        status = init.run(
+                            "claude", self.home, self.env(), self.workspace)
 
         self.assertEqual(status, 2)
         translated.assert_not_called()
+        installed.assert_not_called()
 
 
 if __name__ == "__main__":

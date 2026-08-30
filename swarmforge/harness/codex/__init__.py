@@ -123,12 +123,13 @@ def finalize_agents(dest_dir, emitted, home=""):
     if not home:
         return
     config_file = home + "/.codex/config.toml"
-    # Imported at call time: the launcher imports this module on whatever
-    # python3 the host has, while merge_toml needs the container's tomllib
-    # (3.11+) and this merge only ever runs there.
-    from swarmforge.config import merge_toml
-
     try:
+        # Imported at call time: the launcher imports this module on whatever
+        # python3 the host has, while merge_toml needs the container's tomllib
+        # (3.11+) and this merge only ever runs there. Inside the try so a
+        # python without it fails the registration, not the translation.
+        from swarmforge.config import merge_toml
+
         # Sources lowest precedence first: the published config's own keys
         # outrank the generated registrations.
         merge_toml.build_file(config_file, [config_path, config_file])
