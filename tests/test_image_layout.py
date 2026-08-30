@@ -259,29 +259,20 @@ class ClaudeConfigHome(unittest.TestCase):
         for name in self.LOADED:
             self.assertNotIn(name, listed)
 
-    def test_the_asset_pipeline_installs_into_the_config_home(self):
+    def test_every_asset_destination_resolves_to_the_config_home(self):
         """The destinations and the config dir are one guarantee: assets in
         the shared home would be read from nowhere and kept forever.
 
-        Skills and commands ride the entrypoint's own copy; the agents
-        destination is declared by the harness spec instead, so it is checked
-        against the same config dir below.
+        Skills, commands, and translated agents all resolve "{config}" to
+        claude's pinned destination, which is the config dir this class
+        covers.
         """
-        dests = re.findall(
-            r'_dst="\$\{(\w+)\}/(skills|commands|agents)"', self.entrypoint)
+        spec = harness.get("claude").SPEC
+        self.assertEqual(spec.skills_dest, "{config}/skills")
+        self.assertEqual(spec.commands_dest, "{config}/commands")
+        self.assertEqual(spec.agents_dest, "{config}/agents")
         self.assertEqual(
-            sorted(name for home, name in dests
-                   if home == "CLAUDE_CONFIG_HOME"),
-            ["commands", "skills"])
-
-    def test_translated_agents_land_in_the_config_home(self):
-        """The spec resolves "{config}" to claude's pinned destination, which
-        is the config dir this class covers."""
-        self.assertEqual(
-            harness.get("claude").SPEC.agents_dest, "{config}/agents")
-        self.assertEqual(
-            harness.get("claude").SPEC.config_dest,
-            self.literal("CLAUDE_CONFIG_HOME"))
+            spec.config_dest, self.literal("CLAUDE_CONFIG_HOME"))
 
     def test_claude_is_told_where_its_config_lives(self):
         self.assertIn(
@@ -301,13 +292,12 @@ class ClaudeConfigHome(unittest.TestCase):
             "the credential store is not in the shared persistent home")
 
     def test_state_is_linked_after_the_config_home_is_built(self):
-        """The merge wipes its destination under SWARMFORGE_CONFIG_RESET; a
-        link removed there costs the run its history and credentials."""
+        """The driver invocation is the whole build -- the config merge, the
+        agent translation, and the asset install -- and the merge wipes its
+        destination under SWARMFORGE_CONFIG_RESET; a link removed there costs
+        the run its history and credentials."""
         call = self.entrypoint.rindex("link_claude_state")
         self.assertLess(self.entrypoint.rindex("-m swarmforge.harness.init"), call)
-        for earlier in ("copy_shared_assets",):
-            self.assertLess(
-                self.entrypoint.rindex("\n%s\n" % earlier), call)
 
 
 class CodexConfigDelivery(unittest.TestCase):

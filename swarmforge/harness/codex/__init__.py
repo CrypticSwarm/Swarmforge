@@ -11,7 +11,13 @@ from swarmforge.agents.emit import (
     emit_toml_value,
     warn,
 )
-from swarmforge.harness.spec import HarnessSpec, Waiver, toml_mcp_fragment
+from swarmforge.harness.codex import commands
+from swarmforge.harness.spec import (
+    HarnessSpec,
+    Waiver,
+    copy_dir_entries,
+    toml_mcp_fragment,
+)
 
 CODEX_AGENT_TABLE_FIELDS = {
     "default_subagent_model",
@@ -133,6 +139,29 @@ def finalize_agents(dest_dir, emitted, home=""):
         )
 
 
+def install_assets(ctx, layer):
+    """Translate the layer's portable commands, then copy its skills.
+
+    Codex uses skills as its sole extension point, so portable commands
+    become skill packages under the skills destination. Translation runs
+    first within each layer: a skill package the same layer ships under a
+    command's name replaces the translated command, while a later layer's
+    translated command still replaces an earlier layer's package. A failed
+    translation degrades to a warning -- the session runs without those
+    commands -- where a failed copy stops the container.
+    """
+    try:
+        status = commands.main([layer.skills_dest, layer.commands_src])
+    except Exception:
+        status = 1
+    if status != 0:
+        print(
+            "Warning: command translation failed for Codex; continuing",
+            file=sys.stderr,
+        )
+    copy_dir_entries(layer.skills_src, layer.skills_dest)
+
+
 def build_config(ctx):
     """Rebuild config.toml from the layers, key-wise, repo -> user -> org.
 
@@ -198,6 +227,7 @@ SPEC = HarnessSpec(
     mcp_merge="toml-managed-block",
     agent_emitter=agent_emitter,
     finalize_agents=finalize_agents,
+    install_assets=install_assets,
     extra_chown_paths=("/run/swarmforge/codex-agents",),
     build_config=build_config,
     publish_config=publish_config,

@@ -36,45 +36,6 @@ configure_timezone() {
   printf '%s\n' "${timezone}" >/etc/timezone
 }
 
-# Copy each top-level entry from src_dir into dst_dir, replacing whatever is
-# at the destination (file, directory, or stale symlink). Top-level entries
-# are replaced wholesale; this is intentionally not a deep merge so that
-# stale per-entry symlinks left behind by earlier versions of this entrypoint
-# get cleaned up on the next run.
-copy_dir_entries() {
-  src_dir="${1}"
-  dst_dir="${2}"
-
-  [ -n "${src_dir}" ] || return 0
-  [ -d "${src_dir}" ] || return 0
-  [ -n "${dst_dir}" ] || return 0
-
-  mkdir -p "${dst_dir}"
-
-  for entry in "${src_dir}"/*; do
-    # Guard against a literal pattern when the directory is empty.
-    [ -e "${entry}" ] || [ -L "${entry}" ] || continue
-
-    name="$(basename "${entry}")"
-    target="${dst_dir}/${name}"
-
-    rm -rf "${target}"
-    cp -a "${entry}" "${target}"
-  done
-}
-
-translate_codex_commands() {
-  src_dir="${1}"
-  skills_dst="${2}"
-
-  [ -n "${src_dir}" ] || return 0
-  [ -d "${src_dir}" ] || return 0
-
-  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.commands.translate \
-    "${skills_dst}" "${src_dir}" \
-    || printf '%s\n' "Warning: command translation failed for Codex; continuing" >&2
-}
-
 # Only the allowlisted state outlives the run: claude loads configuration and
 # code out of this dir, and a shared one would hand a session's writes to the
 # next container. A link holds only what claude writes in place -- an entry
@@ -100,79 +61,6 @@ link_claude_state() {
 link_claude_entry() {
   rm -rf "${CLAUDE_CONFIG_HOME}/${2}"
   ln -s "${1}" "${CLAUDE_CONFIG_HOME}/${2}"
-}
-
-# Populate the harness's native skills and commands locations from the
-# shared Swarmforge assets (skills and commands are portable across
-# harnesses, so copying is the whole translation).
-#
-# Sources are applied lowest- to highest-precedence, identically for every
-# harness; the config merge excludes skills/commands so this is their only
-# transport:
-#   1. Portable .agents layers: user, then org. These follow the harness-neutral
-#      .agents/{skills,commands} convention (mounted via SWARMFORGE_DOTAGENTS_USER_DIR
-#      / SWARMFORGE_DOTAGENTS_ORG_DIR), so the source dir names are the same for
-#      every harness.
-#   2. Harness shared assets (mounted via SWARMFORGE_SKILLS_DIR /
-#      SWARMFORGE_COMMAND_DIR): the Swarmforge repo's own skills/ and commands/.
-#   3. Workspace overlay: <workspace>/.agents/{skills,commands}.
-#
-# Harness-native config dirs (such as <layer>/.claude or <layer>/.opencode) are
-# never consumed for skills/commands; those formats are portable and live under
-# the .agents convention instead.
-#
-# Claude's destinations live in the container-local config dir: each run
-# starts empty, and per-repo assets never leak between repos.
-copy_shared_assets() {
-  workspace_dir="${1:-/workspace}"
-
-  case "${AGENT_BIN}" in
-    claude)
-      skills_dst="${CLAUDE_CONFIG_HOME}/skills"
-      commands_dst="${CLAUDE_CONFIG_HOME}/commands"
-      ;;
-    grok)
-      skills_dst="${ANVIL_HOME}/.grok/skills"
-      commands_dst="${ANVIL_HOME}/.grok/commands"
-      ;;
-    codex)
-      # Codex uses skills as its extension point; portable commands are
-      # translated into skill packages below.
-      skills_dst="${ANVIL_HOME}/.agents/skills"
-      commands_dst="codex-skills"
-      ;;
-    opencode)
-      config_dest="${SWARMFORGE_CONFIG_DEST:-${ANVIL_HOME}/.config/opencode}"
-      skills_dst="${config_dest}/skills"
-      commands_dst="${config_dest}/command"
-      ;;
-    *)
-      return 0
-      ;;
-  esac
-
-  for layer_src in "${SWARMFORGE_DOTAGENTS_USER_DIR:-}" "${SWARMFORGE_DOTAGENTS_ORG_DIR:-}"; do
-    [ -n "${layer_src}" ] || continue
-    if [ "${commands_dst}" = "codex-skills" ]; then
-      translate_codex_commands "${layer_src}/commands" "${skills_dst}"
-      copy_dir_entries "${layer_src}/skills" "${skills_dst}"
-    else
-      copy_dir_entries "${layer_src}/skills" "${skills_dst}"
-      copy_dir_entries "${layer_src}/commands" "${commands_dst}"
-    fi
-  done
-
-  if [ "${commands_dst}" = "codex-skills" ]; then
-    translate_codex_commands "${SWARMFORGE_COMMAND_DIR:-}" "${skills_dst}"
-    copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
-    translate_codex_commands "${workspace_dir}/.agents/commands" "${skills_dst}"
-    copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
-  else
-    copy_dir_entries "${SWARMFORGE_SKILLS_DIR:-}" "${skills_dst}"
-    copy_dir_entries "${SWARMFORGE_COMMAND_DIR:-}" "${commands_dst}"
-    copy_dir_entries "${workspace_dir}/.agents/skills" "${skills_dst}"
-    copy_dir_entries "${workspace_dir}/.agents/commands" "${commands_dst}"
-  fi
 }
 
 if [ ! -x "${AGENT_BIN_PATH}" ]; then
@@ -202,13 +90,14 @@ if ! getent passwd "${ANVIL_UID}" >/dev/null 2>&1; then
 fi
 
 # The root phases: merge the layered config (repo, then user, then org) into
-# the harness's destination and run the harness's config hooks, then translate
-# the unified agent definitions into the harness's native destination. The
-# SWARMFORGE_CONFIG_* and SWARMFORGE_ASSETS_* layer variables and
+# the harness's destination and run the harness's config hooks, translate the
+# unified agent definitions into the harness's native destination, then install
+# the portable skills and commands into the harness's native asset locations.
+# The SWARMFORGE_CONFIG_*, SWARMFORGE_ASSETS_*, and SWARMFORGE_DOTAGENTS_*
+# layer variables, SWARMFORGE_SKILLS_DIR, SWARMFORGE_COMMAND_DIR, and
 # SWARMFORGE_TONG_MCP_FILE are read from the environment. This runs as root,
 # before the privilege drop, and a failure here stops the container.
 PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}"
-copy_shared_assets
 
 if [ "${AGENT_BIN}" = "claude" ]; then
   link_claude_state
