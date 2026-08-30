@@ -334,9 +334,9 @@ class ContainerRun(unittest.TestCase):
     it fails here as soon as it is registered.
 
     Every path a run can write to is rooted in the temporary directory: the
-    pinned config destination, the pinned agents destination, and the paths
-    handed to the anvil uid are all replaced for the run, and so are the two
-    settings paths Claude names as module constants.
+    pinned config destination, every pinned asset destination, and the paths
+    handed to the anvil uid are all replaced for the run, and so are the
+    settings and wrapper paths Claude names as module constants.
     """
 
     def setUp(self):
@@ -616,11 +616,15 @@ class McpContract(unittest.TestCase):
     def test_a_file_merge_is_delivered_by_an_environment_variable(self):
         """The config driver reads the fragment out of the environment before
         it merges it into a file; a merge announced with a flag delivery names
-        a path the driver never sees."""
+        a path the driver never sees, and a merge announced by a harness that
+        shapes no fragment names a file nothing ever produces."""
         for name, spec in specs():
             with self.subTest(harness=name):
                 kind, _ = spec.mcp_delivery
                 if provided(spec.mcp_merge):
+                    self.assertTrue(
+                        provided(spec.mcp_fragment),
+                        "%s merges a fragment it never shapes" % name)
                     self.assertEqual(
                         kind, "env",
                         "%s merges %s from a path nothing reads"
