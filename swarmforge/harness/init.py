@@ -5,8 +5,9 @@ Merges the layered config into the harness's destination and runs that
 harness's config hooks, translates the unified agent definitions into the
 harness's native format, installs the portable skills and commands into its
 native asset locations, links the state the harness keeps across runs into its
-config destination, then runs whatever container preparation the harness needs
-root for. Invoked as `HARNESS HOME`, with the source
+config destination, runs whatever container preparation the harness needs root
+for, then hands the home, the paths that harness built outside it, and the
+workspace to the anvil uid. Invoked as `HARNESS HOME UID GID`, with the source
 locations arriving in the environment: `SWARMFORGE_CONFIG_{USER,ORG,REPO}_DIR`
 name the three config layers, `SWARMFORGE_CONFIG_DEST` and
 `SWARMFORGE_CONFIG_RESET` decide the destination and whether it is rebuilt from
@@ -27,7 +28,7 @@ from swarmforge.agents import translate
 from swarmforge.config import merge_json, merge_toml_mcp
 from swarmforge.harness.spec import AssetLayer, Context, provided
 
-USAGE = "usage: python3 -m swarmforge.harness.init HARNESS HOME"
+USAGE = "usage: python3 -m swarmforge.harness.init HARNESS HOME UID GID"
 
 # The container mounts the checkout here; a parameter below so a test can
 # stage one of its own.
@@ -382,7 +383,47 @@ def root_setup(name, home, environ, cwd=None):
     return 0
 
 
-def run(name, home, environ, workspace=WORKSPACE, cwd=None):
+def ownership_argv(spec, home, owner, workspace):
+    """Every chown one harness's ownership handover runs, in order.
+
+    The home first, then the paths that harness builds outside it, then the
+    workspace. The extras change hands with `-Rh`, which changes the links
+    themselves rather than what they point at: they hold the state links back
+    into the home, whose targets the home pass already covered, so following
+    them would be wasted work at best.
+    """
+    return (
+        [["chown", "-R", owner, home]]
+        + [["chown", "-Rh", owner, path] for path in spec.extra_chown_paths]
+        + [["chown", "-R", owner, workspace]]
+    )
+
+
+def _chown(argv):
+    """Run one chown, letting it fail.
+
+    A path that is not there, or a file whose owner cannot be changed, is
+    skipped silently: ownership is handed over best-effort, and the session
+    surfaces the error itself if something it needs is out of reach.
+    """
+    subprocess.run(argv, stderr=subprocess.DEVNULL, check=False)
+
+
+def deliver_ownership(name, home, uid, gid, workspace=WORKSPACE, chown=None):
+    """Hand what root built to the anvil uid, for the harness named `name`.
+
+    The last phase, run after every phase that writes as root, so nothing root
+    creates afterwards is left behind owned by root once privileges drop.
+    """
+    spec = harness.get(name).SPEC
+    owner = "%s:%s" % (uid, gid)
+    run_chown = chown or _chown
+    for argv in ownership_argv(spec, home, owner, workspace):
+        run_chown(argv)
+    return 0
+
+
+def run(name, home, uid, gid, environ, workspace=WORKSPACE, cwd=None):
     """Run the container root phases for the harness registered as `name`."""
     status = initialize(name, home, environ)
     if status != 0:
@@ -391,14 +432,15 @@ def run(name, home, environ, workspace=WORKSPACE, cwd=None):
     install_assets(name, home, environ, workspace)
     link_state(name, home, environ)
     root_setup(name, home, environ, cwd)
+    deliver_ownership(name, home, uid, gid, workspace)
     return 0
 
 
 def main(argv):
-    if len(argv) != 2:
+    if len(argv) != 4:
         print(USAGE, file=sys.stderr)
         return 2
-    return run(argv[0], argv[1], os.environ)
+    return run(argv[0], argv[1], argv[2], argv[3], os.environ)
 
 
 if __name__ == "__main__":

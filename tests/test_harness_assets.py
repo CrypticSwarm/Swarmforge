@@ -195,7 +195,10 @@ class AssetCase(unittest.TestCase):
             if name == "claude":
                 stack.enter_context(mock.patch.object(
                     module, "SPEC",
-                    dataclasses.replace(module.SPEC, config_dest=self.dest)))
+                    dataclasses.replace(
+                        module.SPEC,
+                        config_dest=self.dest,
+                        extra_chown_paths=(self.dest,))))
             yield
 
     def install(self, name, environ=None):
@@ -607,17 +610,34 @@ class FatalCopyFailures(AssetCase):
 
 class PhaseOrder(AssetCase):
     """The driver runs the config phase, the translation, the install, the
-    links, then the root preparation.
+    links, the root preparation, then the ownership handover.
 
     Two harnesses resolve their asset destinations out of the merged config
     destination, and the merge rebuilds that directory -- so an install
     reaching it first writes into a directory about to be wiped. The links go
     in after for the same reason: the merge wipes its destination under
     SWARMFORGE_CONFIG_RESET, and a link removed there costs the run its
-    history. The root preparation goes last because it acts on the container
-    the phases before it finished building, and nothing after it still runs as
-    root.
+    history. The root preparation follows because it acts on the container the
+    phases before it finished building, and the handover comes after all of
+    them: anything root writes past it stays owned by root.
     """
+
+    # Every phase `run` dispatches to, in the order it has to call them.
+    PHASES = (
+        ("initialize", "config"),
+        ("translate_agents", "agents"),
+        ("install_assets", "assets"),
+        ("link_state", "link"),
+        ("root_setup", "root"),
+        ("deliver_ownership", "chown"),
+    )
+
+    def drive(self, stack):
+        """Run the driver for claude with every pinned path moved."""
+        stack.enter_context(self.redirected("claude"))
+        return init.run(
+            "claude", self.home, str(os.getuid()), str(os.getgid()),
+            self.env(), self.workspace)
 
     def test_the_phases_run_in_order(self):
         calls = []
@@ -628,39 +648,30 @@ class PhaseOrder(AssetCase):
                 return status
             return phase
 
-        with mock.patch.object(init, "initialize", record("config", 0)):
-            with mock.patch.object(init, "translate_agents", record("agents", 0)):
-                with mock.patch.object(init, "install_assets", record("assets", 0)):
-                    with mock.patch.object(init, "link_state", record("link", 0)):
-                        with mock.patch.object(init, "root_setup", record("root", 0)):
-                            with self.redirected("claude"):
-                                status = init.run(
-                                    "claude", self.home, self.env(), self.workspace)
+        with contextlib.ExitStack() as stack:
+            for phase, label in self.PHASES:
+                stack.enter_context(
+                    mock.patch.object(init, phase, record(label, 0)))
+            status = self.drive(stack)
 
         self.assertEqual(status, 0)
-        self.assertEqual(calls, ["config", "agents", "assets", "link", "root"])
+        self.assertEqual(calls, [label for _, label in self.PHASES])
 
     def test_a_failed_config_phase_stops_the_run(self):
         """The config phase failing takes the container down, so the phases
         after it must not run at all."""
-        translated = mock.Mock()
-        installed = mock.Mock()
-        linked = mock.Mock()
-        prepared = mock.Mock()
-        with mock.patch.object(init, "initialize", return_value=2):
-            with mock.patch.object(init, "translate_agents", translated):
-                with mock.patch.object(init, "install_assets", installed):
-                    with mock.patch.object(init, "link_state", linked):
-                        with mock.patch.object(init, "root_setup", prepared):
-                            with self.redirected("claude"):
-                                status = init.run(
-                                    "claude", self.home, self.env(), self.workspace)
+        later = {}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.object(init, "initialize", return_value=2))
+            for phase, _ in self.PHASES[1:]:
+                later[phase] = stack.enter_context(mock.patch.object(init, phase))
+            status = self.drive(stack)
 
         self.assertEqual(status, 2)
-        translated.assert_not_called()
-        installed.assert_not_called()
-        linked.assert_not_called()
-        prepared.assert_not_called()
+        for phase, recorded in later.items():
+            with self.subTest(phase=phase):
+                recorded.assert_not_called()
 
 
 class RecordedInstalls(AssetCase):

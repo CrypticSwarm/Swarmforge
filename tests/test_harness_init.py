@@ -873,7 +873,7 @@ class DriverArgv(DriverCase):
         self.assertIn("unknown harness: nosuch", captured.getvalue())
 
     def test_too_few_arguments_are_refused(self):
-        for argv in ([], ["one"]):
+        for argv in ([], ["one"], ["one", "two"], ["one", "two", "three"]):
             with self.subTest(argv=argv):
                 captured = io.StringIO()
                 with contextlib.redirect_stderr(captured):
@@ -884,7 +884,11 @@ class DriverArgv(DriverCase):
         """The image copies the package under an import root and invokes the
         driver out of it with `python3 -P -m`. This stages that shape, with
         the checkout off both sys.path and the working directory, so a module
-        that only resolves its imports from the repo fails here."""
+        that only resolves its imports from the repo fails here. The uid and
+        gid it hands over to are the test process's own, and the chown the
+        driver resolves from PATH is a stub that only records its argv: the
+        workspace path is a fixed string, so the real binary would reach
+        whatever the machine running the tests has standing there."""
         libdir = os.path.join(self.tmp, "lib")
         os.makedirs(libdir)
         shutil.copytree(
@@ -895,26 +899,41 @@ class DriverArgv(DriverCase):
         self.write_layer_json("repo", "opencode.json", {"model": "repo/m"})
         self.write_layer_json("org", "opencode.json", {"model": "org/m"})
 
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        chown_log = os.path.join(self.tmp, "chown.log")
+        stub = write_file(
+            os.path.join(bindir, "chown"),
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + chown_log + "\n")
+        os.chmod(stub, 0o755)
+
         environ = self.env()
-        environ["PATH"] = os.environ.get("PATH", "")
+        environ["PATH"] = bindir + os.pathsep + os.environ.get("PATH", "")
         environ["PYTHONPATH"] = libdir
         completed = subprocess.run(
-            [sys.executable, "-P", "-m", "swarmforge.harness.init", "grok", self.home],
+            [sys.executable, "-P", "-m", "swarmforge.harness.init", "grok",
+             self.home, str(os.getuid()), str(os.getgid())],
             env=environ, cwd=self.tmp, capture_output=True, text=True,
         )
         self.assertEqual(
             completed.returncode, 0, "driver failed:\n%s" % completed.stderr)
         self.assertEqual(
             read_json(os.path.join(self.dest, "opencode.json")), {"model": "org/m"})
+        owner = "%s:%s" % (os.getuid(), os.getgid())
+        self.assertEqual(
+            read_file(chown_log).splitlines(),
+            ["-R %s %s" % (owner, self.home), "-R %s /workspace" % owner])
 
 
 class SpecEntrypointAgreement(unittest.TestCase):
     """The paths the driver writes and the entrypoint acts on are one string.
 
-    The driver merges into a destination its harness module names, while the
-    entrypoint hands it to the anvil uid and exports it to claude -- each from
-    its own literal. A drift between the two is silent: the merge lands
-    somewhere nothing reads.
+    The driver merges into a destination its harness module names and writes
+    the settings file and the git wrapper at paths of its own, while the
+    entrypoint exports that destination to claude, hands claude the settings
+    file, and puts the wrapper on PATH -- each from its own literal. A drift
+    between the two is silent: what the driver wrote lands somewhere nothing
+    reads.
     """
 
     def setUp(self):
@@ -959,15 +978,6 @@ class SpecEntrypointAgreement(unittest.TestCase):
             match, "entrypoint tests for no wrapper on PATH")
         self.assertEqual(match.group(1), claude.WRAPPER_DIR + "/git")
         self.assertLess(match.start(), self.entrypoint.index("exec gosu"))
-
-    def test_codex_agents_land_where_the_entrypoint_chowns(self):
-        """The spec names where the translated agents are generated and the
-        entrypoint hands that directory to the anvil uid by its own literal.
-        Drift between the two leaves the generated agents owned by root."""
-        self.assertEqual(
-            harness.get("codex").SPEC.agents_dest,
-            self.literal("CODEX_AGENTS_HOME"),
-        )
 
 
 if __name__ == "__main__":

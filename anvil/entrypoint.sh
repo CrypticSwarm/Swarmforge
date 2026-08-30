@@ -13,7 +13,6 @@ AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
 CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
 CLAUDE_SHARED_HOME="${ANVIL_HOME}/.claude"
-CODEX_AGENTS_HOME="/run/swarmforge/codex-agents"
 
 configure_timezone() {
   timezone="${TZ:-}"
@@ -61,17 +60,14 @@ fi
 # unified agent definitions into the harness's native destination, install the
 # portable skills and commands into the harness's native asset locations, link
 # the state the harness keeps across runs into its config destination, then run
-# whatever container preparation the harness needs root for.
+# whatever container preparation the harness needs root for. After those
+# phases the driver hands the home, the harness's own root-built paths, and the
+# workspace to the anvil uid, so the session owns what root prepared.
 # The SWARMFORGE_CONFIG_*, SWARMFORGE_ASSETS_*, and SWARMFORGE_DOTAGENTS_*
 # layer variables, SWARMFORGE_SKILLS_DIR, SWARMFORGE_COMMAND_DIR, and
 # SWARMFORGE_TONG_MCP_FILE are read from the environment. This runs as root,
 # before the privilege drop, and a failure here stops the container.
-PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}"
-
-chown -R "${ANVIL_UID}:${ANVIL_GID}" "${ANVIL_HOME}" 2>/dev/null || true
-chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CLAUDE_CONFIG_HOME}" 2>/dev/null || true
-chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CODEX_AGENTS_HOME}" 2>/dev/null || true
-chown -R "${ANVIL_UID}:${ANVIL_GID}" /workspace 2>/dev/null || true
+PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}" "${ANVIL_UID}" "${ANVIL_GID}"
 
 # The driver leaves a git wrapper here when the workspace's worktree paths
 # need rewriting for the session; standing ahead of the real git on PATH is

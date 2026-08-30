@@ -222,7 +222,9 @@ class HarnessSpec:
     agent_emitter: object
 
     # Container paths outside the home handed to the anvil uid before
-    # privileges drop.
+    # privileges drop, after every root-phase write. They are changed without
+    # following symlinks, so a state link changes owner itself while what it
+    # points at is the home pass's business.
     extra_chown_paths: tuple
 
     # Hook `(dest_dir, emitted, home)` run after every agent file is written,

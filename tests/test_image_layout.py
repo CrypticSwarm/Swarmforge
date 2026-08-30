@@ -284,35 +284,6 @@ class ClaudeConfigHome(unittest.TestCase):
             "the credential store is not in the shared persistent home")
 
 
-class CodexConfigDelivery(unittest.TestCase):
-    """Codex's generated agents live outside the home and change hands.
-
-    They are written outside the persistent home, so they die with the
-    container, and handed to the anvil uid before privileges drop, so the
-    session can read what root generated.
-    """
-
-    def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
-
-    def test_generated_codex_agents_stay_outside_host_mounts(self):
-        agents_home = re.search(
-            r'^CODEX_AGENTS_HOME="([^"$]+)"$', self.entrypoint, re.M
-        )
-        self.assertIsNotNone(agents_home)
-        for mounted in ("/home/", "/workspace"):
-            self.assertFalse(agents_home.group(1).startswith(mounted))
-
-    def test_generated_roles_are_chowned_before_the_uid_drop(self):
-        chown = (
-            'chown -Rh "${ANVIL_UID}:${ANVIL_GID}" '
-            '"${CODEX_AGENTS_HOME}"'
-        )
-        self.assertIn(chown, self.entrypoint)
-        self.assertLess(self.entrypoint.index(chown), self.entrypoint.index("exec gosu"))
-
-
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
