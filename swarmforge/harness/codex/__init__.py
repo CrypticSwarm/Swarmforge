@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 
 from swarmforge.agents.emit import (
     emit_toml_key,
@@ -107,11 +108,51 @@ def finalize_agents(dest_dir, emitted):
         handle.write(render_codex({"agents": registrations}))
 
 
+def build_config(ctx):
+    """Rebuild config.toml from the layers, key-wise, repo -> user -> org.
+
+    The whole-file tar overlay excludes config.toml, so this is where the
+    layers reach it. An empty layer contributes no source at all. Errors
+    propagate: a config the serializer cannot round-trip must fail the run
+    rather than hand codex something it will not read.
+    """
+    # Imported at call time: the launcher imports this module on whatever
+    # python3 the host has, while merge_toml needs the container's tomllib
+    # (3.11+) and this hook only ever runs there.
+    from swarmforge.config import merge_toml
+
+    sources = [
+        src + "/config.toml"
+        for src in (ctx.config_repo_src, ctx.config_user_src, ctx.config_org_src)
+        if src
+    ]
+    merge_toml.build_file(ctx.config_dest + "/config.toml", sources)
+
+
+def publish_config(ctx):
+    """Copy the built config.toml into codex's persistent home.
+
+    The config is rebuilt outside that home, which also holds state, and
+    copied back so config.toml stays writable for codex's own atomic updates.
+    """
+    config_file = ctx.home + "/.codex/config.toml"
+    # Truncation clears the prior run even when no layer supplies config.toml.
+    with open(config_file, "w", encoding="utf-8"):
+        pass
+    built = ctx.config_dest + "/config.toml"
+    if os.path.isfile(built):
+        # Content only, onto the file just created.
+        shutil.copyfile(built, config_file)
+
+
 SPEC = HarnessSpec(
     name="codex",
     binary="codex",
     config_dest="/run/swarmforge/codex-config",
     config_reset=True,
+    # packages, sessions, history.jsonl, and log are session state the dest
+    # rebuild must not resurrect; config.toml merges by key through
+    # build_config instead of overlaying whole.
     layer_excludes=(
         "./skills",
         "./packages",
@@ -133,4 +174,6 @@ SPEC = HarnessSpec(
     agent_emitter=agent_emitter,
     finalize_agents=finalize_agents,
     extra_chown_paths=("/run/swarmforge/codex-agents",),
+    build_config=build_config,
+    publish_config=publish_config,
 )
