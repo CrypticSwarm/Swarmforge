@@ -94,6 +94,7 @@ __all__ = [
     "parse_scalar",
     "render",
     "render_codex",
+    "run",
     "split_frontmatter",
     "to_claude",
     "to_codex",
@@ -132,22 +133,20 @@ def load_agents(src_dirs):
     return agents
 
 
-def main(argv):
+def run(target, dest_dir, src_dirs, home=""):
     """Run the target harness's emitter over the loaded agents.
 
     Each emitted file is written under `dest_dir`, then the harness's
-    finalize hook runs over everything that was emitted.
+    finalize hook runs over everything that was emitted. `home`, when
+    non-empty, is handed to that hook, so post-translation work landing in
+    the user's home has a home to land in.
     """
-    if len(argv) < 3:
-        print(__doc__.strip(), file=sys.stderr)
-        return 2
-    target, dest_dir = argv[0], argv[1]
     emitter = EMITTERS.get(target)
     if emitter is None:
         warn("unknown target '%s' (expected: %s)" % (target, ", ".join(sorted(EMITTERS))))
         return 2
 
-    agents = load_agents(argv[2:])
+    agents = load_agents(src_dirs)
     if not agents:
         return 0
 
@@ -164,8 +163,18 @@ def main(argv):
             handle.write(text)
         emitted.append((name, meta, out_path))
 
-    harness.get(target).SPEC.finalize_agents(dest_dir, emitted)
+    harness.get(target).SPEC.finalize_agents(dest_dir, emitted, home)
     return 0
+
+
+def main(argv):
+    """Translate the agents named on the command line."""
+    if len(argv) < 3:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    # A bare CLI run has no home, so nothing a finalize hook would publish
+    # into one is written.
+    return run(argv[0], argv[1], argv[2:])
 
 
 if __name__ == "__main__":
