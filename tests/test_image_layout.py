@@ -622,6 +622,71 @@ class HarnessInstallLayout(unittest.TestCase):
                 "harness %s has a build target but no install.sh" % name,
             )
 
+    def test_the_install_run_executes_the_script_and_fails_without_one(self):
+        """Path agreement alone leaves the RUN free to do nothing.
+
+        The dispatch is an assignment, a guard, and an execution; dropping
+        the execution or the guard's exit keeps every path assertion green
+        while producing an image with no harness binary.
+        """
+        self.assertIn('sh "${install_sh}"', self.dockerfile)
+        guard = self.dockerfile[
+            self.dockerfile.index('install_sh="'):
+            self.dockerfile.index('sh "${install_sh}"')
+        ]
+        self.assertIn('[ ! -f "${install_sh}" ]', guard)
+        self.assertIn("exit 1", guard)
+
+    def test_the_asset_run_executes_the_script_when_present(self):
+        """The one line where finding image.sh becomes running it.
+
+        A guard that locates the script and does nothing leaves the claude
+        image without its status line, and no build fails over it.
+        """
+        self.assertIn(
+            'if [ -f "${image_sh}" ]; then sh "${image_sh}"; fi',
+            self.dockerfile,
+        )
+
+    def test_harness_scripts_fail_their_run_on_the_first_error(self):
+        """`sh <script>` starts a fresh shell, so the RUN's own errexit does
+        not reach the script body. A script without its own set -e reports
+        success after a failed install -- a binary-less image that only
+        surfaces when a container cannot exec its harness.
+        """
+        scripts = sorted(
+            os.path.join(self.HARNESS_DIR, name, script)
+            for name in os.listdir(self.HARNESS_DIR)
+            for script in ("install.sh", "image.sh")
+            if os.path.isfile(os.path.join(self.HARNESS_DIR, name, script))
+        )
+        self.assertTrue(scripts, "no harness ships a build script")
+        for path in scripts:
+            with open(path) as handle:
+                text = handle.read()
+            self.assertRegex(
+                text, r"(?m)^set -\w*e",
+                "%s does not set errexit" % os.path.relpath(path, REPO_ROOT),
+            )
+
+    def test_the_build_recipes_target_a_stage_the_dockerfile_declares(self):
+        """The --target word only resolves against a stage at build time.
+
+        Every recipe test runs against a stubbed docker, so a stage renamed
+        in the Dockerfile alone keeps the recorded argv green while failing
+        all four builds.
+        """
+        stages = set(re.findall(r"(?m)^FROM \S+ AS (\S+)", self.dockerfile))
+        targets = {
+            argv[argv.index("--target") + 1]
+            for argv in make_argv_fixtures.BUILD_ARGV.values()
+        }
+        self.assertTrue(targets, "no recorded build argv names a --target")
+        self.assertLessEqual(
+            targets, stages,
+            "build recipes target stages the Dockerfile does not declare",
+        )
+
 
 class BuildRecipeCase(unittest.TestCase):
     """Runs a build_* target and exposes the docker argv it assembled."""
