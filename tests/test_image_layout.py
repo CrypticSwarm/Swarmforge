@@ -11,6 +11,7 @@ the Dockerfile lays them out.
 Run: python3 tests/test_image_layout.py
 """
 
+import dataclasses
 import json
 import os
 import posixpath
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -31,7 +33,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from swarmforge import harness
-from swarmforge.harness import claude
+from swarmforge.harness import claude, init
 
 import make_argv_fixtures
 
@@ -120,10 +122,10 @@ class ImportRootAgreement(unittest.TestCase):
     def test_no_module_run_lets_the_workspace_onto_the_import_path(self):
         """`python3 -m` puts the working directory first on sys.path.
 
-        The entrypoint's working directory is the workspace and these modules
-        run as root, before privileges are dropped -- so without -P a repo
-        containing its own swarmforge/ would shadow the image's copy and be
-        executed.
+        The entrypoint's working directory is the workspace: the config
+        driver runs there as root, and the pre-exec driver as the anvil user
+        whose workspace it is -- so without -P a repo containing its own
+        swarmforge/ would shadow the image's copy and be executed.
         """
         for _, flags, module in self.module_runs():
             self.assertIn(
@@ -163,91 +165,129 @@ class ImportRootAgreement(unittest.TestCase):
             )
 
 
-class ClaudeSettingsDelivery(unittest.TestCase):
-    """The built settings reach claude as arguments, not as a file in the home.
+class PreExecCase(unittest.TestCase):
+    """Runs a harness's pre-exec hook over paths staged in a temporary tree.
 
-    The build names the path as a module constant and the exec as a shell
-    literal, which is all that ties them together; `user` stays in the sources
-    because that scope carries asset discovery.
+    Claude's hook reads the settings file it delivers and the wrapper
+    directory it may put on PATH, and both are live directories on a
+    development host that runs Swarmforge itself; staging them is what keeps a
+    test's answer off whatever the last container left behind.
     """
 
+    ARGS = ["--model", "sonnet", "run the thing"]
+    PATH = "/usr/local/bin:/usr/bin:/bin"
+
     def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-image-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.home = os.path.join(self.tmp, "home")
+        os.makedirs(self.home)
+        self.dest = os.path.join(self.tmp, "dest")
+        self.wrapper = os.path.join(self.tmp, "wrapper")
+        self.settings = os.path.join(self.tmp, "claude-settings.json")
 
-    def settings_path(self):
-        match = re.search(
-            r'^CLAUDE_SETTINGS_FILE="([^"$]+)"$', self.entrypoint, re.M)
-        self.assertIsNotNone(
-            match, "entrypoint defines no literal CLAUDE_SETTINGS_FILE")
-        return match.group(1)
+    def staged_spec(self):
+        """Claude's spec with its pinned config destination under the tree."""
+        return dataclasses.replace(
+            harness.get("claude").SPEC, config_dest=self.dest)
 
-    def injection(self):
-        """The argv rewrite handing claude the settings flags, as one line."""
-        at = self.entrypoint.index("--settings ")
-        return self.entrypoint[
-            self.entrypoint.rindex("\n", 0, at) + 1:self.entrypoint.index("\n", at)
-        ]
+    def stage_settings(self):
+        """A built settings file standing where the hook looks for one."""
+        with open(self.settings, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        return self.settings
+
+    def pre_exec(self, spec, ctx=None):
+        """Run `spec`'s hook with claude's two staged paths in place."""
+        if ctx is None:
+            ctx = init.asset_context(spec, self.home, {})
+        argv = ["/usr/local/bin/" + spec.binary] + self.ARGS
+        with mock.patch.object(claude, "SETTINGS_FILE", self.settings), \
+                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper):
+            return spec.pre_exec(ctx, argv, {"PATH": self.PATH})
+
+
+class ClaudeSettingsDelivery(PreExecCase):
+    """The built settings reach claude as arguments, not as a file in the home.
+
+    The build writes the file and the exec names it on the command line, and
+    one module constant is all that ties them together; `user` stays in the
+    sources because that scope carries asset discovery.
+    """
 
     def test_the_built_file_lives_outside_every_host_mount(self):
         """/home/anvil is the persistent home every container for this
         user shares, and /workspace is the checkout; a build landing in
         either is the leak the command-line delivery exists to end."""
-        path = self.settings_path()
+        path = claude.SETTINGS_FILE
         for mounted in ("/home/", "/workspace"):
             self.assertFalse(
                 path.startswith(mounted),
                 "settings build lands in a host mount: %s" % path)
 
     def test_the_exec_hands_claude_the_file_the_build_writes(self):
-        """The build writes a module constant and the exec names a shell
-        literal; the two strings are all that tie them together."""
-        self.assertEqual(claude.SETTINGS_FILE, self.settings_path())
-        self.assertIn('--settings "${CLAUDE_SETTINGS_FILE}"', self.injection())
+        """The build and the exec read one constant, so running the build and
+        then reading the argv follows the whole chain rather than comparing
+        two strings that happen to match."""
+        spec = harness.get("claude").SPEC
+        org = os.path.join(self.tmp, "layer-org")
+        os.makedirs(org)
+        with open(os.path.join(org, "settings.json"), "w",
+                  encoding="utf-8") as handle:
+            handle.write('{"model": "org/m"}')
+        ctx = init.asset_context(
+            spec, self.home, {"SWARMFORGE_CONFIG_ORG_DIR": org})
+
+        with mock.patch.object(claude, "SETTINGS_FILE", self.settings):
+            claude.finalize_config(ctx)
+        self.assertTrue(os.path.isfile(self.settings))
+
+        argv, _ = self.pre_exec(spec, ctx=ctx)
+
+        self.assertIn("--settings", argv)
+        self.assertEqual(argv[argv.index("--settings") + 1], self.settings)
 
     def test_the_setting_sources_name_every_scope(self):
         """`user` carries claude's skills, commands, and agents discovery;
         project and local carry the workspace's own .claude settings."""
-        match = re.search(r"--setting-sources (\S+)", self.injection())
-        self.assertIsNotNone(match, "claude is not told which sources to load")
+        self.stage_settings()
+
+        argv, _ = self.pre_exec(harness.get("claude").SPEC)
+
+        self.assertIn("--setting-sources", argv)
         self.assertEqual(
-            match.group(1).split(","), ["user", "project", "local"])
+            argv[argv.index("--setting-sources") + 1].split(","),
+            ["user", "project", "local"])
 
     def test_only_claude_is_handed_the_flags(self):
-        """The same exec starts every harness, and the flags are claude's."""
-        at = self.entrypoint.index(self.injection())
-        guard = self.entrypoint.rindex("if ", 0, at)
-        self.assertIn(
-            '[ "${AGENT_BIN}" = "claude" ]',
-            self.entrypoint[guard:at],
-        )
+        """The same driver execs every harness, and the flags are claude's."""
+        self.stage_settings()
+        for name in harness.names():
+            if name == "claude":
+                continue
+            with self.subTest(harness=name):
+                spec = harness.get(name).SPEC
+                expected = ["/usr/local/bin/" + spec.binary] + self.ARGS
+
+                argv, _ = self.pre_exec(spec)
+
+                self.assertEqual(argv, expected)
 
 
-class ClaudeConfigHome(unittest.TestCase):
+class ClaudeConfigHome(PreExecCase):
     """Claude's config dir dies with the container; its credentials do not.
 
-    The entrypoint's own literals have to agree with the spec on where that
-    directory is, name it to claude, and keep it out of every host mount, or
-    the session reads its configuration and assets from somewhere else. The
-    credential store is named in the persistent home instead, since a
-    rename-based write replaces a link.
+    The destination the driver merges into is the one the exec names to
+    claude, and it stays out of every host mount, or the session reads its
+    configuration and assets from somewhere else. The credential store is
+    named in the persistent home instead, since a rename-based write replaces
+    a link.
     """
-
-    def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
-
-    def literal(self, name):
-        """The value of a top-level `name="..."` assignment."""
-        match = re.search(
-            r'^%s="([^"]*)"$' % name, self.entrypoint, re.M | re.S)
-        self.assertIsNotNone(match, "entrypoint defines no literal %s" % name)
-        return match.group(1)
 
     def test_the_config_home_is_outside_every_host_mount(self):
         """/home/anvil is the shared persistent home and /workspace is the
         checkout; a config dir in either outlives the container."""
-        path = self.literal("CLAUDE_CONFIG_HOME")
+        path = harness.get("claude").SPEC.config_dest
         for mounted in ("/home/", "/workspace"):
             self.assertFalse(
                 path.startswith(mounted),
@@ -265,25 +305,32 @@ class ClaudeConfigHome(unittest.TestCase):
         self.assertEqual(spec.skills_dest, "{config}/skills")
         self.assertEqual(spec.commands_dest, "{config}/commands")
         self.assertEqual(spec.agents_dest, "{config}/agents")
-        self.assertEqual(
-            spec.config_dest, self.literal("CLAUDE_CONFIG_HOME"))
+        self.assertEqual(init.config_root(spec, self.home, {}), spec.config_dest)
 
     def test_claude_is_told_where_its_config_lives(self):
-        self.assertIn(
-            'export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_HOME}"', self.entrypoint)
+        _, env = self.pre_exec(self.staged_spec())
+
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], self.dest)
 
     def test_the_credential_store_is_named_not_linked(self):
         """A rename-based write replaces a link, so the store cannot be one."""
-        self.assertIn(
-            'export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SHARED_HOME}"',
-            self.entrypoint)
+        _, env = self.pre_exec(self.staged_spec())
+
+        store = env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]
+        self.assertEqual(store, os.path.join(self.home, ".claude"))
+        self.assertFalse(os.path.islink(store))
+        self.assertFalse(os.path.exists(store))
 
     def test_the_credential_store_outlives_the_container(self):
-        """${ANVIL_HOME}/.claude is the shared persistent home, and it is
-        also the directory the state links point into: the store the exec
-        names and the state the links serve have to stay one directory."""
+        """The home the hook is handed is the persistent mount every
+        container for this user shares, and it is also the directory the
+        state links point into: the store the exec names and the state the
+        links serve have to stay one directory."""
+        _, env = self.pre_exec(self.staged_spec())
+
         self.assertEqual(
-            self.literal("CLAUDE_SHARED_HOME"), "${ANVIL_HOME}/.claude")
+            env["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
+            os.path.join(self.home, ".claude"))
 
 
 class StatusLineAgreement(unittest.TestCase):
@@ -299,8 +346,6 @@ class StatusLineAgreement(unittest.TestCase):
         REPO_ROOT, "swarmforge", "harness", "claude", "image.sh")
 
     def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
         with open(self.IMAGE_SH) as handle:
             self.image_sh = handle.read()
 

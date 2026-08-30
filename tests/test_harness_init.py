@@ -40,7 +40,7 @@ if REPO_ROOT not in sys.path:
 
 from swarmforge import harness
 from swarmforge.config import merge_json, merge_toml, merge_toml_mcp
-from swarmforge.harness import claude, init
+from swarmforge.harness import claude, execute, init
 from swarmforge.harness.spec import Context, HarnessSpec, Waiver, provided
 
 ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
@@ -926,34 +926,69 @@ class DriverArgv(DriverCase):
 
 
 class SpecEntrypointAgreement(unittest.TestCase):
-    """The paths the driver writes and the entrypoint acts on are one string.
+    """The paths the driver writes and the ones the exec names are one string.
 
-    The driver merges into a destination its harness module names and writes
-    the settings file and the git wrapper at paths of its own, while the
-    entrypoint exports that destination to claude, hands claude the settings
-    file, and puts the wrapper on PATH -- each from its own literal. A drift
-    between the two is silent: what the driver wrote lands somewhere nothing
-    reads.
+    The config driver merges into a destination its harness module names and
+    writes the settings file and the git wrapper at paths of its own; the
+    pre-exec driver's hook reads those same constants when it shapes the exec,
+    so the build and the delivery are tied together by the module rather than
+    by matching literals. What the entrypoint still owns is where those
+    destinations may live and the two unguarded invocations that start the
+    drivers, and a drift there is silent: what the driver wrote lands
+    somewhere nothing reads.
     """
+
+    PATH = "/usr/local/bin:/usr/bin:/bin"
+
+    GIT_WRAPPER = '#!/bin/sh\nexec git "$@"\n'
 
     def setUp(self):
         with open(ENTRYPOINT, encoding="utf-8") as handle:
             self.entrypoint = handle.read()
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-exec-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.home = os.path.join(self.tmp, "home")
+        os.makedirs(self.home)
+        self.wrapper = os.path.join(self.tmp, "wrapper")
+        self.settings_file = os.path.join(self.tmp, "claude-settings.json")
 
-    def literal(self, name):
-        """The value of a top-level `name="..."` assignment with no expansion."""
-        match = re.search(r'^%s="([^"$]+)"$' % name, self.entrypoint, re.M)
-        self.assertIsNotNone(match, "entrypoint defines no literal %s" % name)
-        return match.group(1)
+    @contextlib.contextmanager
+    def redirected(self):
+        """Claude's two pinned paths, replaced by ones under the tree."""
+        with mock.patch.object(claude, "SETTINGS_FILE", self.settings_file), \
+                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper):
+            yield
 
-    def test_claude_merges_into_the_config_home_the_entrypoint_serves(self):
+    def pre_exec(self):
+        """Run claude's hook the way the pre-exec driver runs it."""
+        spec = harness.get("claude").SPEC
+        ctx = init.asset_context(spec, self.home, {})
+        with self.redirected():
+            return spec.pre_exec(
+                ctx, ["/usr/local/bin/claude"], {"PATH": self.PATH})
+
+    def test_claude_merges_into_the_config_home_the_exec_names(self):
+        """The destination initialize() merges into and the one claude is
+        told to read are the same string. Drift is silent: the driver merges
+        into one directory and claude reads another."""
+        _, env = self.pre_exec()
+
         self.assertEqual(
-            harness.get("claude").SPEC.config_dest,
-            self.literal("CLAUDE_CONFIG_HOME"),
-        )
+            env["CLAUDE_CONFIG_DIR"], harness.get("claude").SPEC.config_dest)
 
     def test_the_settings_build_writes_where_the_exec_reads(self):
-        self.assertEqual(claude.SETTINGS_FILE, self.literal("CLAUDE_SETTINGS_FILE"))
+        """One constant ties the build to the delivery: the config phase
+        writes the file and the hook splices that same path into the argv."""
+        ctx = init.asset_context(harness.get("claude").SPEC, self.home, {})
+        with self.redirected():
+            claude.finalize_config(ctx)
+        self.assertTrue(os.path.isfile(self.settings_file))
+
+        argv, _ = self.pre_exec()
+
+        self.assertIn("--settings", argv)
+        self.assertEqual(
+            argv[argv.index("--settings") + 1], self.settings_file)
 
     def test_pinned_destinations_stay_outside_every_host_mount(self):
         """/home/anvil is the persistent home every container for this user
@@ -967,20 +1002,22 @@ class SpecEntrypointAgreement(unittest.TestCase):
                         dest.startswith(mounted),
                         "%s merges into a host mount: %s" % (name, dest))
 
-    def test_the_git_wrapper_is_installed_where_the_entrypoint_switches_it_on(self):
-        """The driver writes the wrapper at a path its module names and the
-        entrypoint turns it on by putting its own literal ahead of the real
-        git on PATH. Drift between the two leaves a wrapper installed that
-        nothing ever runs -- whether the guard or the export is the literal
-        that wandered."""
-        match = re.search(
-            r'^if \[ -x (\S+) \]; then$', self.entrypoint, re.M)
-        self.assertIsNotNone(
-            match, "entrypoint tests for no wrapper on PATH")
-        self.assertEqual(match.group(1), claude.WRAPPER_DIR + "/git")
-        self.assertIn(
-            'export PATH="%s:${PATH}"' % claude.WRAPPER_DIR, self.entrypoint)
-        self.assertLess(match.start(), self.entrypoint.index("exec gosu"))
+    def test_the_git_wrapper_is_installed_where_the_exec_switches_it_on(self):
+        """The root phase writes the wrapper into the directory its module
+        names, and the hook turns it on by putting that same directory ahead
+        of the real git on PATH. Drift between the two leaves a wrapper
+        installed that nothing ever runs, and a directory that leads PATH
+        with nothing standing in it is a lookup every command pays for."""
+        _, env = self.pre_exec()
+        self.assertEqual(env["PATH"], self.PATH)
+
+        with self.redirected():
+            path = write_file(claude.WRAPPER_DIR + "/git", self.GIT_WRAPPER)
+            os.chmod(path, 0o755)
+
+            _, env = self.pre_exec()
+
+            self.assertEqual(env["PATH"], claude.WRAPPER_DIR + ":" + self.PATH)
 
     def test_the_entrypoint_invokes_the_driver_the_way_main_reads_argv(self):
         """The driver's argv is positional -- harness, home, uid, gid -- and
@@ -997,6 +1034,42 @@ class SpecEntrypointAgreement(unittest.TestCase):
             '"${ANVIL_UID}"', '"${ANVIL_GID}"',
         ])
         self.assertLess(match.start(), self.entrypoint.index("exec gosu"))
+
+    def test_the_entrypoint_execs_through_the_driver_the_way_main_reads_argv(self):
+        """The user phase's argv is positional too -- harness, home, then the
+        session's own arguments behind a separator -- and it is as unguarded
+        as the config phase's.
+
+        The variables the launch assigns are the ones the driver scrubs back
+        out, one contract written in two files: a variable set here and
+        missing from that list reaches every session the container starts.
+        The import root is the same one the config phase names, and
+        PYTHONCOERCECLOCALE keeps interpreter startup from putting LC_CTYPE
+        in the environment the harness inherits.
+        """
+        launch = re.search(
+            r'^exec gosu "\$\{ANVIL_UID\}:\$\{ANVIL_GID\}" env '
+            r'((?:[A-Z_]+=\S+ )+)python3 -P -m swarmforge\.harness\.execute '
+            r'(.+)$',
+            self.entrypoint, re.M)
+        self.assertIsNotNone(
+            launch, "entrypoint does not exec through the pre-exec driver")
+        self.assertEqual(launch.group(2).split(), [
+            '"${AGENT_BIN}"', '"${ANVIL_HOME}"', '--', '"$@"',
+        ])
+
+        assigned = dict(
+            word.split("=", 1) for word in launch.group(1).split())
+        self.assertEqual(set(assigned), set(execute.LAUNCH_VARS))
+        self.assertEqual(assigned["PYTHONCOERCECLOCALE"], "0")
+
+        config_phase = re.search(
+            r"^PYTHONPATH=(\S+) python3 -P -m swarmforge\.harness\.init ",
+            self.entrypoint, re.M)
+        self.assertIsNotNone(
+            config_phase, "entrypoint does not invoke the config driver")
+        self.assertEqual(assigned["PYTHONPATH"], config_phase.group(1))
+        self.assertLess(config_phase.start(), launch.start())
 
 
 if __name__ == "__main__":
