@@ -13,7 +13,6 @@ AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
 CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
 CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
 CLAUDE_SHARED_HOME="${ANVIL_HOME}/.claude"
-CODEX_AGENTS_HOME="/run/swarmforge/codex-agents"
 
 configure_timezone() {
   timezone="${TZ:-}"
@@ -59,12 +58,7 @@ fi
 # The root phases, as root and before the privilege drop. A failure here stops
 # the container. swarmforge/harness/init.py names the phases and the layer
 # variables they read out of the environment.
-PYTHONPATH=/usr/local/lib/swarmforge python3 -P -s -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}"
-
-chown -R "${ANVIL_UID}:${ANVIL_GID}" "${ANVIL_HOME}" 2>/dev/null || true
-chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CLAUDE_CONFIG_HOME}" 2>/dev/null || true
-chown -Rh "${ANVIL_UID}:${ANVIL_GID}" "${CODEX_AGENTS_HOME}" 2>/dev/null || true
-chown -R "${ANVIL_UID}:${ANVIL_GID}" /workspace 2>/dev/null || true
+PYTHONPATH=/usr/local/lib/swarmforge python3 -P -s -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}" "${ANVIL_UID}" "${ANVIL_GID}"
 
 # The driver leaves a git wrapper here when the workspace's worktree paths
 # need rewriting for the session; standing ahead of the real git on PATH is

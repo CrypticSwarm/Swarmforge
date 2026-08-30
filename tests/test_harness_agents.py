@@ -135,7 +135,10 @@ class TranslationCase(unittest.TestCase):
             if name == "claude":
                 stack.enter_context(mock.patch.object(
                     module, "SPEC",
-                    dataclasses.replace(module.SPEC, config_dest=self.dest)))
+                    dataclasses.replace(
+                        module.SPEC,
+                        config_dest=self.dest,
+                        extra_chown_paths=(self.dest,))))
                 stack.enter_context(
                     mock.patch.object(claude, "SETTINGS_FILE", self.settings_file))
                 stack.enter_context(mock.patch.object(
@@ -148,7 +151,8 @@ class TranslationCase(unittest.TestCase):
                     dataclasses.replace(
                         module.SPEC,
                         config_dest=self.dest,
-                        agents_dest=self.agents_dest)))
+                        agents_dest=self.agents_dest,
+                        extra_chown_paths=(self.agents_dest,))))
             yield
 
     def translate_agents(self, name, environ=None):
@@ -344,7 +348,9 @@ class CodexRegistration(TranslationCase):
         )
 
         with self.redirected("codex"):
-            status = init.run("codex", self.home, environ, self.workspace)
+            status = init.run(
+                "codex", self.home, str(os.getuid()), str(os.getgid()),
+                environ, self.workspace, cwd=self.workspace)
         self.assertEqual(status, 0)
 
         published = self.read_published()
@@ -440,7 +446,9 @@ class PhaseOrder(TranslationCase):
                 with mock.patch.object(init, "install_assets", record("assets", 0)):
                     with self.redirected("claude"):
                         status = init.run(
-                            "claude", self.home, self.env(), self.workspace)
+                            "claude", self.home, str(os.getuid()),
+                            str(os.getgid()), self.env(), self.workspace,
+                            cwd=self.workspace)
 
         self.assertEqual(status, 0)
         self.assertEqual(calls, ["config", "agents", "assets"])
@@ -456,7 +464,9 @@ class PhaseOrder(TranslationCase):
                 with mock.patch.object(init, "install_assets", installed):
                     with self.redirected("claude"):
                         status = init.run(
-                            "claude", self.home, self.env(), self.workspace)
+                            "claude", self.home, str(os.getuid()),
+                            str(os.getgid()), self.env(), self.workspace,
+                            cwd=self.workspace)
 
         self.assertEqual(status, 2)
         translated.assert_not_called()
