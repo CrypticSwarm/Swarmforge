@@ -132,8 +132,8 @@ FROM agent-runtime AS claude-runtime
 # no other harness reads Claude's settings.json. The defaults are the lowest
 # config layer, and they are baked in here rather than shipped from the
 # checkout because they name a path only the image has.
-COPY anvil/statusline.sh /usr/local/bin/swarmforge-statusline
-COPY anvil/claude-settings.json /usr/local/share/swarmforge/claude-settings.json
+COPY swarmforge/harness/claude/statusline.sh /usr/local/bin/swarmforge-statusline
+COPY swarmforge/harness/claude/claude-settings.json /usr/local/share/swarmforge/claude-settings.json
 RUN chmod +x /usr/local/bin/swarmforge-statusline
 
 FROM agent-runtime AS grok-runtime

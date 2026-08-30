@@ -521,16 +521,18 @@ class StatusLineAgreement(unittest.TestCase):
         return self.copies[src]
 
     def test_image_defaults_name_the_status_line_the_dockerfile_installs(self):
-        with open(os.path.join(REPO_ROOT, "anvil", "claude-settings.json")) as handle:
+        with open(os.path.join(
+                REPO_ROOT, "swarmforge", "harness", "claude",
+                "claude-settings.json")) as handle:
             defaults = json.load(handle)
         self.assertEqual(
             defaults.get("statusLine"),
-            {"type": "command", "command": self.copy_dest("anvil/statusline.sh")},
+            {"type": "command", "command": self.copy_dest("swarmforge/harness/claude/statusline.sh")},
         )
 
     def test_entrypoint_reads_the_defaults_where_the_dockerfile_installs_them(self):
         self.assertIn(
-            'image_defaults="%s"' % self.copy_dest("anvil/claude-settings.json"),
+            'image_defaults="%s"' % self.copy_dest("swarmforge/harness/claude/claude-settings.json"),
             self.entrypoint,
         )
 

@@ -151,7 +151,7 @@ Credentials are that second kind, so `CLAUDE_SECURESTORAGE_CONFIG_DIR` names the
 
 #### settings.json
 
-`settings.json` is the exception to the file-replacement rule above: like `opencode.json`, it is merged **by key**, and it is rebuilt from scratch on every run rather than merged into whatever the last run left behind. Below the three layers sits a fourth the image ships (`anvil/claude-settings.json`), which is where the status line default comes from.
+`settings.json` is the exception to the file-replacement rule above: like `opencode.json`, it is merged **by key**, and it is rebuilt from scratch on every run rather than merged into whatever the last run left behind. Below the three layers sits a fourth the image ships (`swarmforge/harness/claude/claude-settings.json`), which is where the status line default comes from.
 
 The result never touches the host or the shared home: the entrypoint writes it to a container-local path and starts claude with `--settings <path> --setting-sources user,project,local`. `user` stays in the sources because that scope carries skills, commands, and agents discovery. Three consequences worth knowing:
 
@@ -165,7 +165,7 @@ This covers `settings.json` only. Every other layer file — a `CLAUDE.md`, a ho
 
 ### Status line
 
-`make build_claude` bakes `anvil/statusline.sh` into the image at `/usr/local/bin/swarmforge-statusline`, and the image defaults layer points `statusLine` at it — so a container shows the model, directory, turn count, context percentage, and session token/cost totals with no host setup. It reads the session JSON on stdin and the transcript.
+`make build_claude` bakes `swarmforge/harness/claude/statusline.sh` into the image at `/usr/local/bin/swarmforge-statusline`, and the image defaults layer points `statusLine` at it — so a container shows the model, directory, turn count, context percentage, and session token/cost totals with no host setup. It reads the session JSON on stdin and the transcript.
 
 Being the lowest layer, its `statusLine` is overridden key by key — a layer that sets both `type` and `command`, as any real one does, replaces it entirely:
 
