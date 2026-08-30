@@ -504,46 +504,72 @@ class CodexConfigDelivery(unittest.TestCase):
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
-    Three strings have to line up: where the Dockerfile installs the script,
-    where it installs the defaults naming it, and where the entrypoint reads
-    those defaults from. A mismatch is silent -- a defaults file that is not
-    there is just a layer contributing nothing.
+    Three strings have to line up: where the claude harness's image.sh
+    installs the script, where it installs the defaults naming it, and where
+    the entrypoint reads those defaults from. A mismatch is silent -- a
+    defaults file that is not there is just a layer contributing nothing.
     """
 
+    IMAGE_SH = os.path.join(
+        REPO_ROOT, "swarmforge", "harness", "claude", "image.sh")
+
     def setUp(self):
-        self.copies = dockerfile_copies()
         with open(ENTRYPOINT) as handle:
             self.entrypoint = handle.read()
+        with open(self.IMAGE_SH) as handle:
+            self.image_sh = handle.read()
 
-    def copy_dest(self, src):
-        self.assertIn(
-            src, self.copies, "Dockerfile has no `COPY %s <dest>` line" % src)
-        return self.copies[src]
+    def install_dest(self, src):
+        """Where image.sh installs `${harness_dir}/<src>`."""
+        match = re.search(
+            r'install [^\n]*"\$\{harness_dir\}/%s" (\S+)' % re.escape(src),
+            self.image_sh,
+        )
+        self.assertIsNotNone(
+            match, "image.sh installs no %s" % src)
+        return match.group(1)
 
-    def test_image_defaults_name_the_status_line_the_dockerfile_installs(self):
+    def test_image_defaults_name_the_status_line_image_sh_installs(self):
         with open(os.path.join(
                 REPO_ROOT, "swarmforge", "harness", "claude",
                 "claude-settings.json")) as handle:
             defaults = json.load(handle)
         self.assertEqual(
             defaults.get("statusLine"),
-            {"type": "command", "command": self.copy_dest("swarmforge/harness/claude/statusline.sh")},
+            {"type": "command", "command": self.install_dest("statusline.sh")},
         )
 
-    def test_entrypoint_reads_the_defaults_where_the_dockerfile_installs_them(self):
+    def test_entrypoint_reads_the_defaults_where_image_sh_installs_them(self):
         self.assertIn(
-            'image_defaults="%s"' % self.copy_dest("swarmforge/harness/claude/claude-settings.json"),
+            'image_defaults="%s"' % self.install_dest("claude-settings.json"),
             self.entrypoint,
         )
 
+    def test_image_sh_reads_its_assets_from_the_copy_destination(self):
+        """image.sh names the package directory as a literal.
+
+        The files it installs arrive with the package COPY, so the literal
+        and that destination are one string in two files; a mismatch fails
+        the build of the one image that ships a status line.
+        """
+        match = re.search(r'harness_dir="([^"]+)"', self.image_sh)
+        self.assertIsNotNone(match, "image.sh assembles no harness_dir path")
+        copies = dockerfile_copies()
+        self.assertIn(
+            "swarmforge/", copies,
+            "Dockerfile has no `COPY swarmforge/ <dest>` line")
+        package_dest = copies["swarmforge/"].rstrip("/") + "/"
+        self.assertEqual(match.group(1), package_dest + "harness/claude")
+
 
 class HarnessInstallLayout(unittest.TestCase):
-    """The build finds each harness's install script where the package lands.
+    """The build finds each harness's scripts where the package lands.
 
-    The image installs the agent binary by running a script out of the copied
-    package, so two unrelated strings have to agree: the COPY destination and
-    the path the install RUN assembles. They are in the same file but nothing
-    ties them together, and a mismatch is an image with no harness binary.
+    The image installs the agent binary, and whatever assets the harness
+    ships, by running scripts out of the copied package -- so two unrelated
+    strings have to agree: the COPY destination and the path each RUN
+    assembles. They are in the same file but nothing ties them together, and
+    a mismatch is an image with no harness binary.
     """
 
     HARNESS_DIR = os.path.join(REPO_ROOT, "swarmforge", "harness")
@@ -561,6 +587,22 @@ class HarnessInstallLayout(unittest.TestCase):
         package_dest = copies["swarmforge/"].rstrip("/") + "/"
         self.assertEqual(
             match.group(1), package_dest + "harness/${AGENT}/install.sh")
+
+    def test_the_asset_run_reads_from_the_copy_destination(self):
+        """A harness's optional image.sh is found the same way.
+
+        The stage that runs it skips a harness with no such file, so a path
+        that has drifted from the COPY destination is not a build failure --
+        it is an image quietly missing the assets the harness ships.
+        """
+        match = re.search(r'image_sh="([^"]+)"', self.dockerfile)
+        self.assertIsNotNone(match, "Dockerfile assembles no image_sh path")
+        copies = dockerfile_copies()
+        self.assertIn(
+            "swarmforge/", copies, "Dockerfile has no `COPY swarmforge/ <dest>` line")
+        package_dest = copies["swarmforge/"].rstrip("/") + "/"
+        self.assertEqual(
+            match.group(1), package_dest + "harness/${AGENT}/image.sh")
 
     def test_every_buildable_harness_ships_an_install_script(self):
         """A harness.mk is what generates the harness's `build_<name>` target.
