@@ -1,7 +1,23 @@
 """The Claude Code harness."""
 
+import os
+import sys
+
 from swarmforge.agents.emit import OPENCODE_ONLY_FIELDS, render, warn
+from swarmforge.config import merge_json
 from swarmforge.harness.spec import HarnessSpec, Waiver
+
+# Derived from the layers on every run and never read as an input. It stays
+# off the persistent home -- one directory shared by every container for this
+# user, where it would carry an org layer's permissions, hooks, and env into
+# later runs that do not mount that layer -- and rides claude's command line
+# instead, delivered by the entrypoint's exec.
+SETTINGS_FILE = "/run/swarmforge/claude-settings.json"
+
+# The image's own defaults, and the bottom settings layer: any higher and the
+# image would overrule a key a session chose. This is the path claude's
+# image.sh installs to.
+IMAGE_DEFAULT_SETTINGS = "/usr/local/share/swarmforge/claude-settings.json"
 
 # OpenCode tool id -> Claude Code tool name. Ids mapping to None have no
 # Claude equivalent and are dropped.
@@ -95,11 +111,45 @@ def mcp_fragment(servers):
     return {"mcpServers": out} if out else {}
 
 
+def finalize_config(ctx):
+    """Build the settings file claude is handed on its command line.
+
+    Settings are built repo -> user -> org above the image defaults. A failed
+    build must still leave valid JSON at the path the exec names, and an empty
+    object is the safe reading of "no layer could be applied".
+    """
+    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+    # A path is passed for every layer whether or not it exists, which is the
+    # normal case merge_json.build_file skips over; an empty layer contributes
+    # "/settings.json", which is no more present than the rest.
+    sources = [IMAGE_DEFAULT_SETTINGS] + [
+        src + "/settings.json"
+        for src in (ctx.config_repo_src, ctx.config_user_src, ctx.config_org_src)
+    ]
+    try:
+        merge_json.build_file(SETTINGS_FILE, sources)
+    except Exception:
+        print(
+            "Warning: could not build Claude settings.json; continuing",
+            file=sys.stderr,
+        )
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as handle:
+                handle.write("{}\n")
+        except OSError:
+            pass
+
+
 SPEC = HarnessSpec(
     name="claude",
     binary="claude",
     config_dest="/run/swarmforge/claude-config",
     config_reset=False,
+    # agents/ is kept out because unified agent translation is its sole
+    # source; settings.json merges by key through finalize_config instead of
+    # overlaying whole; .credentials.json stays out because the default user
+    # layer is the host's own ~/.claude and the store is named elsewhere, so
+    # a merged copy is a secret nothing reads.
     layer_excludes=(
         "./skills",
         "./commands",
@@ -119,4 +169,5 @@ SPEC = HarnessSpec(
     ),
     agent_emitter=agent_emitter,
     extra_chown_paths=("/run/swarmforge/claude-config",),
+    finalize_config=finalize_config,
 )
