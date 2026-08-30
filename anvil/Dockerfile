@@ -104,61 +104,33 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/anvil-entrypoint.sh"]
 FROM runtime-base AS agent-runtime
 
 ARG AGENT=opencode
-ARG OPENCODE_VERSION=
+# Version pin for the harness install, empty for the installer's latest.
+# Each install script decides what the pin means for its installer; the
+# user-facing knob keeps its per-harness name in the harness.mk fragment
+# that maps it onto this build arg.
+ARG SWARMFORGE_HARNESS_VERSION=
 ARG SWARMFORGE_HARNESS_INSTALL_BUST=0
+# The package is already in the image from the runtime-base stage, and each
+# harness ships the script that installs its binary inside its own package
+# directory. An AGENT with no such script is not one this image can build, so
+# the missing file fails the build rather than producing a binary-less image.
 RUN set -eux; \
-  case "${AGENT}" in \
-    opencode) \
-      echo "Installing OpenCode (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
-      if [ -n "${OPENCODE_VERSION}" ]; then \
-        curl -fsSL https://opencode.ai/install | bash -s -- --version "${OPENCODE_VERSION}"; \
-      else \
-        curl -fsSL https://opencode.ai/install | bash; \
-      fi; \
-      install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode; \
-      ;; \
-    claude) \
-      echo "Installing Claude Code (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
-      curl -fsSL https://claude.ai/install.sh | bash; \
-      claude_bin="$(readlink -f /root/.local/bin/claude)"; \
-      install -m 0755 "${claude_bin}" /usr/local/bin/claude; \
-      rm -rf /root/.claude /root/.claude.json /root/.local/share/claude; \
-      rm -f /root/.local/bin/claude; \
-      ;; \
-    grok) \
-      echo "Installing Grok Build CLI (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
-      curl -fsSL https://x.ai/cli/install.sh | bash; \
-      grok_bin="$(readlink -f /root/.grok/bin/grok)"; \
-      install -m 0755 "${grok_bin}" /usr/local/bin/grok; \
-      rm -rf /root/.grok; \
-      ;; \
-    codex) \
-      echo "Installing Codex CLI (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"; \
-      export CODEX_HOME=/opt/codex CODEX_INSTALL_DIR=/usr/local/bin; \
-      curl -fsSL https://chatgpt.com/codex/install.sh | sh; \
-      ;; \
-    *) \
+    install_sh="/usr/local/lib/swarmforge/swarmforge/harness/${AGENT}/install.sh"; \
+    if [ ! -f "${install_sh}" ]; then \
       printf '%s\n' "Unsupported AGENT: ${AGENT}" >&2; \
       exit 1; \
-      ;; \
-  esac
+    fi; \
+    sh "${install_sh}"
 
 ENV SWARMFORGE_AGENT_BIN=${AGENT}
 
-FROM agent-runtime AS opencode-runtime
+FROM agent-runtime AS harness-runtime
 
-FROM agent-runtime AS claude-runtime
+ARG AGENT=opencode
+# A harness's build-time asset install is its optional image.sh, run out of
+# the copied package. A harness that ships none adds nothing to the image.
+RUN set -eux; \
+    image_sh="/usr/local/lib/swarmforge/swarmforge/harness/${AGENT}/image.sh"; \
+    if [ -f "${image_sh}" ]; then sh "${image_sh}"; fi
 
-# The status line and the settings that turn it on ship only in this image:
-# no other harness reads Claude's settings.json. The defaults are the lowest
-# config layer, and they are baked in here rather than shipped from the
-# checkout because they name a path only the image has.
-COPY anvil/statusline.sh /usr/local/bin/swarmforge-statusline
-COPY anvil/claude-settings.json /usr/local/share/swarmforge/claude-settings.json
-RUN chmod +x /usr/local/bin/swarmforge-statusline
-
-FROM agent-runtime AS grok-runtime
-
-FROM agent-runtime AS codex-runtime
-
-FROM opencode-runtime AS default
+FROM harness-runtime AS default

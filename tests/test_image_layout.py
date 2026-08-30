@@ -504,34 +504,187 @@ class CodexConfigDelivery(unittest.TestCase):
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
-    Three strings have to line up: where the Dockerfile installs the script,
-    where it installs the defaults naming it, and where the entrypoint reads
-    those defaults from. A mismatch is silent -- a defaults file that is not
-    there is just a layer contributing nothing.
+    Three strings have to line up: where the claude harness's image.sh
+    installs the script, where it installs the defaults naming it, and where
+    the entrypoint reads those defaults from. A mismatch is silent -- a
+    defaults file that is not there is just a layer contributing nothing.
     """
 
+    IMAGE_SH = os.path.join(
+        REPO_ROOT, "swarmforge", "harness", "claude", "image.sh")
+
     def setUp(self):
-        self.copies = dockerfile_copies()
         with open(ENTRYPOINT) as handle:
             self.entrypoint = handle.read()
+        with open(self.IMAGE_SH) as handle:
+            self.image_sh = handle.read()
 
-    def copy_dest(self, src):
-        self.assertIn(
-            src, self.copies, "Dockerfile has no `COPY %s <dest>` line" % src)
-        return self.copies[src]
+    def install_dest(self, src):
+        """Where image.sh installs `${harness_dir}/<src>`."""
+        match = re.search(
+            r'install [^\n]*"\$\{harness_dir\}/%s" (\S+)' % re.escape(src),
+            self.image_sh,
+        )
+        self.assertIsNotNone(
+            match, "image.sh installs no %s" % src)
+        return match.group(1)
 
-    def test_image_defaults_name_the_status_line_the_dockerfile_installs(self):
-        with open(os.path.join(REPO_ROOT, "anvil", "claude-settings.json")) as handle:
+    def test_image_defaults_name_the_status_line_image_sh_installs(self):
+        with open(os.path.join(
+                REPO_ROOT, "swarmforge", "harness", "claude",
+                "claude-settings.json")) as handle:
             defaults = json.load(handle)
         self.assertEqual(
             defaults.get("statusLine"),
-            {"type": "command", "command": self.copy_dest("anvil/statusline.sh")},
+            {"type": "command", "command": self.install_dest("statusline.sh")},
         )
 
-    def test_entrypoint_reads_the_defaults_where_the_dockerfile_installs_them(self):
+    def test_entrypoint_reads_the_defaults_where_image_sh_installs_them(self):
         self.assertIn(
-            'image_defaults="%s"' % self.copy_dest("anvil/claude-settings.json"),
+            'image_defaults="%s"' % self.install_dest("claude-settings.json"),
             self.entrypoint,
+        )
+
+    def test_image_sh_reads_its_assets_from_the_copy_destination(self):
+        """image.sh names the package directory as a literal.
+
+        The files it installs arrive with the package COPY, so the literal
+        and that destination are one string in two files; a mismatch fails
+        the build of the one image that ships a status line.
+        """
+        match = re.search(r'harness_dir="([^"]+)"', self.image_sh)
+        self.assertIsNotNone(match, "image.sh assembles no harness_dir path")
+        copies = dockerfile_copies()
+        self.assertIn(
+            "swarmforge/", copies,
+            "Dockerfile has no `COPY swarmforge/ <dest>` line")
+        package_dest = copies["swarmforge/"].rstrip("/") + "/"
+        self.assertEqual(match.group(1), package_dest + "harness/claude")
+
+
+class HarnessInstallLayout(unittest.TestCase):
+    """The build finds each harness's scripts where the package lands.
+
+    The image installs the agent binary, and whatever assets the harness
+    ships, by running scripts out of the copied package -- so two unrelated
+    strings have to agree: the COPY destination and the path each RUN
+    assembles. They are in the same file but nothing ties them together, and
+    a mismatch is an image with no harness binary.
+    """
+
+    HARNESS_DIR = os.path.join(REPO_ROOT, "swarmforge", "harness")
+
+    def setUp(self):
+        with open(DOCKERFILE) as handle:
+            self.dockerfile = handle.read()
+
+    def test_the_install_run_reads_from_the_copy_destination(self):
+        match = re.search(r'install_sh="([^"]+)"', self.dockerfile)
+        self.assertIsNotNone(match, "Dockerfile assembles no install_sh path")
+        copies = dockerfile_copies()
+        self.assertIn(
+            "swarmforge/", copies, "Dockerfile has no `COPY swarmforge/ <dest>` line")
+        package_dest = copies["swarmforge/"].rstrip("/") + "/"
+        self.assertEqual(
+            match.group(1), package_dest + "harness/${AGENT}/install.sh")
+
+    def test_the_asset_run_reads_from_the_copy_destination(self):
+        """A harness's optional image.sh is found the same way.
+
+        The stage that runs it skips a harness with no such file, so a path
+        that has drifted from the COPY destination is not a build failure --
+        it is an image quietly missing the assets the harness ships.
+        """
+        match = re.search(r'image_sh="([^"]+)"', self.dockerfile)
+        self.assertIsNotNone(match, "Dockerfile assembles no image_sh path")
+        copies = dockerfile_copies()
+        self.assertIn(
+            "swarmforge/", copies, "Dockerfile has no `COPY swarmforge/ <dest>` line")
+        package_dest = copies["swarmforge/"].rstrip("/") + "/"
+        self.assertEqual(
+            match.group(1), package_dest + "harness/${AGENT}/image.sh")
+
+    def test_every_buildable_harness_ships_an_install_script(self):
+        """A harness.mk is what generates the harness's `build_<name>` target.
+
+        The Makefile globs the fragments, so adding one advertises a build
+        that only discovers the missing script partway through the image.
+        """
+        fragments = sorted(
+            name for name in os.listdir(self.HARNESS_DIR)
+            if os.path.isfile(os.path.join(self.HARNESS_DIR, name, "harness.mk"))
+        )
+        self.assertTrue(fragments, "no harness declares a harness.mk")
+        for name in fragments:
+            self.assertTrue(
+                os.path.isfile(
+                    os.path.join(self.HARNESS_DIR, name, "install.sh")),
+                "harness %s has a build target but no install.sh" % name,
+            )
+
+    def test_the_install_run_executes_the_script_and_fails_without_one(self):
+        """Path agreement alone leaves the RUN free to do nothing.
+
+        The dispatch is an assignment, a guard, and an execution; dropping
+        the execution or the guard's exit keeps every path assertion green
+        while producing an image with no harness binary.
+        """
+        self.assertIn('sh "${install_sh}"', self.dockerfile)
+        guard = self.dockerfile[
+            self.dockerfile.index('install_sh="'):
+            self.dockerfile.index('sh "${install_sh}"')
+        ]
+        self.assertIn('[ ! -f "${install_sh}" ]', guard)
+        self.assertIn("exit 1", guard)
+
+    def test_the_asset_run_executes_the_script_when_present(self):
+        """The one line where finding image.sh becomes running it.
+
+        A guard that locates the script and does nothing leaves the claude
+        image without its status line, and no build fails over it.
+        """
+        self.assertIn(
+            'if [ -f "${image_sh}" ]; then sh "${image_sh}"; fi',
+            self.dockerfile,
+        )
+
+    def test_harness_scripts_fail_their_run_on_the_first_error(self):
+        """`sh <script>` starts a fresh shell, so the RUN's own errexit does
+        not reach the script body. A script without its own set -e reports
+        success after a failed install -- a binary-less image that only
+        surfaces when a container cannot exec its harness.
+        """
+        scripts = sorted(
+            os.path.join(self.HARNESS_DIR, name, script)
+            for name in os.listdir(self.HARNESS_DIR)
+            for script in ("install.sh", "image.sh")
+            if os.path.isfile(os.path.join(self.HARNESS_DIR, name, script))
+        )
+        self.assertTrue(scripts, "no harness ships a build script")
+        for path in scripts:
+            with open(path) as handle:
+                text = handle.read()
+            self.assertRegex(
+                text, r"(?m)^set -\w*e",
+                "%s does not set errexit" % os.path.relpath(path, REPO_ROOT),
+            )
+
+    def test_the_build_recipes_target_a_stage_the_dockerfile_declares(self):
+        """The --target word only resolves against a stage at build time.
+
+        Every recipe test runs against a stubbed docker, so a stage renamed
+        in the Dockerfile alone keeps the recorded argv green while failing
+        all four builds.
+        """
+        stages = set(re.findall(r"(?m)^FROM \S+ AS (\S+)", self.dockerfile))
+        targets = {
+            argv[argv.index("--target") + 1]
+            for argv in make_argv_fixtures.BUILD_ARGV.values()
+        }
+        self.assertTrue(targets, "no recorded build argv names a --target")
+        self.assertLessEqual(
+            targets, stages,
+            "build recipes target stages the Dockerfile does not declare",
         )
 
 

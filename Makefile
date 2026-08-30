@@ -233,20 +233,19 @@ harness_mkdir_lines = $(subst $(harness_space)$(harness_nl),$(harness_nl),$(fore
 
 # Generates one harness's build/update/run/stop targets from the knobs its
 # harness.mk fragment declares. $(1) is the harness name as it appears in
-# target names, --build-arg AGENT, and the Dockerfile stage; $(2) is the
-# fragment's variable prefix (CLAUDE, OPENCODE, ...). Fragment knobs are
-# referenced by name in the generated recipes and expand when a recipe
-# runs, so command-line and environment overrides behave exactly as they
-# would on a rule written out in full. The one knob spliced verbatim at
-# eval time is $(2)_MKDIRS, whose entries therefore carry $$-escaped
-# references. .PHONY and clean accumulate across evals, one contribution
-# per harness.
+# target names and --build-arg AGENT; $(2) is the fragment's variable
+# prefix (CLAUDE, OPENCODE, ...). Fragment knobs are referenced by name in
+# the generated recipes and expand when a recipe runs, so command-line and
+# environment overrides behave exactly as they would on a rule written out
+# in full. The one knob spliced verbatim at eval time is $(2)_MKDIRS,
+# whose entries therefore carry $$-escaped references. .PHONY and clean
+# accumulate across evals, one contribution per harness.
 define harness_rules
 .PHONY: build_$(1) update_$(1) run_$(1) stop_$(1)
 
 build_$(1):
 	docker build $(harness_bs)
-	  --target $(1)-runtime $(harness_bs)
+	  --target harness-runtime $(harness_bs)
 	  --build-arg AGENT=$(1) $(harness_bs)
 $(if $($(2)_EXTRA_BUILD_ARGS),	  $$($(2)_EXTRA_BUILD_ARGS) $(harness_bs)$(harness_nl))	  --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) $(harness_bs)
 	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) $(harness_bs)
