@@ -10,9 +10,6 @@ ANVIL_GROUP="anvil"
 ANVIL_HOME="/home/${ANVIL_USER}"
 AGENT_BIN="${SWARMFORGE_AGENT_BIN:-opencode}"
 AGENT_BIN_PATH="/usr/local/bin/${AGENT_BIN}"
-CLAUDE_SETTINGS_FILE="/run/swarmforge/claude-settings.json"
-CLAUDE_CONFIG_HOME="/run/swarmforge/claude-config"
-CLAUDE_SHARED_HOME="${ANVIL_HOME}/.claude"
 
 configure_timezone() {
   timezone="${TZ:-}"
@@ -69,28 +66,10 @@ fi
 # before the privilege drop, and a failure here stops the container.
 PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}" "${ANVIL_UID}" "${ANVIL_GID}"
 
-# The driver leaves a git wrapper here when the workspace's worktree paths
-# need rewriting for the session; standing ahead of the real git on PATH is
-# what turns it on.
-if [ -x /usr/local/libexec/swarmforge/git ]; then
-  export PATH="/usr/local/libexec/swarmforge:${PATH}"
-fi
-
-# Command-line settings outrank every file, so the org layer beats even the
-# checkout's own .claude/settings.json. `user` stays in the sources: that
-# scope carries skills, commands, and agents discovery.
-if [ "${AGENT_BIN}" = "claude" ] && [ -f "${CLAUDE_SETTINGS_FILE}" ]; then
-  set -- --settings "${CLAUDE_SETTINGS_FILE}" --setting-sources user,project,local "$@"
-fi
-
-if [ "${AGENT_BIN}" = "claude" ]; then
-  export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_HOME}"
-  # Credentials are written by rename, which replaces a link, so the store is
-  # named rather than linked. Claude's token-refresh lock sits in the same
-  # directory, so concurrent containers rotate the shared token one at a time.
-  export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SHARED_HOME}"
-fi
-
-export HOME="${ANVIL_HOME}"
-
-exec gosu "${ANVIL_UID}:${ANVIL_GID}" "${AGENT_BIN_PATH}" "$@"
+# The user phase: privileges drop and the pre-exec driver replaces itself with
+# the harness binary, with HOME set to the anvil home, the two variables this
+# launch sets scrubbed back out, and the harness's pre_exec hook given the last
+# word on the argv and the environment it starts with. PYTHONCOERCECLOCALE=0
+# keeps interpreter startup from editing LC_CTYPE into the environment the
+# binary inherits.
+exec gosu "${ANVIL_UID}:${ANVIL_GID}" env PYTHONCOERCECLOCALE=0 PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.execute "${AGENT_BIN}" "${ANVIL_HOME}" -- "$@"
