@@ -54,7 +54,11 @@ Three things make read-only actually hold:
     that contains it, which is where git looks anyway. Not quite invisible,
     though -- `git rev-parse --git-common-dir` answers with an absolute path
     where it used to answer `.git`, because git resolves the pointer it now
-    finds.
+    finds. In a bare git dir it is not inert at all: a git dir holding a
+    `commondir` is a linked worktree's as far as git is concerned, and there
+    git ignores `core.bare`, so the repository reads as a checkout of the
+    directory above it. The guard warns and names the fix -- `core.bare`
+    moved into `config.worktree`, which git reads after that decision.
 
 Symlinks are refused rather than followed. A guarded path that is a symlink is
 skipped, and the walk never descends through one: otherwise a container that
@@ -249,6 +253,28 @@ def is_true(config, key):
         return False
     number = git_int(value)
     return number is not None and number != 0
+
+
+def bare_flip_warning(git_dir):
+    """Why a bare git dir stops reading as bare, and the config that keeps it so.
+
+    A git dir holding a `commondir` is a linked worktree's as far as git is
+    concerned, and in a linked worktree git ignores `core.bare` from the
+    shared config. The read-only sentinel therefore turns a bare repository
+    into a checkout: `git status` run in the directory above it lists the
+    sibling worktrees as untracked, and `git clean` there would delete them.
+    `config.worktree` is read after that decision, so `core.bare` moved there
+    holds. Moved, not copied: once the extension is on, the linked worktrees
+    honor `core.bare` from the shared config too and would read as bare
+    themselves.
+    """
+    return (
+        "%s is bare, and the read-only commondir guarding it makes git read it "
+        "as a checkout; keep it bare by moving core.bare into its worktree "
+        "config:\n"
+        "  git -C %s config extensions.worktreeConfig true\n"
+        "  git -C %s config --unset core.bare\n"
+        "  git -C %s config --worktree core.bare true" % ((git_dir,) * 4))
 
 
 def worktree_config_enabled(config):
@@ -484,6 +510,8 @@ def build_mounts(workspace, targets, warn=None):
         seen.add(repository)
         config = read_config(repository)
         worktree_config = worktree_config_enabled(config)
+        if is_true(config, "core.bare"):
+            warn(bare_flip_warning(repository))
         if repository != workspace:
             # A bare repo is its own workspace mount, already a mount point.
             guard(repository, False)
