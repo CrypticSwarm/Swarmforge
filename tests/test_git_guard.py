@@ -588,6 +588,71 @@ class WorktreeConfig(GuardCase):
             os.path.isfile(os.path.join(repo, ".git", "config.worktree")))
 
 
+class BareRootWithSiblingWorktrees(GuardCase):
+    """A bare `repo/.git` whose checkouts are linked worktrees beside it.
+
+    Git takes a git dir holding a `commondir` for a linked worktree's and
+    ignores `core.bare` there, so the guard's placeholder makes `repo/` read
+    as a checkout. Moving `core.bare` into `config.worktree` keeps it bare,
+    since git reads that file after deciding.
+    """
+
+    def setUp(self):
+        super().setUp()
+        seed = self.repo("seed")
+        self.root = os.path.join(self.tmp, "repo")
+        self.common = os.path.join(self.root, ".git")
+        os.makedirs(self.root)
+        git(self.tmp, "clone", "-q", "--bare", seed, self.common)
+        self.worktree = os.path.join(self.root, "wt1")
+        git(self.common, "worktree", "add", "-q", self.worktree, "master")
+        self.workspaces = (self.worktree, self.root)
+
+    def repair(self):
+        git(self.common, "config", "extensions.worktreeConfig", "true")
+        git(self.common, "config", "--unset", "core.bare")
+        git(self.common, "config", "--worktree", "core.bare", "true")
+
+    def is_bare(self, path):
+        return subprocess.run(
+            ["git", "-C", path, "rev-parse", "--is-bare-repository"],
+            check=True, capture_output=True, text=True, env=GIT_ENV,
+        ).stdout.strip() == "true"
+
+    def test_warns_when_core_bare_is_in_the_shared_config(self):
+        for workspace in self.workspaces:
+            with self.subTest(workspace=workspace):
+                warnings = []
+                gitguard.build_mounts(workspace, ["/workspace"],
+                                      warn=warnings.append)
+                self.assertFalse(self.is_bare(self.root))
+                bare = [w for w in warnings if w.startswith(self.common)]
+                self.assertEqual(len(bare), 1, warnings)
+                self.assertIn(
+                    "git -C %s config --worktree core.bare true" % self.common,
+                    bare[0])
+
+    def test_repaired_repo_stays_bare_and_its_worktrees_stay_checkouts(self):
+        self.repair()
+        for workspace in self.workspaces:
+            with self.subTest(workspace=workspace):
+                warnings = []
+                mounts = gitguard.build_mounts(workspace, ["/workspace"],
+                                               warn=warnings.append)
+                self.assertTrue(os.path.isfile(
+                    os.path.join(self.common, "commondir")))
+                self.assertTrue(self.is_bare(self.root))
+                self.assertFalse(self.is_bare(self.worktree))
+                self.assertFalse(
+                    [w for w in warnings if w.startswith(self.common)],
+                    warnings)
+                self.assertTrue(
+                    any("/config.worktree:" in spec and spec.endswith(":ro")
+                        and spec.startswith(self.common + "/config.worktree:")
+                        for spec in mounts),
+                    mounts)
+
+
 class CommandLine(GuardCase):
     def _main(self, argv):
         out, err = io.StringIO(), io.StringIO()
