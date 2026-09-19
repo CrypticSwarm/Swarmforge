@@ -46,6 +46,7 @@ packages = [
     "swarmforge",
     "swarmforge.agents",
     "swarmforge.anvil",
+    "swarmforge.cli",
     "swarmforge.config",
     "swarmforge.tongs",
 ]
