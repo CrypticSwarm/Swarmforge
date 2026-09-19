@@ -255,26 +255,44 @@ def is_true(config, key):
     return number is not None and number != 0
 
 
-def bare_flip_warning(git_dir):
-    """Why a bare git dir stops reading as bare, and the config that keeps it so.
+# The repair, as arguments to `git -C <git dir>`. The order is the one
+# git requires: `config --worktree` refuses to write until the extension is on.
+BARE_REPAIR_STEPS = (
+    ["config", "extensions.worktreeConfig", "true"],
+    ["config", "--unset", "core.bare"],
+    ["config", "--worktree", "core.bare", "true"],
+)
+
+
+def bare_repair(git_dir):
+    """The commands that keep a bare `git_dir` reading as bare, as argv lists.
 
     A git dir holding a `commondir` is a linked worktree's as far as git is
-    concerned, and in a linked worktree git ignores `core.bare` from the
-    shared config. The read-only sentinel therefore turns a bare repository
-    into a checkout: `git status` run in the directory above it lists the
-    sibling worktrees as untracked, and `git clean` there would delete them.
-    `config.worktree` is read after that decision, so `core.bare` moved there
-    holds. Moved, not copied: once the extension is on, the linked worktrees
-    honor `core.bare` from the shared config too and would read as bare
-    themselves.
+    concerned, and there `core.bare` from the shared config is ignored, so the
+    read-only sentinel turns a bare repository into a checkout: `git status`
+    in the directory above it lists the sibling worktrees as untracked, and
+    `git clean` there would delete them. `config.worktree` is read after that
+    decision, so `core.bare` moved there holds. Moved, not copied: once the
+    extension is on, the linked worktrees honor the shared config's
+    `core.bare` too and would read as bare themselves.
+    """
+    return [["git", "-C", git_dir] + step for step in BARE_REPAIR_STEPS]
+
+
+def bare_flip_warning(git_dir):
+    """What the guard has done to a bare repository, and the repair for it.
+
+    The commands are `BARE_REPAIR_STEPS`, which `swarmforge.worktrees` runs
+    when it builds a bare repo, so the warning cannot drift from what the
+    tooling does.
     """
     return (
         "%s is bare, and the read-only commondir guarding it makes git read it "
         "as a checkout; keep it bare by moving core.bare into its worktree "
-        "config:\n"
-        "  git -C %s config extensions.worktreeConfig true\n"
-        "  git -C %s config --unset core.bare\n"
-        "  git -C %s config --worktree core.bare true" % ((git_dir,) * 4))
+        "config:\n%s"
+        % (git_dir,
+           "\n".join("  " + " ".join(command)
+                     for command in bare_repair(git_dir))))
 
 
 def worktree_config_enabled(config):
