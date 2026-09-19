@@ -7,13 +7,15 @@ It emphasizes robustness, constraint-driven design, and interoperability over ad
 
 ## Installation
 
-1. Add the shell helper alias:
+1. Add the shell helper alias and link the `swarmforge` command:
 
 ```bash
 bash ./install.sh
 ```
 
 This appends an `oc` alias to your shell rc file that runs `make run_opencode PROJECT_DIR=$(pwd)` against the repo's Makefile.
+It also links `bin/swarmforge` into `~/.local/bin` so you can run [`swarmforge`](#swarmforge-cli) by name, replacing a symlink already there but never a regular file.
+It warns if `~/.local/bin` is not on your `PATH`.
 Run it with `bash` (it uses Bash arrays) even if your login shell is Zsh.
 On macOS it prefers `~/.zshrc` and falls back to `~/.bash_profile`, so you don't need to create `~/.bashrc` manually.
 Override the target file with `OC_RC_FILE=/path/to/rc bash ./install.sh`.
@@ -83,13 +85,46 @@ A guarded path that is absent is created on the host first so there is no gap to
 The placeholders are inert, though a repo that gains a `commondir` starts answering `git rev-parse --git-common-dir` with an absolute path instead of `.git`.
 In a bare git dir the `commondir` placeholder is not inert: git takes any git dir holding one for a linked worktree's and ignores `core.bare`, so a bare `repo/.git` with sibling worktrees reads as a checkout of `repo/`, where `git status` lists the worktrees as untracked and `git clean` would remove them.
 The guard warns and prints the fix, which moves `core.bare` into `config.worktree` under `extensions.worktreeConfig`; git reads that file after deciding, so the repo stays bare and its worktrees stay checkouts.
+`swarmforge clone` and `swarmforge init` apply it at creation, so a layout they build stays bare under the guard.
 Only git dirs that exist when the session starts are covered — a repo the agent clones or `git init`s inside the workspace, or an unrelated checkout vendored there, is not.
-A `.git` written into an existing subdirectory is worth knowing about specifically: it shadows the guarded repo for anything run from inside that directory, `git status` at the root neither reports it nor executes it, and a git-aware shell prompt or editor entering the directory is enough to run what its config says. `safe.directory`, git's gate for this, keys on ownership, and the container runs as your own uid.
+A `.git` written into an existing subdirectory shadows the guarded repo for anything run from inside that directory: `git status` at the root neither reports it nor executes it, and a git-aware shell prompt or editor entering the directory is enough to run what its config says. `safe.directory`, git's gate for this, keys on ownership, and the container runs as your own uid.
 
 The rest of the git dir stays writable, so committing, branching, fetching, and `git worktree add` work as usual.
 Commands that write config do not, by design: `git config --local`, `git remote add`, `git submodule update --init`, and `git sparse-checkout` fail with `could not write config file ...: Device or resource busy`, and hook installers like `pre-commit install` or husky fail on the read-only `.git/hooks`.
 Branch tracking is the sharp edge: `git push -u` and `git switch <remote-branch>` exit 0 and still report "set up to track", but the tracking config is silently not recorded — git treats that write failing as non-fatal. Use `git push origin HEAD:<branch>` and `git switch -c <name> --no-track origin/<branch>`, and set a repo up on the host when it needs to stick.
 This narrows the git-specific surface; it does not make the workspace a trust boundary. Hooks that config already points *outside* the git dir (`core.hooksPath = .githooks`, husky) and attribute-driven filter commands live in the workspace, as do `package.json` scripts and `Makefile`s — anything you run on the host from a directory an agent could write is still yours to trust.
+
+## swarmforge CLI
+
+`install.sh` links `bin/swarmforge` into `~/.local/bin`, which gives you a `swarmforge` command that creates git repos laid out for worktrees.
+
+```bash
+swarmforge clone git@github.com:owner/repo.git             # -> ./repo
+swarmforge clone https://host/owner/repo.git checkouts/repo
+swarmforge clone git@github.com:owner/repo.git --branch release
+swarmforge init newproject --branch main
+```
+
+`clone` fetches a remote and checks out its default branch; `init` starts an empty repo whose default branch has no commits yet.
+Both print the worktree they created and nothing else on stdout, so `cd "$(swarmforge clone URL)"` works, and both refuse a `PATH` that already exists.
+`PATH` defaults to the name git would pick for the URL, so a one-argument `swarmforge clone` lands in the same directory `git clone` would.
+`--branch` names the branch to check out instead of the remote's default, and for `init` the name to use instead of `init.defaultBranch`.
+
+The result is the repository with its branches checked out beside it:
+
+```
+repo/
+  .git/    the repository, shared by every worktree
+  main/    a checkout of main
+```
+
+`repo/main` is an ordinary working copy: it tracks `origin/main`, and `git fetch`, `git pull`, and `git push` work there as they do in a clone.
+Add a branch from inside it with `git worktree add -b feature ../feature`, which puts the checkout at `repo/feature`; a slashed name nests, so `release/1.0` lands at `repo/release/1.0`.
+Removing one is `git worktree remove ../feature`.
+
+Run the harnesses from `repo/main`, or any other branch directory, as you would from a clone: `oc`, `make run_claude PROJECT_DIR=$(pwd)`, and the other `run_*` targets need nothing extra.
+Each session sees the one branch you launched it from.
+The layout is safe under the git guard: both subcommands configure the repo for it at creation (see [Git repos and worktrees](#git-repos-and-worktrees)).
 
 ## Ollama
 
