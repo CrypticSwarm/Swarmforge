@@ -63,9 +63,50 @@ choose_target_rc() {
     printf '%s' "${dedup[0]}"
 }
 
+# A failed link is not a failed install: every path here returns 0, so the rc
+# alias is appended either way.
+link_command() {
+    local script_dir="$1"
+    local source="$script_dir/bin/swarmforge"
+    local bin_dir="$HOME/.local/bin"
+    local link="$bin_dir/swarmforge"
+
+    if ! mkdir -p "$bin_dir" 2>/dev/null; then
+        echo "Could not create $bin_dir; skipping the swarmforge link" >&2
+        return 0
+    fi
+
+    # -e follows the link, so a symlink pointing at an older checkout or at
+    # nothing falls through and is replaced; a real file is left alone.
+    if [[ -e "$link" && ! -L "$link" ]]; then
+        echo "Not replacing $link: it is not a symlink" >&2
+        return 0
+    fi
+
+    if ! ln -sfn "$source" "$link" 2>/dev/null; then
+        echo "Could not create $link; skipping the swarmforge link" >&2
+        return 0
+    fi
+    echo "Linked $link -> $source"
+
+    case ":${PATH:-}:" in
+        *":$bin_dir:"*) ;;
+        *) echo "$bin_dir is not on PATH; add it to run swarmforge by name" >&2 ;;
+    esac
+}
+
 main() {
+    # Both halves of the install write under $HOME, and choose_target_rc builds
+    # its candidates from it.
+    if [[ -z "${HOME:-}" ]]; then
+        echo "HOME is unset; nothing to install" >&2
+        exit 1
+    fi
+
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    link_command "$script_dir"
 
     local target
     target="$(choose_target_rc)"

@@ -588,6 +588,26 @@ class WorktreeConfig(GuardCase):
             os.path.isfile(os.path.join(repo, ".git", "config.worktree")))
 
 
+class BareRepair(unittest.TestCase):
+    """The repair the warning prints is the one `swarmforge.worktrees` runs.
+
+    Their order matters: `git config --worktree` refuses to write until
+    `extensions.worktreeConfig` is on.
+    """
+
+    def test_the_three_commands_in_order(self):
+        self.assertEqual(gitguard.bare_repair("/g"), [
+            ["git", "-C", "/g", "config", "extensions.worktreeConfig", "true"],
+            ["git", "-C", "/g", "config", "--unset", "core.bare"],
+            ["git", "-C", "/g", "config", "--worktree", "core.bare", "true"],
+        ])
+
+    def test_the_warning_spells_out_every_command(self):
+        warning = gitguard.bare_flip_warning("/g")
+        for command in gitguard.bare_repair("/g"):
+            self.assertIn("\n  %s" % " ".join(command), warning)
+
+
 class BareRootWithSiblingWorktrees(GuardCase):
     """A bare `repo/.git` whose checkouts are linked worktrees beside it.
 
