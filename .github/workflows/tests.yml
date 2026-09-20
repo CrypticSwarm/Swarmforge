@@ -12,8 +12,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run unit tests
         run: make test
-      - name: Check entrypoint syntax
-        run: sh -n anvil/entrypoint.sh
+      # The harness install and image scripts only ever run inside `docker
+      # build`, which CI does not do, so a syntax error in one would first be
+      # seen by whoever next built an image. Each script is parsed by the
+      # shell its shebang names; the tree holds both.
+      - name: Check shell syntax
+        run: |
+          for script in install.sh anvil/entrypoint.sh swarmforge/harness/*/*.sh; do
+            case "$(head -1 "$script")" in
+              *bash) bash -n "$script" ;;
+              *) sh -n "$script" ;;
+            esac
+          done
 
   lint:
     runs-on: ubuntu-latest

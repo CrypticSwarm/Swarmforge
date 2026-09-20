@@ -11,6 +11,7 @@ the Dockerfile lays them out.
 Run: python3 tests/test_image_layout.py
 """
 
+import dataclasses
 import json
 import os
 import posixpath
@@ -20,9 +21,22 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
+
+# The launcher's entry-point shim puts the repo root on the path; standing in
+# for it here keeps this file runnable on its own, not just under a discovery
+# run that already set it.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from swarmforge import harness
+from swarmforge.harness import claude, init
+
+import make_argv_fixtures
+
 MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
 DOCKERFILE = os.path.join(REPO_ROOT, "anvil", "Dockerfile")
 ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
@@ -83,18 +97,7 @@ class ImportRootAgreement(unittest.TestCase):
     def package_dest(self):
         return self.copy_dest("swarmforge/").rstrip("/")
 
-    def shell_function_around(self, needle):
-        """The body of the entrypoint function containing `needle`.
-
-        Entrypoint functions are `name() {` with the closing brace at column
-        zero, which is what delimits the slice.
-        """
-        at = self.entrypoint.index(needle)
-        return self.entrypoint[
-            self.entrypoint.rindex("() {", 0, at):self.entrypoint.index("\n}\n", at)
-        ]
-
-    def module_runs(self, shell=None):
+    def module_runs(self):
         """Every `python3 ... -m <module>` in the entrypoint, with its context.
 
         Yields (import root, flags, module). An absent PYTHONPATH gives a root
@@ -104,7 +107,7 @@ class ImportRootAgreement(unittest.TestCase):
         """
         code = "\n".join(
             re.sub(r"(?:^|\s)#.*", "", line)
-            for line in (self.entrypoint if shell is None else shell).splitlines()
+            for line in self.entrypoint.splitlines()
         )
         return [
             (match.group("root"), (match.group("flags") or "").split(),
@@ -119,14 +122,25 @@ class ImportRootAgreement(unittest.TestCase):
     def test_no_module_run_lets_the_workspace_onto_the_import_path(self):
         """`python3 -m` puts the working directory first on sys.path.
 
-        The entrypoint's working directory is the workspace and these modules
-        run as root, before privileges are dropped -- so without -P a repo
-        containing its own swarmforge/ would shadow the image's copy and be
-        executed.
+        The entrypoint's working directory is the workspace: the config
+        driver runs there as root, and the pre-exec driver as the anvil user
+        whose workspace it is -- so without -P a repo containing its own
+        swarmforge/ would shadow the image's copy and be executed.
         """
         for _, flags, module in self.module_runs():
             self.assertIn(
                 "-P", flags, "%s runs with the workspace on sys.path" % module)
+
+    def test_no_module_run_reads_the_home_for_python_to_import(self):
+        """-s keeps the user site directory out of every interpreter here.
+
+        `site` imports usercustomize from the home before main runs, and the
+        home is a persistent mount the session can write, so without -s a
+        session leaves python that the next run executes on its way up.
+        """
+        for _, flags, module in self.module_runs():
+            self.assertIn(
+                "-s", flags, "%s imports from the user site directory" % module)
 
     def test_the_image_python_understands_the_flags_the_entrypoint_passes(self):
         """-P needs 3.11, and the image builds its own interpreter.
@@ -161,385 +175,362 @@ class ImportRootAgreement(unittest.TestCase):
                 "%s runs without the import root on PYTHONPATH" % module,
             )
 
-    def test_the_translator_guard_covers_the_module_it_guards(self):
-        """The entrypoint skips translation when the translator is missing.
 
-        The guard is a literal path while the run beside it names a module, so
-        the two can drift apart with nothing to catch it -- and a guard that
-        never fires reads exactly like an image with no agents to translate.
-        """
-        match = re.search(r'translator="([^"]+)"', self.entrypoint)
-        self.assertIsNotNone(match, "entrypoint has no translator guard")
-        guard = match.group(1)
-        import_root = posixpath.dirname(self.package_dest()) + "/"
-        self.assertTrue(
-            guard.startswith(import_root),
-            "translator guard %s is not under %s" % (guard, import_root),
-        )
-        guarded = guard[len(import_root):].removesuffix(".py").replace("/", ".")
-        # Only the runs the guard actually stands in front of: naming some
-        # other module the entrypoint happens to run elsewhere would leave
-        # the translator itself unguarded.
-        guarded_runs = [
-            module for _, _, module
-            in self.module_runs(self.shell_function_around(match.group(0)))
-        ]
-        self.assertEqual(
-            guarded_runs, [guarded],
-            "translator guard covers %s, but its function runs %s"
-            % (guarded, guarded_runs),
-        )
+class PreExecCase(unittest.TestCase):
+    """Runs a harness's pre-exec hook over paths staged in a temporary tree.
 
-
-class ConfigLayerOrder(unittest.TestCase):
-    """The entrypoint stacks the config layers in order of trust.
-
-    Precedence decides whose permissions, hooks, and env a session runs
-    under, and nothing expresses it but the order of a few calls in one
-    shell function -- where a reorder reads as a harmless tidy-up. That
-    function cannot run outside a container, so the order is read off the
-    source instead.
+    Claude's hook reads the settings file it delivers and the wrapper
+    directory it may put on PATH, and both are live directories on a
+    development host that runs Swarmforge itself; staging them is what keeps a
+    test's answer off whatever the last container left behind.
     """
 
-    LAYERS = ("repo", "user", "org")
+    ARGS = ["--model", "sonnet", "run the thing"]
+    PATH = "/usr/local/bin:/usr/bin:/bin"
 
     def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
-        self.body = self.function_body("prepare_layered_config")
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-image-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.home = os.path.join(self.tmp, "home")
+        os.makedirs(self.home)
+        self.dest = os.path.join(self.tmp, "dest")
+        self.wrapper = os.path.join(self.tmp, "wrapper")
+        self.settings = os.path.join(self.tmp, "claude-settings.json")
 
-    def function_body(self, name):
-        """The text of the entrypoint shell function called `name`.
+    def staged_spec(self):
+        """Claude's spec with its pinned config destination under the tree."""
+        return dataclasses.replace(
+            harness.get("claude").SPEC, config_dest=self.dest)
 
-        Entrypoint functions are `name() {` with the closing brace at column
-        zero, which is what delimits the slice.
-        """
-        body = self.entrypoint[self.entrypoint.index("%s() {" % name):]
-        return body[:body.index("\n}\n")]
+    def stage_settings(self):
+        """A built settings file standing where the hook looks for one."""
+        with open(self.settings, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        return self.settings
 
-    def merged_layers(self, function):
-        """The layer each `<function> "${<layer>_config_src}"...` call names."""
-        return re.findall(
-            r'%s "\$\{(\w+)_config_src\}' % re.escape(function), self.body)
-
-    def test_config_dirs_stack_lowest_trust_first(self):
-        self.assertEqual(self.merged_layers("merge_config_layer"), list(self.LAYERS))
-
-    def test_the_key_wise_file_merge_stacks_in_the_same_order(self):
-        """The key-wise merge and the file overlay travel through separate
-        calls, so one file can end up obeying a precedence the rest do not."""
-        self.assertEqual(
-            self.merged_layers("merge_config_file"), list(self.LAYERS))
-
-    def test_the_generated_tong_servers_merge_after_every_layer(self):
-        """The fragment describes containers this run started, so a layer
-        naming the same server is describing something else."""
-        self.assertLess(
-            self.body.index('"${org_config_src}/opencode.json"'),
-            self.body.index("SWARMFORGE_TONG_MCP_FILE"),
-        )
-
-    def test_codex_toml_config_stacks_lowest_trust_first(self):
-        call = self.body[self.body.index("build_codex_config"):]
-        self.assertEqual(
-            re.findall(r'"\$\{(\w+)_config_src\}"', call)[:3],
-            list(self.LAYERS),
-        )
-
-    def test_absent_codex_layers_do_not_resolve_from_the_root(self):
-        body = self.function_body("build_codex_config")
-        for layer in self.LAYERS:
-            expected = (
-                "$" + "{config_%s_src:+" % layer
-                + "$" + "{config_%s_src}/config.toml}" % layer
-            )
-            self.assertIn(expected, body)
-
-    def test_codex_toml_build_precedes_generated_tong_servers(self):
-        self.assertLess(
-            self.body.index("build_codex_config"),
-            self.body.index("SWARMFORGE_TONG_MCP_FILE"),
-        )
-
-    def test_claude_settings_stack_the_image_defaults_below_every_layer(self):
-        """The image's defaults are a layer, and the bottom one.
-
-        Any higher and the image would overrule a key a session chose.
-        """
-        body = self.function_body("build_claude_settings")
-        sources = re.findall(r'"\$\{settings_(\w+)_src\}/settings\.json"', body)
-        self.assertEqual(sources, list(self.LAYERS))
-        self.assertLess(
-            body.index('"${image_defaults}"'),
-            body.index('"${settings_%s_src}/settings.json"' % self.LAYERS[0]),
-        )
-
-    def test_the_settings_build_is_handed_the_layers_in_that_order(self):
-        """The caller decides which directory arrives as which argument, so
-        swapping two there is invisible from the function itself."""
-        call = self.body[self.body.index("build_claude_settings"):]
-        self.assertEqual(
-            re.findall(r"\$\{(\w+)_config_src\}", call), list(self.LAYERS))
-
-    def test_claude_settings_are_built_after_every_layer_has_landed(self):
-        """A layer's own settings.json has to be on disk to be read."""
-        self.assertLess(
-            self.body.rindex("merge_config_layer"),
-            self.body.index("build_claude_settings"),
-        )
-
-    def test_claude_excludes_the_built_settings_from_the_file_overlay(self):
-        """The overlay replaces whole files, so it would undo the build."""
-        body = self.function_body("merge_config_layer")
-        claude = body[body.index("claude)"):body.index("opencode)")]
-        self.assertIn("--exclude=./settings.json", claude)
-
-    def test_claude_excludes_credentials_from_the_file_overlay(self):
-        """The user layer is the host's own ~/.claude, the store is not."""
-        body = self.function_body("merge_config_layer")
-        claude = body[body.index("claude)"):body.index("grok)")]
-        self.assertIn("--exclude=./.credentials.json", claude)
-
-    def test_codex_excludes_the_built_config_from_the_file_overlay(self):
-        body = self.function_body("merge_config_layer")
-        codex = body[body.index("codex)"):body.index("opencode)")]
-        self.assertIn("--exclude=./config.toml", codex)
+    def pre_exec(self, spec, ctx=None):
+        """Run `spec`'s hook with claude's two staged paths in place."""
+        if ctx is None:
+            ctx = init.asset_context(spec, self.home, {})
+        argv = ["/usr/local/bin/" + spec.binary] + self.ARGS
+        with mock.patch.object(claude, "SETTINGS_FILE", self.settings), \
+                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper):
+            return spec.pre_exec(ctx, argv, {"PATH": self.PATH})
 
 
-class ClaudeSettingsDelivery(unittest.TestCase):
+class ClaudeSettingsDelivery(PreExecCase):
     """The built settings reach claude as arguments, not as a file in the home.
 
-    The build and the exec share a path only through a shell variable; `user`
-    stays in the sources because that scope carries asset discovery.
+    The build writes the file and the exec names it on the command line, and
+    one module constant is all that ties them together; `user` stays in the
+    sources because that scope carries asset discovery.
     """
-
-    def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
-
-    def settings_path(self):
-        match = re.search(
-            r'^CLAUDE_SETTINGS_FILE="([^"$]+)"$', self.entrypoint, re.M)
-        self.assertIsNotNone(
-            match, "entrypoint defines no literal CLAUDE_SETTINGS_FILE")
-        return match.group(1)
-
-    def injection(self):
-        """The argv rewrite handing claude the settings flags, as one line."""
-        at = self.entrypoint.index("--settings ")
-        return self.entrypoint[
-            self.entrypoint.rindex("\n", 0, at) + 1:self.entrypoint.index("\n", at)
-        ]
 
     def test_the_built_file_lives_outside_every_host_mount(self):
         """/home/anvil is the persistent home every container for this
         user shares, and /workspace is the checkout; a build landing in
         either is the leak the command-line delivery exists to end."""
-        path = self.settings_path()
+        path = claude.SETTINGS_FILE
         for mounted in ("/home/", "/workspace"):
             self.assertFalse(
                 path.startswith(mounted),
                 "settings build lands in a host mount: %s" % path)
 
     def test_the_exec_hands_claude_the_file_the_build_writes(self):
-        """Two sites name the path; the shared variable is what ties them."""
-        self.assertIn(
-            'build_claude_settings \\\n    "${CLAUDE_SETTINGS_FILE}"',
-            self.entrypoint)
-        self.assertIn('--settings "${CLAUDE_SETTINGS_FILE}"', self.injection())
+        """The build and the exec read one constant, so running the build and
+        then reading the argv follows the whole chain rather than comparing
+        two strings that happen to match."""
+        spec = harness.get("claude").SPEC
+        org = os.path.join(self.tmp, "layer-org")
+        os.makedirs(org)
+        with open(os.path.join(org, "settings.json"), "w",
+                  encoding="utf-8") as handle:
+            handle.write('{"model": "org/m"}')
+        ctx = init.asset_context(
+            spec, self.home, {"SWARMFORGE_CONFIG_ORG_DIR": org})
+
+        with mock.patch.object(claude, "SETTINGS_FILE", self.settings):
+            claude.finalize_config(ctx)
+        self.assertTrue(os.path.isfile(self.settings))
+
+        argv, _ = self.pre_exec(spec, ctx=ctx)
+
+        self.assertIn("--settings", argv)
+        self.assertEqual(argv[argv.index("--settings") + 1], self.settings)
 
     def test_the_setting_sources_name_every_scope(self):
         """`user` carries claude's skills, commands, and agents discovery;
         project and local carry the workspace's own .claude settings."""
-        match = re.search(r"--setting-sources (\S+)", self.injection())
-        self.assertIsNotNone(match, "claude is not told which sources to load")
+        self.stage_settings()
+
+        argv, _ = self.pre_exec(harness.get("claude").SPEC)
+
+        self.assertIn("--setting-sources", argv)
         self.assertEqual(
-            match.group(1).split(","), ["user", "project", "local"])
+            argv[argv.index("--setting-sources") + 1].split(","),
+            ["user", "project", "local"])
 
     def test_only_claude_is_handed_the_flags(self):
-        """The same exec starts every harness, and the flags are claude's."""
-        at = self.entrypoint.index(self.injection())
-        guard = self.entrypoint.rindex("if ", 0, at)
-        self.assertIn(
-            '[ "${AGENT_BIN}" = "claude" ]',
-            self.entrypoint[guard:at],
-        )
+        """The same driver execs every harness, and the flags are claude's."""
+        self.stage_settings()
+        for name in harness.names():
+            if name == "claude":
+                continue
+            with self.subTest(harness=name):
+                spec = harness.get(name).SPEC
+                expected = ["/usr/local/bin/" + spec.binary] + self.ARGS
+
+                argv, _ = self.pre_exec(spec)
+
+                self.assertEqual(argv, expected)
 
 
-class ClaudeConfigHome(unittest.TestCase):
-    """Claude's config dir dies with the container; state is linked back in.
+class ClaudeConfigHome(PreExecCase):
+    """Claude's config dir dies with the container; its credentials do not.
 
-    Only the state allowlist survives, so a path claude learns to load in a
-    later release stays inert until listed.
+    The destination the driver merges into is the one the exec names to
+    claude, and it stays out of every host mount, or the session reads its
+    configuration and assets from somewhere else. The credential store is
+    named in the persistent home instead, since a rename-based write replaces
+    a link.
     """
-
-    LOADED = ("settings.json", "CLAUDE.md", "rules", "workflows",
-              "output-styles", "routines", "skills", "commands", "agents")
-
-    def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
-
-    def literal(self, name):
-        """The value of a top-level `name="..."` assignment."""
-        match = re.search(
-            r'^%s="([^"]*)"$' % name, self.entrypoint, re.M | re.S)
-        self.assertIsNotNone(match, "entrypoint defines no literal %s" % name)
-        return match.group(1)
 
     def test_the_config_home_is_outside_every_host_mount(self):
         """/home/anvil is the shared persistent home and /workspace is the
         checkout; a config dir in either outlives the container."""
-        path = self.literal("CLAUDE_CONFIG_HOME")
+        path = harness.get("claude").SPEC.config_dest
         for mounted in ("/home/", "/workspace"):
             self.assertFalse(
                 path.startswith(mounted),
                 "claude config dir lands in a host mount: %s" % path)
 
-    def test_the_state_allowlist_carries_nothing_claude_loads(self):
-        listed = (self.literal("CLAUDE_STATE_DIRS").split()
-                  + self.literal("CLAUDE_STATE_FILES").split())
-        for name in self.LOADED:
-            self.assertNotIn(name, listed)
-
-    def test_the_asset_pipeline_installs_into_the_config_home(self):
+    def test_every_asset_destination_resolves_to_the_config_home(self):
         """The destinations and the config dir are one guarantee: assets in
-        the shared home would be read from nowhere and kept forever."""
-        dests = re.findall(
-            r'_dst="\$\{(\w+)\}/(skills|commands|agents)"', self.entrypoint)
-        self.assertEqual(
-            sorted(name for home, name in dests
-                   if home == "CLAUDE_CONFIG_HOME"),
-            ["agents", "commands", "skills"])
+        the shared home would be read from nowhere and kept forever.
+
+        Skills, commands, and translated agents all resolve "{config}" to
+        claude's pinned destination, which is the config dir this class
+        covers.
+        """
+        spec = harness.get("claude").SPEC
+        self.assertEqual(spec.skills_dest, "{config}/skills")
+        self.assertEqual(spec.commands_dest, "{config}/commands")
+        self.assertEqual(spec.agents_dest, "{config}/agents")
+        self.assertEqual(init.config_root(spec, self.home, {}), spec.config_dest)
 
     def test_claude_is_told_where_its_config_lives(self):
-        self.assertIn(
-            'export CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_HOME}"', self.entrypoint)
+        _, env = self.pre_exec(self.staged_spec())
+
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], self.dest)
 
     def test_the_credential_store_is_named_not_linked(self):
         """A rename-based write replaces a link, so the store cannot be one."""
-        self.assertIn(
-            'export CLAUDE_SECURESTORAGE_CONFIG_DIR="${CLAUDE_SHARED_HOME}"',
-            self.entrypoint)
-        self.assertNotIn(
-            ".credentials.json", self.literal("CLAUDE_STATE_FILES"))
+        _, env = self.pre_exec(self.staged_spec())
+
+        store = env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]
+        self.assertEqual(store, os.path.join(self.home, ".claude"))
+        self.assertFalse(os.path.islink(store))
+        self.assertFalse(os.path.exists(store))
 
     def test_the_credential_store_outlives_the_container(self):
-        self.assertTrue(
-            self.literal("CLAUDE_SHARED_HOME").startswith("${ANVIL_HOME}/"),
-            "the credential store is not in the shared persistent home")
+        """The home the hook is handed is the persistent mount every
+        container for this user shares, and it is also the directory the
+        state links point into: the store the exec names and the state the
+        links serve have to stay one directory."""
+        _, env = self.pre_exec(self.staged_spec())
 
-    def test_state_is_linked_after_the_config_home_is_built(self):
-        """The merge wipes its destination under SWARMFORGE_CONFIG_RESET; a
-        link removed there costs the run its history and credentials."""
-        call = self.entrypoint.rindex("link_claude_state")
-        for earlier in ("prepare_agent_config", "prepare_unified_agents",
-                        "copy_shared_assets"):
-            self.assertLess(
-                self.entrypoint.rindex("\n%s\n" % earlier), call)
-
-
-class CodexConfigDelivery(unittest.TestCase):
-    """Codex layers are rebuilt off-home before config.toml is published."""
-
-    def setUp(self):
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
-
-    def function_body(self, name):
-        body = self.entrypoint[self.entrypoint.index("%s() {" % name):]
-        return body[:body.index("\n}\n")]
-
-    def test_build_directory_is_outside_host_mounts(self):
-        match = re.search(
-            r'^CODEX_CONFIG_HOME="([^"$]+)"$', self.entrypoint, re.M)
-        self.assertIsNotNone(match)
-        for mounted in ("/home/", "/workspace"):
-            self.assertFalse(match.group(1).startswith(mounted))
-
-    def test_generated_codex_agents_stay_outside_host_mounts(self):
-        agents_home = re.search(
-            r'^CODEX_AGENTS_HOME="([^"$]+)"$', self.entrypoint, re.M
-        )
-        self.assertIsNotNone(agents_home)
-        for mounted in ("/home/", "/workspace"):
-            self.assertFalse(agents_home.group(1).startswith(mounted))
-
-    def test_generated_codex_agents_register_in_published_config(self):
-        translate = self.function_body("prepare_unified_agents")
-        register = self.function_body("register_codex_agents")
-        self.assertIn('agents_dst="${CODEX_AGENTS_HOME}"', translate)
-        self.assertIn('"${CODEX_AGENTS_HOME}/config.toml"', register)
-        self.assertIn('"${CODEX_CONFIG_FILE}"', register)
-
-    def test_registration_runs_after_translation_and_before_assets(self):
-        register = self.entrypoint.rindex("\nregister_codex_agents\n")
-        self.assertLess(
-            self.entrypoint.rindex("\nprepare_unified_agents\n"), register
-        )
-        self.assertLess(register, self.entrypoint.rindex("\ncopy_shared_assets\n"))
-
-    def test_generated_roles_are_chowned_before_the_uid_drop(self):
-        chown = (
-            'chown -Rh "${ANVIL_UID}:${ANVIL_GID}" '
-            '"${CODEX_AGENTS_HOME}"'
-        )
-        self.assertIn(chown, self.entrypoint)
-        self.assertLess(self.entrypoint.index(chown), self.entrypoint.index("exec gosu"))
-
-    def test_codex_forces_a_fresh_build_and_publishes_last(self):
-        body = self.function_body("prepare_agent_config")
-        self.assertIn('config_dest="${CODEX_CONFIG_HOME}"', body)
-        self.assertIn("reset_config=1", body)
-        prepare = body.index("prepare_layered_config")
-        truncate = body.index(': > "${CODEX_CONFIG_FILE}"')
-        publish = body.index(
-            'cp "${CODEX_CONFIG_HOME}/config.toml" "${CODEX_CONFIG_FILE}"')
-        self.assertLess(prepare, truncate)
-        self.assertLess(truncate, publish)
+        self.assertEqual(
+            env["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
+            os.path.join(self.home, ".claude"))
 
 
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
-    Three strings have to line up: where the Dockerfile installs the script,
-    where it installs the defaults naming it, and where the entrypoint reads
-    those defaults from. A mismatch is silent -- a defaults file that is not
-    there is just a layer contributing nothing.
+    Three strings have to line up: where the claude harness's image.sh
+    installs the script, where it installs the defaults naming it, and where
+    the settings build reads those defaults from. A mismatch is silent -- a
+    defaults file that is not there is just a layer contributing nothing.
     """
 
+    IMAGE_SH = os.path.join(
+        REPO_ROOT, "swarmforge", "harness", "claude", "image.sh")
+
     def setUp(self):
-        self.copies = dockerfile_copies()
-        with open(ENTRYPOINT) as handle:
-            self.entrypoint = handle.read()
+        with open(self.IMAGE_SH) as handle:
+            self.image_sh = handle.read()
 
-    def copy_dest(self, src):
-        self.assertIn(
-            src, self.copies, "Dockerfile has no `COPY %s <dest>` line" % src)
-        return self.copies[src]
+    def install_dest(self, src):
+        """Where image.sh installs `${harness_dir}/<src>`."""
+        match = re.search(
+            r'install [^\n]*"\$\{harness_dir\}/%s" (\S+)' % re.escape(src),
+            self.image_sh,
+        )
+        self.assertIsNotNone(
+            match, "image.sh installs no %s" % src)
+        return match.group(1)
 
-    def test_image_defaults_name_the_status_line_the_dockerfile_installs(self):
-        with open(os.path.join(REPO_ROOT, "anvil", "claude-settings.json")) as handle:
+    def test_image_defaults_name_the_status_line_image_sh_installs(self):
+        with open(os.path.join(
+                REPO_ROOT, "swarmforge", "harness", "claude",
+                "claude-settings.json")) as handle:
             defaults = json.load(handle)
         self.assertEqual(
             defaults.get("statusLine"),
-            {"type": "command", "command": self.copy_dest("anvil/statusline.sh")},
+            {"type": "command", "command": self.install_dest("statusline.sh")},
         )
 
-    def test_entrypoint_reads_the_defaults_where_the_dockerfile_installs_them(self):
+    def test_the_settings_build_reads_the_defaults_where_image_sh_installs_them(self):
+        self.assertEqual(
+            claude.IMAGE_DEFAULT_SETTINGS,
+            self.install_dest("claude-settings.json"),
+        )
+
+    def test_image_sh_reads_its_assets_from_the_copy_destination(self):
+        """image.sh names the package directory as a literal.
+
+        The files it installs arrive with the package COPY, so the literal
+        and that destination are one string in two files; a mismatch fails
+        the build of the one image that ships a status line.
+        """
+        match = re.search(r'harness_dir="([^"]+)"', self.image_sh)
+        self.assertIsNotNone(match, "image.sh assembles no harness_dir path")
+        copies = dockerfile_copies()
         self.assertIn(
-            'image_defaults="%s"' % self.copy_dest("anvil/claude-settings.json"),
-            self.entrypoint,
+            "swarmforge/", copies,
+            "Dockerfile has no `COPY swarmforge/ <dest>` line")
+        package_dest = copies["swarmforge/"].rstrip("/") + "/"
+        self.assertEqual(match.group(1), package_dest + "harness/claude")
+
+
+class HarnessInstallLayout(unittest.TestCase):
+    """The build finds each harness's scripts where the package lands.
+
+    The image installs the agent binary, and whatever assets the harness
+    ships, by running scripts out of the copied package -- so two unrelated
+    strings have to agree: the COPY destination and the path each RUN
+    assembles. They are in the same file but nothing ties them together, and
+    a mismatch is an image with no harness binary.
+    """
+
+    HARNESS_DIR = os.path.join(REPO_ROOT, "swarmforge", "harness")
+
+    def setUp(self):
+        with open(DOCKERFILE) as handle:
+            self.dockerfile = handle.read()
+
+    def test_the_install_run_reads_from_the_copy_destination(self):
+        match = re.search(r'install_sh="([^"]+)"', self.dockerfile)
+        self.assertIsNotNone(match, "Dockerfile assembles no install_sh path")
+        copies = dockerfile_copies()
+        self.assertIn(
+            "swarmforge/", copies, "Dockerfile has no `COPY swarmforge/ <dest>` line")
+        package_dest = copies["swarmforge/"].rstrip("/") + "/"
+        self.assertEqual(
+            match.group(1), package_dest + "harness/${AGENT}/install.sh")
+
+    def test_the_asset_run_reads_from_the_copy_destination(self):
+        """A harness's optional image.sh is found the same way.
+
+        The stage that runs it skips a harness with no such file, so a path
+        that has drifted from the COPY destination is not a build failure --
+        it is an image quietly missing the assets the harness ships.
+        """
+        match = re.search(r'image_sh="([^"]+)"', self.dockerfile)
+        self.assertIsNotNone(match, "Dockerfile assembles no image_sh path")
+        copies = dockerfile_copies()
+        self.assertIn(
+            "swarmforge/", copies, "Dockerfile has no `COPY swarmforge/ <dest>` line")
+        package_dest = copies["swarmforge/"].rstrip("/") + "/"
+        self.assertEqual(
+            match.group(1), package_dest + "harness/${AGENT}/image.sh")
+
+    def test_every_buildable_harness_ships_an_install_script(self):
+        """A harness.mk is what generates the harness's `build_<name>` target.
+
+        The Makefile globs the fragments, so adding one advertises a build
+        that only discovers the missing script partway through the image.
+        """
+        fragments = sorted(
+            name for name in os.listdir(self.HARNESS_DIR)
+            if os.path.isfile(os.path.join(self.HARNESS_DIR, name, "harness.mk"))
+        )
+        self.assertTrue(fragments, "no harness declares a harness.mk")
+        for name in fragments:
+            self.assertTrue(
+                os.path.isfile(
+                    os.path.join(self.HARNESS_DIR, name, "install.sh")),
+                "harness %s has a build target but no install.sh" % name,
+            )
+
+    def test_the_install_run_executes_the_script_and_fails_without_one(self):
+        """Path agreement alone leaves the RUN free to do nothing.
+
+        The dispatch is an assignment, a guard, and an execution; dropping
+        the execution or the guard's exit keeps every path assertion green
+        while producing an image with no harness binary.
+        """
+        self.assertIn('sh "${install_sh}"', self.dockerfile)
+        guard = self.dockerfile[
+            self.dockerfile.index('install_sh="'):
+            self.dockerfile.index('sh "${install_sh}"')
+        ]
+        self.assertIn('[ ! -f "${install_sh}" ]', guard)
+        self.assertIn("exit 1", guard)
+
+    def test_the_asset_run_executes_the_script_when_present(self):
+        """The one line where finding image.sh becomes running it.
+
+        A guard that locates the script and does nothing leaves the claude
+        image without its status line, and no build fails over it.
+        """
+        self.assertIn(
+            'if [ -f "${image_sh}" ]; then sh "${image_sh}"; fi',
+            self.dockerfile,
+        )
+
+    def test_harness_scripts_fail_their_run_on_the_first_error(self):
+        """`sh <script>` starts a fresh shell, so the RUN's own errexit does
+        not reach the script body. A script without its own set -e reports
+        success after a failed install -- a binary-less image that only
+        surfaces when a container cannot exec its harness.
+        """
+        scripts = sorted(
+            os.path.join(self.HARNESS_DIR, name, script)
+            for name in os.listdir(self.HARNESS_DIR)
+            for script in ("install.sh", "image.sh")
+            if os.path.isfile(os.path.join(self.HARNESS_DIR, name, script))
+        )
+        self.assertTrue(scripts, "no harness ships a build script")
+        for path in scripts:
+            with open(path) as handle:
+                text = handle.read()
+            self.assertRegex(
+                text, r"(?m)^set -\w*e",
+                "%s does not set errexit" % os.path.relpath(path, REPO_ROOT),
+            )
+
+    def test_the_build_recipes_target_a_stage_the_dockerfile_declares(self):
+        """The --target word only resolves against a stage at build time.
+
+        Every recipe test runs against a stubbed docker, so a stage renamed
+        in the Dockerfile alone keeps the recorded argv green while failing
+        all four builds.
+        """
+        stages = set(re.findall(r"(?m)^FROM \S+ AS (\S+)", self.dockerfile))
+        targets = {
+            argv[argv.index("--target") + 1]
+            for argv in make_argv_fixtures.BUILD_ARGV.values()
+        }
+        self.assertTrue(targets, "no recorded build argv names a --target")
+        self.assertLessEqual(
+            targets, stages,
+            "build recipes target stages the Dockerfile does not declare",
         )
 
 
-class BuildRecipeArgv(unittest.TestCase):
-    """`make build_*` pairs an explicit Dockerfile with a repo-root context.
-
-    Building from `anvil/` again would leave the package outside the context
-    and the translator unable to import it, and the failure would not surface
-    until an agent went missing at runtime.
-    """
+class BuildRecipeCase(unittest.TestCase):
+    """Runs a build_* target and exposes the docker argv it assembled."""
 
     def setUp(self):
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-build-"))
@@ -569,6 +560,15 @@ class BuildRecipeArgv(unittest.TestCase):
         with open(self.capture_path) as handle:
             return handle.read().split("\0")[:-1]
 
+
+class BuildRecipeArgv(BuildRecipeCase):
+    """`make build_*` pairs an explicit Dockerfile with a repo-root context.
+
+    Building from `anvil/` again would leave the package outside the context
+    and the translator unable to import it, and the failure would not surface
+    until an agent went missing at runtime.
+    """
+
     def assert_builds_from_repo_root(self, target):
         argv = self.build_argv(target)
         self.assertEqual(argv[0], "build")
@@ -584,6 +584,43 @@ class BuildRecipeArgv(unittest.TestCase):
 
     def test_claude_image_builds_from_repo_root(self):
         self.assert_builds_from_repo_root("build_claude")
+
+    def test_grok_image_builds_from_repo_root(self):
+        self.assert_builds_from_repo_root("build_grok")
+
+    def test_codex_image_builds_from_repo_root(self):
+        self.assert_builds_from_repo_root("build_codex")
+
+
+class BuildArgvBaseline(BuildRecipeCase):
+    """Every word of every build_* recipe's docker argv, against a recording.
+
+    The shape assertions above explain the Dockerfile/context pairing; this
+    pins the rest -- target stage, build args and their defaults, image tag --
+    so a drifted recipe fails against `make_argv_fixtures.BUILD_ARGV` instead
+    of building something subtly different.
+    """
+
+    maxDiff = None
+
+    def assert_argv_matches_recording(self, target):
+        argv = self.build_argv(target)
+        self.assertEqual(
+            make_argv_fixtures.normalize(argv, self.tmp),
+            make_argv_fixtures.BUILD_ARGV[target],
+        )
+
+    def test_build_opencode_argv_matches_recording(self):
+        self.assert_argv_matches_recording("build_opencode")
+
+    def test_build_claude_argv_matches_recording(self):
+        self.assert_argv_matches_recording("build_claude")
+
+    def test_build_grok_argv_matches_recording(self):
+        self.assert_argv_matches_recording("build_grok")
+
+    def test_build_codex_argv_matches_recording(self):
+        self.assert_argv_matches_recording("build_codex")
 
 
 class ContainerImportLayout(unittest.TestCase):
@@ -609,19 +646,22 @@ class ContainerImportLayout(unittest.TestCase):
             ignore=shutil.ignore_patterns("__pycache__"),
         )
 
-    def run_module(self, module, *args):
+    def run_module(self, module, *args, env=None):
         # -P mirrors the entrypoint, which uses it to keep the workspace off
         # sys.path; here it also stops the staging dir from becoming a second
         # way for the import to resolve. The image's python always has it; the
         # host running these tests may predate it, and the staging dir holds
         # no swarmforge/ for the working directory to resolve through anyway.
         harden = ["-P"] if sys.version_info >= (3, 11) else []
+        # Only the staged import root, and a working directory outside the
+        # checkout: nothing here may reach the repo's own swarmforge/. A
+        # module the entrypoint hands more of the container's environment gets
+        # it on top of that.
+        environ = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": self.libdir}
+        environ.update(env or {})
         return subprocess.run(
             [sys.executable, *harden, "-m", module, *args],
-            # Only the staged import root, and a working directory outside the
-            # checkout: nothing here may reach the repo's own swarmforge/.
-            env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": self.libdir},
-            cwd=self.tmp, capture_output=True, text=True,
+            env=environ, cwd=self.tmp, capture_output=True, text=True,
         )
 
     def test_translator_runs_against_the_staged_package(self):
@@ -723,6 +763,52 @@ class ContainerImportLayout(unittest.TestCase):
                     "model": "sonnet",
                 },
             )
+
+    def test_root_phase_driver_runs_against_the_staged_package(self):
+        """The root-phase driver, run the way the entrypoint runs it.
+
+        It is the first python the container executes and it reaches across
+        the whole package -- the registry, the harness modules, the agent
+        translator, and the config merges -- so it is the invocation that
+        proves every import resolves from the staged import root rather than
+        from a checkout that happens to be the working directory.
+
+        The uid and gid it hands over to are this process's own, and the chown
+        it resolves from PATH is a stub that only records that it ran: the
+        workspace path is a fixed string, so the real binary would reach
+        whatever the machine running the tests has standing there.
+        """
+        home = os.path.join(self.tmp, "home")
+        os.makedirs(home)
+        dest = os.path.join(self.tmp, "dest")
+        org = os.path.join(self.tmp, "layer-org")
+        os.makedirs(org)
+        with open(os.path.join(org, "marker.txt"), "w") as handle:
+            handle.write("org")
+
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        stub = os.path.join(bindir, "chown")
+        with open(stub, "w") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(stub, 0o755)
+
+        completed = self.run_module(
+            "swarmforge.harness.init", "grok", home,
+            str(os.getuid()), str(os.getgid()),
+            env={
+                "PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+                "SWARMFORGE_CONFIG_ORG_DIR": org,
+                "SWARMFORGE_CONFIG_DEST": dest,
+                "SWARMFORGE_CONFIG_RESET": "0",
+            },
+        )
+        self.assertEqual(
+            completed.returncode, 0,
+            "root-phase driver failed:\n%s" % completed.stderr,
+        )
+        with open(os.path.join(dest, "marker.txt")) as handle:
+            self.assertEqual(handle.read(), "org")
 
 
 if __name__ == "__main__":

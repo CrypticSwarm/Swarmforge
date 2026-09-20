@@ -1,6 +1,8 @@
 """Agent-definition tooling.
 
-The unified agent format is the repo's own; every harness gets it translated
-into its native dialect here, so a new harness means a new emitter in
-`translate` rather than hand-written dialects scattered across the tree.
+The unified agent format is the repo's own. `translate` drives one harness's
+registered emitter over the unified definitions, and `emit` holds the
+rendering and frontmatter helpers the emitters share; each harness's emitter
+lives with its harness module under `swarmforge.harness`, so no hand-written
+dialects are scattered across the tree.
 """

@@ -16,6 +16,8 @@ import sys
 import tempfile
 import unittest
 
+import make_argv_fixtures
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
@@ -300,6 +302,37 @@ class HostTerminalEnv(MakeRecipeCase):
                 any(flag.startswith("TERM=") for flag in flags), target)
             self.assertFalse(
                 any(flag.startswith("COLORTERM=") for flag in flags), target)
+
+
+class RunArgvBaseline(MakeRecipeCase):
+    """Every word of every run_* target's launcher argv, against a recording.
+
+    The classes above pin the properties that carry a rationale; this one
+    pins everything else -- flag order, env values, mount list, image name --
+    so an accidental change to any recipe or shared block surfaces as a diff
+    against `make_argv_fixtures.RUN_ARGV` rather than passing silently.
+    """
+
+    maxDiff = None
+
+    def assert_argv_matches_recording(self, target):
+        argv = self.launcher_argv(target, self.make_repo())
+        self.assertEqual(
+            make_argv_fixtures.normalize(argv, self.tmp),
+            make_argv_fixtures.RUN_ARGV[target],
+        )
+
+    def test_run_opencode_argv_matches_recording(self):
+        self.assert_argv_matches_recording("run_opencode")
+
+    def test_run_claude_argv_matches_recording(self):
+        self.assert_argv_matches_recording("run_claude")
+
+    def test_run_grok_argv_matches_recording(self):
+        self.assert_argv_matches_recording("run_grok")
+
+    def test_run_codex_argv_matches_recording(self):
+        self.assert_argv_matches_recording("run_codex")
 
 
 if __name__ == "__main__":
