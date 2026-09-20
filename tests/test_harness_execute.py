@@ -8,14 +8,13 @@ the argv carries the settings file that decides whose permissions, hooks, and
 env the session runs under. An env delta lost here is a session that cannot
 find its secrets or silently runs on the checkout's own settings.
 
-The other half of the contract is that no harness inherits claude's plumbing.
-Every harness but claude keeps the default hook, so its exec has to stay
-byte-identical to a direct exec of the binary -- the same file, the same
-argv, and the same environment save for the home and the two variables the
-driver's own launch adds. Those two are asserted absent for every
-harness: they exist only because this driver is a python module, and a harness
-that inherits them is one running with an import root pointing at Swarmforge's
-own package.
+Those deltas are claude's alone, and this file pins them one at a time and
+then all together, as a run on a linked worktree has them. The rest is what
+the driver owns whatever it starts: the argv it accepts, which harness may
+shape its own exec, and the signal dispositions it clears. Whether a harness
+on the default hook is exec'd byte-identically to a direct exec of its binary
+is a question about the registry rather than about claude, and
+tests/test_harness_conformance.py asks it of every registered harness.
 
 Every guarantee here is checked by running the driver with a recording execve
 and reading the call it made, so a dropped variable or a reordered argv fails a
@@ -52,9 +51,6 @@ if REPO_ROOT not in sys.path:
 
 from swarmforge import harness
 from swarmforge.harness import claude, execute, init, spec
-
-# Every registered harness that starts exactly as it was invoked.
-PLAIN = ("codex", "grok", "opencode")
 
 
 def write_file(path, text, mode=None):
@@ -169,44 +165,14 @@ class ExecuteCase(unittest.TestCase):
             mode=mode)
 
 
-class HarnessPassthrough(ExecuteCase):
-    """The harnesses that keep the default hook start as they were invoked.
+class InheritedDispositions(ExecuteCase):
+    """What the interpreter's own startup leaves behind for the exec.
 
-    The driver stands between the container and the binary for every harness,
-    not just the one with an exec to shape, so the identity hook has to leave
-    the exec indistinguishable from a direct one. Anything the driver adds here
-    is claude's plumbing reaching a harness that never asked for it, and the
-    environment is compared whole so a stray variable fails rather than
-    surviving unnoticed. Claude's own artifacts are staged where its hook
-    would find them, so the passthrough is proven against the run most
-    tempted to decorate it.
+    The driver is a python module standing between the container and the
+    binary, and an interpreter arranges its process for itself before any of
+    this runs. What survives the exec is what the harness lives with, so the
+    driver has to undo the arrangement rather than pass it on.
     """
-
-    def test_every_plain_harness_execs_its_own_binary_unchanged(self):
-        for name in PLAIN:
-            with self.subTest(harness=name):
-                self.setUp()
-                self.stage_settings()
-                self.stage_wrapper()
-                environ = self.env()
-                binary = "/usr/local/bin/" + harness.get(name).SPEC.name
-
-                file, argv, env = self.execute(name, environ=environ)
-
-                self.assertEqual(file, binary)
-                self.assertEqual(argv, [binary] + self.ARGS)
-                self.assertEqual(env, self.passed_through(environ))
-
-    def test_no_harness_inherits_the_variables_of_the_launch(self):
-        """They exist only because the driver is a python module: an import
-        root pointing at Swarmforge's own package and a startup knob for a
-        locale the harness never asked about."""
-        for name in harness.names():
-            with self.subTest(harness=name):
-                self.setUp()
-                _, _, env = self.execute(name)
-                for var in ("PYTHONPATH", "PYTHONCOERCECLOCALE"):
-                    self.assertNotIn(var, env)
 
     def test_the_ignored_signal_dispositions_are_defaulted_for_the_exec(self):
         """The interpreter ignores SIGPIPE and SIGXFSZ at startup, and an
@@ -327,6 +293,17 @@ class ClaudeEnvironment(ExecuteCase):
         expected["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = self.shared
         self.assertEqual(env, expected)
 
+    def test_the_credential_store_is_named_and_nothing_more(self):
+        """The hook only says where the store is. Standing a link there, or
+        a directory the shared home did not already have, is what a
+        rename-based write would replace with a container-local file, taking
+        the token with it when the container ends."""
+        _, _, env = self.execute("claude")
+
+        store = env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]
+        self.assertFalse(os.path.islink(store))
+        self.assertFalse(os.path.exists(store))
+
     def test_the_credential_store_is_where_the_state_links_point(self):
         """The links the root phase makes and the directory the exec names are
         the same shared home; a disagreement puts the session's history in one
@@ -446,16 +423,16 @@ class PreExecDescriptor(unittest.TestCase):
     environment built for somebody else's config directory.
     """
 
-    def test_every_harness_declares_a_callable_hook(self):
-        for name in harness.names():
-            with self.subTest(harness=name):
-                self.assertTrue(callable(harness.get(name).SPEC.pre_exec))
-
     def test_claude_shapes_its_own_exec(self):
         self.assertIs(harness.get("claude").SPEC.pre_exec, claude.pre_exec)
 
     def test_every_other_harness_starts_as_invoked(self):
-        for name in PLAIN:
+        """Read from the registry rather than a list of names, so the
+        conformance suite's filter on the default hook stands for "everything
+        but claude" however many harnesses are registered."""
+        for name in harness.names():
+            if name == "claude":
+                continue
             with self.subTest(harness=name):
                 self.assertIs(harness.get(name).SPEC.pre_exec, spec.pre_exec)
 

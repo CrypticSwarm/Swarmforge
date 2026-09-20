@@ -92,16 +92,24 @@ ANVIL_HOME = "/home/anvil"
 PACKAGE_ROOT = "/usr/local/lib/swarmforge"
 
 # The environment the entrypoint's launch hands the pre-exec driver. The two
-# PYTHON* variables belong to that launch and must not reach the harness.
+# PYTHON* variables belong to that launch and must not reach the harness; the
+# rest is the run's own and reaches it untouched, the SWARMFORGE_ variable
+# among them -- it names a path the root phase read and the harness has no
+# use for, which is what makes it the one a driver would be tempted to drop.
 CONTAINER_ENV = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "HOME": "/root",
     "TERM": "xterm-256color",
+    "SWARMFORGE_TONG_MCP_FILE": "/tmp/swarmforge-tong-mcp.json",
     "PYTHONPATH": PACKAGE_ROOT,
     "PYTHONCOERCECLOCALE": "0",
 }
 
 SESSION_ARGS = ["--flag", "arg one"]
+
+# Stands in the wrapper directory claude's hook leads PATH with when a wrapper
+# is installed there. Nothing runs it; it only has to be executable.
+GIT_WRAPPER = '#!/bin/sh\nexec git "$@"\n'
 
 AGENT_MD = """---
 description: Probes the translation.
@@ -634,7 +642,9 @@ class ExecPassthrough(unittest.TestCase):
 
     Claude's hook reads a wrapper directory and a settings file on a path a
     development host running Swarmforge really has, so both are replaced for
-    every run here.
+    every run here -- and both are staged with the artifact the hook looks
+    for, so the passthrough is proven against the run most tempted to
+    decorate it.
     """
 
     def setUp(self):
@@ -644,10 +654,13 @@ class ExecPassthrough(unittest.TestCase):
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.wrapper = os.path.join(self.tmp, "wrapper")
-        # A built settings file stands ready, so a hook that splices flags for
-        # one does its splicing in these runs rather than skipping the branch.
+        # A built settings file and an installed git wrapper stand ready, so a
+        # hook that splices flags for the one or leads PATH with the other
+        # does so in these runs rather than skipping the branch.
         self.settings = write_file(
             os.path.join(self.tmp, "claude-settings.json"), "{}\n")
+        os.chmod(
+            write_file(os.path.join(self.wrapper, "git"), GIT_WRAPPER), 0o755)
         self.recorded = []
         # The driver defaults the interpreter's ignored dispositions before
         # the exec, and the recording execve returns instead of replacing the
