@@ -11,6 +11,7 @@
 - `swarmforge/` is the Python for both sides of the container boundary: the host launcher (`anvil`, `tongs`, `gitguard`, `cli`, `worktrees`), and the container lifecycle drivers the entrypoint runs with `python3 -m` (`swarmforge.harness.init` as root, then `swarmforge.harness.execute` as the anvil user), where the config merging, the agent translation, and the asset install happen. It is stdlib-only: the image installs no third-party Python and the launcher runs on the host's `python3`.
 - `bin/` holds the launcher entry points (`run-anvil`, `tongs`, `git-guard`, `swarmforge`). Each is a shim that puts the checkout on `sys.path` and calls its module's `main()` — the only files that resolve a path, so nothing under `swarmforge/` needs to know where it sits on disk.
 - `opencode/` holds the OpenCode-native repo config layer (`opencode.json`, plus untracked plugin state); harness-neutral assets live at the top level in `skills/`, `commands/`, and `agents/`.
+- `docs/` holds the prose, one file per subject, indexed by `docs/README.md`; `README.md` keeps the pitch, the install and run steps, and a map of that tree. Every page is reachable from the index and every relative link resolves, which `tests/test_docs_links.py` holds to.
 - `ollama/` stores persistent Ollama state. Do not add large model blobs to git—only configuration or lightweight defaults belong here.
 
 ## Coding Conventions
@@ -20,12 +21,12 @@
 - When editing skills under `skills/`, ensure YAML frontmatter only contains `name` and `description`, and keep the detailed guidance in the corresponding `SKILL.md` body.
 - Per-harness behavior is declared in `swarmforge/harness/<name>/` — a `HarnessSpec` with its hook functions, plus `harness.mk` and `install.sh` — and registered in `swarmforge/harness/__init__.py`. Core code never branches on a harness name: extend a spec or add a hook instead, and `tests/test_harness_conformance.py` holds every registered harness to that generically.
 - `swarmforge/` is layered rather than a bag of modules: `yamlite` is a leaf both sides of the container boundary import, the `tongs` modules build on each other in one direction, and the `anvil` modules sit on top of `tongs`. The unit suite fails on an import cycle, and on any file outside `bin/` that loads python from a file path instead of importing it by name.
-- Subagent definitions under `agents/` use the unified agent format documented in `README.md` (`## Agents`); container startup rewrites them per harness (`swarmforge/agents/translate.py`, dispatching through the emitter each harness's spec declares), so never hand-write harness-specific dialects there.
+- Subagent definitions under `agents/` use the unified agent format documented in `docs/authoring/agents.md`; container startup rewrites them per harness (`swarmforge/agents/translate.py`, dispatching through the emitter each harness's spec declares), so never hand-write harness-specific dialects there.
 
 ## Build, Test, and Run
 - Build the OpenCode image with `make build_opencode` after changing anything under `anvil/` or `swarmforge/`; `make build_harnesses` builds every harness image instead of one at a time.
 - Launch a development session via `make run_opencode PROFILE=<name> DATA_DIR=<path?>` (defaults are fine for local work). The target automatically mounts project files and skills.
-- Run the Python unit tests with `make test`. They are stdlib `unittest` collected by discovery over `tests/test_*.py`, so add a test file and it runs — never wire one up by name. A test module is named for the source module it covers: `tests/test_tongs_<module>.py`, `tests/test_anvil_<module>.py`; suites that span the repo rather than one module (`tests/test_harness_conformance.py`, `tests/test_image_layout.py`, `tests/test_package_layering.py`) are named for what they hold together. Fixtures more than one of them needs live in `tests/tongs_fixtures.py` / `tests/anvil_fixtures.py` / `tests/harness_fixtures.py`, which the glob deliberately skips.
+- Run the Python unit tests with `make test`. They are stdlib `unittest` collected by discovery over `tests/test_*.py`, so add a test file and it runs — never wire one up by name. A test module is named for the source module it covers: `tests/test_tongs_<module>.py`, `tests/test_anvil_<module>.py`; suites that span the repo rather than one module (`tests/test_harness_conformance.py`, `tests/test_image_layout.py`, `tests/test_package_layering.py`, `tests/test_docs_links.py`) are named for what they hold together. Fixtures more than one of them needs live in `tests/tongs_fixtures.py` / `tests/anvil_fixtures.py` / `tests/harness_fixtures.py`, which the glob deliberately skips.
 - Lint the Python with `make lint` (`ruff check`, configured in `pyproject.toml`). It is a linter only — never run `ruff format`, which would reflow files the change did not touch. Ruff is the one tool outside the stdlib this repo asks for, and it is a contributor tool: no image installs it and nothing under `swarmforge/` imports it.
 - Run the skill eval harness via `make test-skills MODEL=<provider/model>`. It drives a real model in the OpenCode image, so it is a separate target from the unit suite.
 - Filter skill evals with `TEST_SKILL=<skill-name>` and adjust timeouts with `TEST_TIMEOUT_S=<seconds>`.
@@ -34,7 +35,7 @@
 
 ## Additional Notes
 - Keep secrets, API keys, and downloaded models out of version control; anything mounted into containers should be reproducible from repo contents.
-- If you add new tooling, document the invocation in `README.md` so contributors understand how it integrates with `make`.
+- If you add new tooling, document the invocation on the page under `docs/` that owns it so contributors understand how it integrates with `make`.
 - Prefer small, surgical edits—do not reformat or restructure unrelated files when touching scripts or skills.
 - Inside a container the workspace's `.git/config` and `.git/hooks` are mounted read-only, because both run commands on the host later. Committing, branching, fetching, stashing, and `git worktree add` work. Anything that writes config reports `error: could not write config file <path>: Device or resource busy`:
   - `git config --local`, `git remote add`, `git submodule update --init`, and `git sparse-checkout` fail outright.

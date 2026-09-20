@@ -208,10 +208,11 @@ def resolve_dest(template, home, config):
 def translate_agents(spec, ctx, environ, workspace=WORKSPACE):
     """Translate the unified agent definitions for the harness `spec` declares.
 
-    One definition serves every harness, in the format under "Agents" in the
-    README. Sources are the .swarmforge asset layers and the workspace
-    overlay, lowest- to highest-precedence, later files winning by name. Only
-    the destination differs, and the registered spec names the emitter.
+    One definition serves every harness, in the format documented under
+    docs/authoring/agents.md. Sources are the .swarmforge asset layers and
+    the workspace overlay, lowest- to highest-precedence, later files
+    winning by name. Only the destination differs, and the registered spec
+    names the emitter.
 
     A native agents/ directory inside a harness config dir is never carried
     here: those belong to the harness's own discovery. A failure degrades to a
@@ -275,10 +276,10 @@ def install_assets(spec, ctx, environ, workspace=WORKSPACE):
     the harness's native locations is the whole translation, and the config
     merge excludes both from every layer to make this their only transport.
 
-    The layers and their order are the ones under "Shared assets" in the
-    README; only the destination is per-harness. A failed install is not
-    caught: the container stops rather than starting a session whose assets
-    are half-written.
+    The layers and their order are the ones docs/configuration.md gives;
+    only the destination is per-harness. A failed install is not caught:
+    the container stops rather than starting a session whose assets are
+    half-written.
     """
     skills_dest = (
         resolve_dest(spec.skills_dest, ctx.home, ctx.config_dest)
