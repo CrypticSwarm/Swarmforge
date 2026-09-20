@@ -37,6 +37,11 @@ def _merged(name, text):
     return {name: {"source": tongs.WORKSPACE, "definition": def_of(text)}}
 
 
+def _mcp_config(merged, harness):
+    """The MCP config `harness` is handed for a merged tong set."""
+    return tongs.plan_injection(merged, harness)["mcp"]
+
+
 class EnvNamingTests(unittest.TestCase):
     def test_prefix_sanitizes_name(self):
         self.assertEqual(tongs.tong_env_prefix("github-creds"), "SWARMFORGE_TONG_GITHUB_CREDS")
@@ -129,14 +134,14 @@ class InterfaceWiringTests(unittest.TestCase):
         self.assertEqual(selected["github"]["image"], "first-wins")
 
     def test_opencode_mcp_fragment_shape(self):
-        fragment = tongs.mcp_config_opencode(_merged("github-creds", GITHUB_TONG))
+        fragment = _mcp_config(_merged("github-creds", GITHUB_TONG), "opencode")
         self.assertEqual(
             fragment,
             {"mcp": {"github": {"type": "remote", "url": "http://github:8080/mcp", "enabled": True}}},
         )
 
     def test_claude_mcp_config_shape(self):
-        config = tongs.mcp_config_claude(_merged("github-creds", GITHUB_TONG))
+        config = _mcp_config(_merged("github-creds", GITHUB_TONG), "claude")
         self.assertEqual(
             config,
             {"mcpServers": {"github": {"type": "http", "url": "http://github:8080/mcp"}}},
@@ -146,22 +151,34 @@ class InterfaceWiringTests(unittest.TestCase):
         # No type/transport key: Grok and Codex both select the remote
         # transport from the presence of `url` in the rendered
         # [mcp_servers.<name>] table.
-        fragment = tongs.mcp_config_toml(_merged("github-creds", GITHUB_TONG))
+        fragment = _mcp_config(_merged("github-creds", GITHUB_TONG), "grok")
         self.assertEqual(
             fragment,
             {"mcp_servers": {"github": {"url": "http://github:8080/mcp"}}},
         )
 
-    def test_the_toml_harnesses_share_one_emitter(self):
-        for harness in ("grok", "codex"):
-            self.assertIs(tongs.MCP_EMITTERS[harness], tongs.mcp_config_toml)
+    def test_the_toml_harnesses_get_the_same_config(self):
+        # Grok Build and Codex CLI read the same `mcp_servers` table, so the
+        # two harnesses are handed identical config for one tong set. The
+        # shape assertion anchors the comparison: an unregistered harness
+        # yields no config at all, and two of those are equal as well.
+        merged = _merged("github-creds", GITHUB_TONG)
+        shared = _mcp_config(merged, "grok")
+        self.assertIn("mcp_servers", shared)
+        self.assertEqual(_mcp_config(merged, "codex"), shared)
 
     def test_mcp_config_empty_when_no_mcp_tongs(self):
         # port-only set -> no MCP fragment at all (omitted, not an empty block).
+        mcp_only = _merged("github-creds", GITHUB_TONG)
         port_only = _merged("pg", PORT_TONG)
-        for emitter in (tongs.mcp_config_opencode, tongs.mcp_config_claude, tongs.mcp_config_toml):
-            self.assertEqual(emitter(port_only), {})
-            self.assertEqual(emitter({}), {})
+        for harness in ("opencode", "claude", "grok", "codex"):
+            with self.subTest(harness=harness):
+                # The mcp set does produce config for this harness, so the two
+                # empty results are the absence of an mcp tong rather than the
+                # absence of the harness.
+                self.assertTrue(_mcp_config(mcp_only, harness))
+                self.assertEqual(_mcp_config(port_only, harness), {})
+                self.assertEqual(_mcp_config({}, harness), {})
 
     def test_plan_injection_aggregates_across_kinds(self):
         merged = {

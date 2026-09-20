@@ -47,29 +47,21 @@ import sys
 
 from swarmforge import harness
 from swarmforge.agents.emit import render, split_frontmatter, warn
-from swarmforge.harness.claude import to_claude
-from swarmforge.harness.codex import normalize_codex_name, render_codex, to_codex
-from swarmforge.harness.opencode import to_opencode
 from swarmforge.harness.spec import provided
 from swarmforge.yamlite import parse_map, parse_scalar
 
-# This module's public surface: the CLI's own entry points, plus the
-# frontmatter helpers and per-harness emitters they run on, which stay
-# importable from the CLI's module name.
+# This module's public surface: the CLI's own entry points, the emitter table
+# they dispatch through, and the frontmatter helpers they run on, importable
+# from the CLI's module name.
 __all__ = [
     "EMITTERS",
     "load_agents",
     "main",
-    "normalize_codex_name",
     "parse_map",
     "parse_scalar",
     "render",
-    "render_codex",
     "run",
     "split_frontmatter",
-    "to_claude",
-    "to_codex",
-    "to_opencode",
     "warn",
 ]
 

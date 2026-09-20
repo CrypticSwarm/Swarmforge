@@ -19,7 +19,7 @@ FIXTURE_DIR = os.path.join(REPO_ROOT, "tests", "translate_fixtures")
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from swarmforge import yamlite
+from swarmforge import harness, yamlite
 from swarmforge.agents import translate as ta
 
 UNIFIED = """---
@@ -39,6 +39,14 @@ opencode:
 
 You are the reviewer agent.
 """
+
+
+def emit(target, name, meta, body):
+    """One agent through `target`'s registered emitter: its filename and text.
+
+    None when the harness skips the agent.
+    """
+    return harness.get(target).SPEC.agent_emitter(name, meta, body)
 
 
 class FrontmatterTests(unittest.TestCase):
@@ -287,12 +295,28 @@ class CommentedAgentTests(unittest.TestCase):
         self.assertEqual(again, meta)
 
 
-class ClaudeEmitterTests(unittest.TestCase):
+class MarkdownEmitterCase(unittest.TestCase):
+    """Shared reading of a markdown harness's emitted agent file."""
+
+    target = None
+
     def setUp(self):
-        self.meta, _ = ta.split_frontmatter(UNIFIED)
+        self.meta, self.body = ta.split_frontmatter(UNIFIED)
+
+    def emitted(self, name, meta):
+        """The frontmatter of the file `target` emits for one agent."""
+        filename, text = emit(self.target, name, meta, self.body)
+        self.assertEqual(filename, "%s.md" % name)
+        out, body = ta.split_frontmatter(text)
+        self.assertEqual(body, self.body)
+        return out
+
+
+class ClaudeEmitterTests(MarkdownEmitterCase):
+    target = "claude"
 
     def test_basic_translation(self):
-        out = ta.to_claude("reviewer", self.meta)
+        out = self.emitted("reviewer", self.meta)
         self.assertEqual(out["name"], "reviewer")
         self.assertEqual(out["description"], "Reviews code for defects.")
         self.assertEqual(out["disallowedTools"], "Write, Edit, Bash")
@@ -302,27 +326,28 @@ class ClaudeEmitterTests(unittest.TestCase):
             self.assertNotIn(dropped, out)
 
     def test_model_alias_passthrough(self):
-        out = ta.to_claude("a", {"description": "d", "model": "haiku"})
+        out = self.emitted("a", {"description": "d", "model": "haiku"})
         self.assertEqual(out["model"], "haiku")
 
     def test_non_anthropic_model_dropped(self):
-        out = ta.to_claude("a", {"description": "d", "model": "ollama/llama3.1"})
+        out = self.emitted("a", {"description": "d", "model": "ollama/llama3.1"})
         self.assertNotIn("model", out)
 
     def test_disable_skips_agent(self):
-        self.assertIsNone(ta.to_claude("a", {"description": "d", "disable": True}))
+        self.assertIsNone(
+            emit("claude", "a", {"description": "d", "disable": True}, self.body)
+        )
 
     def test_enabled_tools_do_not_restrict(self):
-        out = ta.to_claude("a", {"description": "d", "tools": {"bash": True}})
+        out = self.emitted("a", {"description": "d", "tools": {"bash": True}})
         self.assertNotIn("disallowedTools", out)
 
 
-class OpencodeEmitterTests(unittest.TestCase):
-    def setUp(self):
-        self.meta, _ = ta.split_frontmatter(UNIFIED)
+class OpencodeEmitterTests(MarkdownEmitterCase):
+    target = "opencode"
 
     def test_basic_translation(self):
-        out = ta.to_opencode("reviewer", self.meta)
+        out = self.emitted("reviewer", self.meta)
         self.assertEqual(out["mode"], "subagent")
         self.assertEqual(out["temperature"], 0.1)
         self.assertEqual(out["model"], "anthropic/claude-sonnet-4-6")
@@ -331,16 +356,31 @@ class OpencodeEmitterTests(unittest.TestCase):
         self.assertNotIn("claude", out)
 
     def test_alias_model_dropped(self):
-        out = ta.to_opencode("a", {"description": "d", "model": "sonnet"})
+        out = self.emitted("a", {"description": "d", "model": "sonnet"})
         self.assertNotIn("model", out)
 
     def test_idempotent(self):
-        once = ta.to_opencode("reviewer", self.meta)
-        twice = ta.to_opencode("reviewer", once)
+        # OpenCode translates in place, so a second pass over what the first
+        # wrote has to produce the same file byte for byte.
+        _, once = emit("opencode", "reviewer", self.meta, self.body)
+        meta, body = ta.split_frontmatter(once)
+        _, twice = emit("opencode", "reviewer", meta, body)
         self.assertEqual(once, twice)
 
 
 class CodexEmitterTests(unittest.TestCase):
+    """The codex harness's emitter, read back from the TOML file it emits."""
+
+    def emitted(self, name, meta, body="body"):
+        """The filename codex gets for one agent, and its parsed table.
+
+        The emitter warns about what it drops or renames; this suite reads
+        the file, so those lines are captured rather than printed.
+        """
+        with contextlib.redirect_stderr(io.StringIO()):
+            filename, text = emit("codex", name, meta, body)
+        return filename, tomllib.loads(text)
+
     def test_basic_translation_and_overrides(self):
         meta = {
             "description": "Reviews code.",
@@ -351,7 +391,8 @@ class CodexEmitterTests(unittest.TestCase):
                 "sandbox_mode": "read-only",
             },
         }
-        out = ta.to_codex("code-reviewer", meta, "Review carefully.\n")
+        filename, out = self.emitted("code-reviewer", meta, "Review carefully.\n")
+        self.assertEqual(filename, "code-reviewer.toml")
         self.assertEqual(out["name"], "code-reviewer")
         self.assertEqual(out["description"], "Reviews code.")
         self.assertEqual(out["model"], "gpt-5.3-codex")
@@ -361,56 +402,50 @@ class CodexEmitterTests(unittest.TestCase):
         self.assertNotIn("tools", out)
 
     def test_unqualified_model_passes_and_other_provider_drops(self):
-        out = ta.to_codex("a", {"description": "d", "model": "gpt-5"}, "body")
+        _, out = self.emitted("a", {"description": "d", "model": "gpt-5"})
         self.assertEqual(out["model"], "gpt-5")
-        out = ta.to_codex(
-            "a", {"description": "d", "model": "anthropic/claude-sonnet-4-6"}, "body"
+        _, out = self.emitted(
+            "a", {"description": "d", "model": "anthropic/claude-sonnet-4-6"}
         )
         self.assertNotIn("model", out)
 
     def test_disable_skips_agent(self):
         self.assertIsNone(
-            ta.to_codex("a", {"description": "d", "disable": True}, "body")
+            emit("codex", "a", {"description": "d", "disable": True}, "body")
         )
 
     def test_name_normalization_matches_codex_constraints(self):
-        out = ta.to_codex("reviewer.md", {"description": "d"}, "body")
+        filename, out = self.emitted("reviewer.md", {"description": "d"})
+        self.assertEqual(filename, "reviewer-md.toml")
         self.assertEqual(out["name"], "reviewer-md")
-        self.assertEqual(ta.normalize_codex_name("!!!"), "agent")
+        filename, out = self.emitted("!!!", {"description": "d"})
+        self.assertEqual(filename, "agent.toml")
+        self.assertEqual(out["name"], "agent")
 
     def test_reserved_agent_table_fields_are_prefixed(self):
         for name in ("default_subagent_model", "enabled", "max_depth"):
             with self.subTest(name=name):
-                self.assertEqual(ta.normalize_codex_name(name), "agent-" + name)
+                filename, out = self.emitted(name, {"description": "d"})
+                self.assertEqual(filename, "agent-%s.toml" % name)
+                self.assertEqual(out["name"], "agent-" + name)
 
-    def test_render_is_valid_toml_and_preserves_multiline_prompt(self):
-        rendered = ta.render_codex(
+    def test_emitted_toml_is_valid_and_preserves_multiline_prompt(self):
+        _, out = self.emitted(
+            "reviewer",
             {
-                "name": "reviewer",
-                "description": "Reviews \"quoted\" code.",
-                "developer_instructions": 'First line.\nSecond \"line\".\n',
-                "model_reasoning_effort": "high",
-                "options": {"enabled": True},
-            }
+                "description": 'Reviews "quoted" code.',
+                "codex": {
+                    "model_reasoning_effort": "high",
+                    "options": {"enabled": True},
+                },
+            },
+            'First line.\nSecond "line".\n',
         )
-        parsed = tomllib.loads(rendered)
-        self.assertEqual(parsed["name"], "reviewer")
-        instructions = parsed["developer_instructions"]
-        self.assertEqual(instructions, 'First line.\nSecond "line".\n')
-        self.assertEqual(parsed["options"], {"enabled": True})
-
-    def test_render_quotes_agent_registration_names(self):
-        rendered = ta.render_codex(
-            {
-                "agents": {
-                    "code reviewer": {
-                        "config_file": "/run/swarmforge/agents/reviewer.toml"
-                    }
-                }
-            }
-        )
-        parsed = tomllib.loads(rendered)
-        self.assertIn("code reviewer", parsed["agents"])
+        self.assertEqual(out["name"], "reviewer")
+        self.assertEqual(out["description"], 'Reviews "quoted" code.')
+        self.assertEqual(out["developer_instructions"], 'First line.\nSecond "line".\n')
+        self.assertEqual(out["model_reasoning_effort"], "high")
+        self.assertEqual(out["options"], {"enabled": True})
 
 
 class MainTests(unittest.TestCase):
