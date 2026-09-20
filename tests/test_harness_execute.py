@@ -21,15 +21,16 @@ and reading the call it made, so a dropped variable or a reordered argv fails a
 test rather than surfacing as a session that lost its history.
 
 Nothing here may write outside the temporary directory, and nothing may read
-the live /run/swarmforge the development host has: claude's settings file, its
-wrapper directory, and its pinned config destination are all replaced for the
-duration of each run.
+the live /run/swarmforge the development host has:
+`harness_fixtures.redirected` replaces every path the harness under test pins
+-- its config destination, the destinations it names outright, and the paths
+it hands to the anvil uid -- along with the three paths claude names as module
+constants, for the duration of each run.
 
 Run: python3 tests/test_harness_execute.py
 """
 
 import contextlib
-import dataclasses
 import io
 import os
 import shutil
@@ -49,30 +50,26 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
 from swarmforge.harness import claude, execute, init, spec
 
-
-def write_file(path, text, mode=None):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    if mode is not None:
-        os.chmod(path, mode)
-    return path
+from harness_fixtures import redirected, staged, write_file
 
 
 class ExecuteCase(unittest.TestCase):
     """Runs the driver with a recording execve over a staged container.
 
-    Claude pins the settings file, the wrapper directory, and the config
-    destination its hook names, so all three are replaced for the run and a
-    test never reads the live /run/swarmforge the development host has. The
-    execve stub returns instead of replacing the process, which is the one
-    thing the real call cannot do.
+    The settings file, the wrapper directory, and the config destination
+    claude's hook names all stand in the staging tree, so a test never reads
+    the live /run/swarmforge the development host has. The execve stub returns
+    instead of replacing the process, which is the one thing the real call
+    cannot do.
     """
 
     ARGS = ["--model", "sonnet", "run the thing"]
@@ -83,9 +80,9 @@ class ExecuteCase(unittest.TestCase):
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.shared = os.path.join(self.home, ".claude")
-        self.dest = os.path.join(self.tmp, "dest")
-        self.wrapper = os.path.join(self.tmp, "wrapper")
-        self.settings = os.path.join(self.tmp, "claude-settings.json")
+        self.dest = staged(self.tmp, "config_dest")
+        self.wrapper = staged(self.tmp, "wrapper_dir")
+        self.settings = staged(self.tmp, "settings_file")
         self.libdir = os.path.join(self.tmp, "lib")
         self.recorded = []
         # The driver defaults the interpreter's ignored dispositions before
@@ -123,28 +120,10 @@ class ExecuteCase(unittest.TestCase):
         expected["HOME"] = self.home
         return expected
 
-    @contextlib.contextmanager
-    def redirected(self, name):
-        """Every path `name` pins, replaced by one under the staging tree."""
-        module = harness.get(name)
-        self.assertIsNotNone(module, "no harness registered as %s" % name)
-        with contextlib.ExitStack() as stack:
-            # Both belong to claude's module and both are read by its hook,
-            # so they move for every run.
-            stack.enter_context(
-                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper))
-            stack.enter_context(
-                mock.patch.object(claude, "SETTINGS_FILE", self.settings))
-            if name == "claude":
-                stack.enter_context(mock.patch.object(
-                    module, "SPEC",
-                    dataclasses.replace(module.SPEC, config_dest=self.dest)))
-            yield
-
     def execute(self, name, args=None, environ=None):
         """Run the driver for `name`, recording the exec it performs."""
         environ = self.env() if environ is None else environ
-        with self.redirected(name):
+        with redirected(name, self.tmp):
             status = execute.run(
                 name, self.home, self.ARGS if args is None else args,
                 environ, execv=self.record)
@@ -190,7 +169,7 @@ class InheritedDispositions(ExecuteCase):
             for sig in execute.IGNORED_SIGNALS:
                 seen[sig] = signal.getsignal(sig)
 
-        with self.redirected("grok"):
+        with redirected("grok", self.tmp):
             status = execute.run(
                 "grok", self.home, [], self.env(), execv=record)
 
@@ -308,7 +287,7 @@ class ClaudeEnvironment(ExecuteCase):
         """The links the root phase makes and the directory the exec names are
         the same shared home; a disagreement puts the session's history in one
         directory and its token in another."""
-        with self.redirected("claude"):
+        with redirected("claude", self.tmp):
             staged = harness.get("claude").SPEC
             init.link_state(staged, init.asset_context(staged, self.home, {}))
         _, _, env = self.execute("claude")
