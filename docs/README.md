@@ -2,10 +2,9 @@
 
 ## Running a session
 
-- [Installation](installation.md) — the install script, pinning an OpenCode release, the repo-local env file, several aliases against one checkout.
+- [Installation](installation.md) — the install script, pinning an OpenCode release, several aliases against one checkout.
 - [swarmforge CLI](cli.md) — `swarmforge clone` and `swarmforge init`, and the worktree layout they create.
 - [Git repos and worktrees](git-guard.md) — the read-only git mounts every session gets, what they stop, and what they do not.
-- [Ollama](ollama.md) — running models locally on the shared network.
 
 ## Harnesses
 

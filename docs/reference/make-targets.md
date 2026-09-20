@@ -41,7 +41,7 @@ A `harness_rules` macro generates all sixteen from the knobs each [`harness.mk`]
 
 ## Ollama
 
-The service itself is [Ollama](../ollama.md).
+Ollama serves models from your own machine, so a session can use one without a provider account.
 
 | Target | What it does |
 | --- | --- |
