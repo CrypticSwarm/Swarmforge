@@ -165,7 +165,7 @@ class LayerPrecedence(DriverCase):
                 self.assertEqual(
                     read_file(os.path.join(self.dest, "repo-only.md")), "repo")
 
-    def test_keyed_files_merge_by_key_rather_than_being_overlaid_whole(self):
+    def test_the_keyed_file_merges_by_key_rather_than_being_overlaid_whole(self):
         """opencode.json travels outside the tar overlay for every harness.
 
         Overlaid whole, the org layer's copy would drop every key the repo and
@@ -200,10 +200,10 @@ class LayerExcludes(DriverCase):
     def stage_excluded_entries(self, layer, spec):
         """Stage one file or directory in `layer` per entry the overlay skips.
 
-        Every keyed file is staged too: those merge key-by-key, so the overlay
-        carrying one whole would silently outrank the merge.
+        The keyed file is staged too: it merges key-by-key, so the overlay
+        carrying it whole would silently outrank the merge.
         """
-        for entry in tuple(spec.keyed_files) + (".swarmforge",) + spec.layer_excludes:
+        for entry in (init.KEYED_FILE, ".swarmforge") + spec.layer_excludes:
             name = entry.removeprefix("./")
             path = os.path.join(self.layer(layer), name)
             if "." in name[1:]:
@@ -786,7 +786,6 @@ def fake_spec(**overrides):
         config_dest=Waiver("the run's SWARMFORGE_CONFIG_DEST names the destination"),
         config_reset=False,
         layer_excludes=(),
-        keyed_files=("opencode.json",),
         skills_dest=Waiver("no portable skills destination is declared"),
         commands_dest=Waiver("no portable commands destination is declared"),
         agents_dest=Waiver("unified agent definitions are not delivered"),

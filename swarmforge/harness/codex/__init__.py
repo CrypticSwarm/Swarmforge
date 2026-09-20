@@ -215,7 +215,6 @@ SPEC = HarnessSpec(
         "./log",
         "./config.toml",
     ),
-    keyed_files=("opencode.json",),
     skills_dest="{home}/.agents/skills",
     commands_dest=Waiver(
         "portable commands become skill packages under the skills destination "

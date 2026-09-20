@@ -188,9 +188,6 @@ class HarnessSpec:
     # merge would union layers file-by-file.
     layer_excludes: tuple
 
-    # Files merged key-by-key per layer rather than overlaid whole.
-    keyed_files: tuple
-
     # Where portable skills and commands land. A string may hold the
     # placeholders "{home}" (the anvil user's home) and "{config}" (the merged
     # config destination); a Waiver opts the harness out.

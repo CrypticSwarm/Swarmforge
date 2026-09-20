@@ -51,7 +51,6 @@ SPEC = HarnessSpec(
     ),
     config_reset=False,
     layer_excludes=("./skills", "./command"),
-    keyed_files=("opencode.json",),
     skills_dest="{config}/skills",
     commands_dest="{config}/command",
     agents_dest="{config}/agents",

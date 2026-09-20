@@ -111,7 +111,6 @@ def fake_spec(**overrides):
         config_dest=Waiver("the run's SWARMFORGE_CONFIG_DEST names the destination"),
         config_reset=False,
         layer_excludes=(),
-        keyed_files=(),
         skills_dest=Waiver("no portable skills destination is declared"),
         commands_dest=Waiver("no portable commands destination is declared"),
         agents_dest=Waiver("unified agent definitions are not delivered"),
