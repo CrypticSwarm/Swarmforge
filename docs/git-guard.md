@@ -1,0 +1,19 @@
+# Git repos and worktrees
+
+`.git/config` and `.git/hooks` are mounted read-only wherever the git dir is visible in the container.
+Both execute on the *host* — hooks run on your next commit or checkout, and config carries `core.hooksPath`, `core.pager`, `core.sshCommand` and aliases — so the agent gets no write access to them.
+`swarmforge/gitguard.py` builds those mounts, covering every git dir reachable from the workspace: the repo's own, a linked worktree's shared common dir, and the git dirs of initialized submodules — each with their own submodules and worktrees, including a submodule initialized inside a worktree, whose git dir git keeps under that worktree rather than the repository.
+`remotes/` and `branches/`, the pre-config way to define a remote, are read-only for the same reason as `config`.
+It also guards the pointers that say where config and hooks live (`commondir`, a `.git` that is a `gitdir:` file, and `config.worktree` where `extensions.worktreeConfig` is on), and binds every directory on the way down onto itself, since a plain directory containing a read-only mount can still be renamed aside and recreated writable.
+A guarded path that is absent is created on the host first so there is no gap to slip through — a repo with no `config` works fine, which makes its absence room to write one rather than a sign there is nothing to guard.
+The placeholders are inert, though a repo that gains a `commondir` starts answering `git rev-parse --git-common-dir` with an absolute path instead of `.git`.
+In a bare git dir the `commondir` placeholder is not inert: git takes any git dir holding one for a linked worktree's and ignores `core.bare`, so a bare `repo/.git` with sibling worktrees reads as a checkout of `repo/`, where `git status` lists the worktrees as untracked and `git clean` would remove them.
+The guard warns and prints the fix, which moves `core.bare` into `config.worktree` under `extensions.worktreeConfig`; git reads that file after deciding, so the repo stays bare and its worktrees stay checkouts.
+`swarmforge clone` and `swarmforge init` apply it at creation, so a layout they build stays bare under the guard.
+Only git dirs that exist when the session starts are covered — a repo the agent clones or `git init`s inside the workspace, or an unrelated checkout vendored there, is not.
+A `.git` written into an existing subdirectory shadows the guarded repo for anything run from inside that directory: `git status` at the root neither reports it nor executes it, and a git-aware shell prompt or editor entering the directory is enough to run what its config says. `safe.directory`, git's gate for this, keys on ownership, and the container runs as your own uid.
+
+The rest of the git dir stays writable, so committing, branching, fetching, and `git worktree add` work as usual.
+Commands that write config do not, by design: `git config --local`, `git remote add`, `git submodule update --init`, and `git sparse-checkout` fail with `could not write config file ...: Device or resource busy`, and hook installers like `pre-commit install` or husky fail on the read-only `.git/hooks`.
+Branch tracking is the sharp edge: `git push -u` and `git switch <remote-branch>` exit 0 and still report "set up to track", but the tracking config is silently not recorded — git treats that write failing as non-fatal. Use `git push origin HEAD:<branch>` and `git switch -c <name> --no-track origin/<branch>`, and set a repo up on the host when it needs to stick.
+This narrows the git-specific surface; it does not make the workspace a trust boundary. Hooks that config already points *outside* the git dir (`core.hooksPath = .githooks`, husky) and attribute-driven filter commands live in the workspace, as do `package.json` scripts and `Makefile`s — anything you run on the host from a directory an agent could write is still yours to trust.
