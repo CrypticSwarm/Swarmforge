@@ -27,15 +27,15 @@ the chowns it runs: the home, whatever the harness built outside it, and the
 workspace, in that order. A path the handover misses is one the session finds
 owned by root, with no privileges left to change it.
 
-Nothing here may write outside the temporary directory: claude pins a config
-destination under /run/swarmforge and a wrapper directory under
-/usr/local/libexec, and both are replaced for the duration of each run.
+Nothing here may write outside the temporary directory:
+`harness_fixtures.redirected` replaces every path the harness under test pins
+-- its config destination, the destinations it names outright, and the paths
+it hands to the anvil uid -- along with the three paths claude names as module
+constants, for the duration of each run.
 
 Run: python3 tests/test_harness_state.py
 """
 
-import contextlib
-import dataclasses
 import os
 import shutil
 import subprocess
@@ -62,7 +62,14 @@ if HERE not in sys.path:
 from swarmforge import harness
 from swarmforge.harness import claude, init, spec
 
-from harness_fixtures import fake_spec, read_file, tree, write_file
+from harness_fixtures import (
+    fake_spec,
+    read_file,
+    redirected,
+    staged,
+    tree,
+    write_file,
+)
 
 # Every harness that keeps nothing across runs of its own.
 UNLINKED = ("codex", "grok", "opencode")
@@ -76,9 +83,9 @@ HARNESSES = tuple(harness.names())
 class StateCase(unittest.TestCase):
     """Runs the link phase over a staged home inside a temporary directory.
 
-    Claude pins the config destination its state is linked into, so that field
-    is replaced for the run and a test never reaches the live /run/swarmforge
-    the development host has.
+    The destination state is linked into is one of the paths the staging tree
+    replaces, so a test never reaches the live /run/swarmforge the development
+    host has.
     """
 
     def setUp(self):
@@ -87,33 +94,14 @@ class StateCase(unittest.TestCase):
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.shared = os.path.join(self.home, ".claude")
-        self.dest = os.path.join(self.tmp, "dest")
-        self.wrapper = os.path.join(self.tmp, "wrapper")
+        self.dest = staged(self.tmp, "config_dest")
+        self.wrapper = staged(self.tmp, "wrapper_dir")
 
     def env(self, **overrides):
         """The environment the entrypoint hands the driver."""
         environ = {"SWARMFORGE_CONFIG_DEST": self.dest}
         environ.update(overrides)
         return {name: value for name, value in environ.items() if value is not None}
-
-    @contextlib.contextmanager
-    def redirected(self, name):
-        """Every path `name` pins, replaced by one under the staging tree."""
-        module = harness.get(name)
-        self.assertIsNotNone(module, "no harness registered as %s" % name)
-        with contextlib.ExitStack() as stack:
-            # The wrapper directory belongs to claude's module and is where any
-            # root phase that writes one puts it, so it moves for every run.
-            stack.enter_context(
-                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper))
-            if name == "claude":
-                stack.enter_context(mock.patch.object(
-                    module, "SPEC",
-                    dataclasses.replace(
-                        module.SPEC,
-                        config_dest=self.dest,
-                        extra_chown_paths=(self.dest,))))
-            yield
 
     def staged(self, name):
         """The spec and context the driver would hand `name`'s phases.
@@ -128,7 +116,7 @@ class StateCase(unittest.TestCase):
 
     def link(self, name):
         """Run the driver's link phase for `name` with every pinned path moved."""
-        with self.redirected(name):
+        with redirected(name, self.tmp):
             return init.link_state(*self.staged(name))
 
     def prepare(self, name, cwd):
@@ -138,7 +126,7 @@ class StateCase(unittest.TestCase):
         linked worktree, so a phase falling back to the test process's own
         directory would read real worktree metadata and write a real wrapper.
         """
-        with self.redirected(name):
+        with redirected(name, self.tmp):
             return init.root_setup(*self.staged(name), cwd=cwd)
 
     def snapshot(self):
@@ -681,14 +669,17 @@ class OwnershipDelivery(StateCase):
         uid, gid = self.owner()
         statuses = []
 
-        with self.redirected("claude"):
+        with redirected("claude", self.tmp):
+            spec, ctx = self.staged("claude")
             noise = self.stderr_of(
                 lambda: statuses.append(init.deliver_ownership(
-                    *self.staged("claude"), uid, gid, workspace=workspace)))
+                    spec, ctx, uid, gid, workspace=workspace)))
+            standing = [path for path in spec.extra_chown_paths
+                        if os.path.exists(path)]
 
         self.assertEqual(statuses, [0])
         self.assertEqual(noise, "")
-        self.assertEqual(tree(self.dest), {})
+        self.assertEqual(standing, [])
 
     def test_a_run_without_a_chown_binary_is_passed_over_in_silence(self):
         """Resolution happens before the child runs, so a missing binary

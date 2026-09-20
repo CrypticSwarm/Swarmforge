@@ -30,7 +30,6 @@ import signal
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -48,7 +47,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 from swarmforge import harness
-from swarmforge.harness import claude, execute, init
+from swarmforge.harness import execute, init
 from swarmforge.harness.spec import (
     HarnessSpec,
     Waiver,
@@ -56,7 +55,7 @@ from swarmforge.harness.spec import (
     provided,
 )
 
-from harness_fixtures import read_file, write_file
+from harness_fixtures import read_file, redirected, staged, write_file
 from make_argv_fixtures import RUN_ARGV
 
 # The layer variables every run target hands the container, whatever the
@@ -321,11 +320,8 @@ class ContainerRun(unittest.TestCase):
             tempfile.mkdtemp(prefix="swarmforge-conformance-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.home = os.path.join(self.tmp, "home")
-        self.dest = os.path.join(self.tmp, "dest")
-        self.handover = os.path.join(self.tmp, "handover")
+        self.dest = staged(self.tmp, "config_dest")
         self.workspace = os.path.join(self.tmp, "workspace")
-        self.settings_file = os.path.join(self.tmp, "claude-settings.json")
-        self.image_defaults = os.path.join(self.tmp, "image-defaults.json")
         os.makedirs(self.home)
         os.makedirs(self.workspace)
 
@@ -383,55 +379,6 @@ class ContainerRun(unittest.TestCase):
             "SWARMFORGE_COMMAND_DIR": os.path.join(self.tmp, "shared-commands"),
         }
 
-    def inside(self, path):
-        return path == self.tmp or path.startswith(self.tmp + os.sep)
-
-    def rooted(self, path):
-        """`path` relocated under the temporary directory."""
-        return os.path.join(self.handover, path.lstrip("/"))
-
-    @contextlib.contextmanager
-    def redirected(self, name):
-        """Every path `name` pins, replaced by one under the staging tree."""
-        module = harness.get(name)
-        self.assertIsNotNone(module, "no harness registered as %s" % name)
-        spec = module.SPEC
-
-        replacements = {}
-        if provided(spec.config_dest):
-            replacements["config_dest"] = self.dest
-        # A destination that names a directory outright rather than through a
-        # placeholder is one the config redirection above cannot reach.
-        for field in ("skills_dest", "commands_dest", "agents_dest"):
-            template = getattr(spec, field)
-            if (provided(template)
-                    and "{" not in template
-                    and not self.inside(template)):
-                replacements[field] = os.path.join(self.tmp, field)
-        extras = tuple(
-            path if self.inside(path) else self.rooted(path)
-            for path in spec.extra_chown_paths
-        )
-        if extras != spec.extra_chown_paths:
-            replacements["extra_chown_paths"] = extras
-
-        with contextlib.ExitStack() as stack:
-            if replacements:
-                stack.enter_context(mock.patch.object(
-                    module, "SPEC", dataclasses.replace(spec, **replacements)))
-            # Claude names its built settings file, the image's defaults, and
-            # the git wrapper directory as module constants rather than spec
-            # fields, so the generic replacement above cannot reach them; all
-            # three point into paths a host running Swarmforge itself really
-            # has.
-            stack.enter_context(
-                mock.patch.object(claude, "SETTINGS_FILE", self.settings_file))
-            stack.enter_context(mock.patch.object(
-                claude, "IMAGE_DEFAULT_SETTINGS", self.image_defaults))
-            stack.enter_context(mock.patch.object(
-                claude, "WRAPPER_DIR", os.path.join(self.tmp, "wrapper")))
-            yield stack
-
     def run_driver(self, name):
         """Run every root phase for `name` with the pinned paths redirected.
 
@@ -442,7 +389,7 @@ class ContainerRun(unittest.TestCase):
         writes into it before anything else creates it.
         """
         os.makedirs(os.path.join(self.home, "." + name), exist_ok=True)
-        with self.redirected(name):
+        with redirected(name, self.tmp):
             spec = harness.get(name).SPEC
             status = init.run(
                 name, self.home, str(os.getuid()), str(os.getgid()),
@@ -534,7 +481,7 @@ class ContainerRun(unittest.TestCase):
             with self.subTest(harness=name):
                 self.stage()
                 captured = io.StringIO()
-                with self.redirected(name), contextlib.redirect_stderr(captured):
+                with redirected(name, self.tmp), contextlib.redirect_stderr(captured):
                     staged = harness.get(name).SPEC
                     environ = self.env()
                     status = init.translate_agents(
@@ -626,10 +573,10 @@ class ExecPassthrough(unittest.TestCase):
     A harness that keeps the default hook has to be exec'd byte-identically to
     a direct exec of its binary.
 
-    Claude's hook reads a wrapper directory and a settings file on a path a
-    development host running Swarmforge really has, so both are replaced for
-    every run here -- and both are staged with the artifact the hook looks
-    for, so the passthrough is proven against the run most tempted to
+    Claude's hook reads a wrapper directory and a settings file on paths a
+    development host running Swarmforge really has, so every run here goes
+    through the staging tree -- and those two carry the artifact the hook
+    looks for, so the passthrough is proven against the run most tempted to
     decorate it.
     """
 
@@ -639,12 +586,11 @@ class ExecPassthrough(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
-        self.wrapper = os.path.join(self.tmp, "wrapper")
+        self.wrapper = staged(self.tmp, "wrapper_dir")
         # A built settings file and an installed git wrapper stand ready, so a
         # hook that splices flags for the one or leads PATH with the other
         # does so in these runs rather than skipping the branch.
-        self.settings = write_file(
-            os.path.join(self.tmp, "claude-settings.json"), "{}\n")
+        self.settings = write_file(staged(self.tmp, "settings_file"), "{}\n")
         os.chmod(
             write_file(os.path.join(self.wrapper, "git"), GIT_WRAPPER), 0o755)
         self.recorded = []
@@ -662,8 +608,7 @@ class ExecPassthrough(unittest.TestCase):
     def run_driver(self, name, environ=None):
         """Run the pre-exec driver for `name` and return the exec it made."""
         self.recorded = []
-        with mock.patch.object(claude, "WRAPPER_DIR", self.wrapper), \
-                mock.patch.object(claude, "SETTINGS_FILE", self.settings):
+        with redirected(name, self.tmp):
             status = execute.run(
                 name, self.home, list(SESSION_ARGS),
                 dict(CONTAINER_ENV) if environ is None else environ,
