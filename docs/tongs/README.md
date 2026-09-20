@@ -13,7 +13,7 @@ The host-side launcher (`swarmforge/anvil/`, run through `bin/run-anvil`) discov
 1. (Only if the tong needs secrets) configure the secret-provider table (see [Secret providers](secrets.md)).
 2. Drop a tong definition into a layer directory, e.g. `~/.swarmforge/tongs/<name>.yaml` (personal) or `<workspace>/.swarmforge/tongs/<name>.yaml` (project).
 3. Run the anvil as usual (`oc`, or `make run_claude PROJECT_DIR=$(pwd)`). A **workspace**-sourced tong prints a privilege summary and asks for approval on first run (see [First-run approval](approval.md)). The launcher resolves secrets (which may prompt your provider CLI to unlock), starts the tong, waits for readiness, injects reachability into the anvil, then runs the anvil in the foreground.
-4. On exit (including Ctrl-C), `session` tongs and the per-session network are torn down; `shared` tongs are left running.
+4. On exit (including Ctrl-C), the per-session network and its `session` tongs are torn down.
 
 ## Where definitions live
 
@@ -25,7 +25,7 @@ One YAML file per tong under `.swarmforge/tongs/`, merged **by name** (filename 
 - **workspace** — `<workspace>/.swarmforge/tongs/`
 
 A higher layer replaces a same-named tong wholesale; `disable: true` switches off an inherited tong.
-The user/org/repo layers are **trusted**; the workspace layer (any repo you happened to clone) is gated by first-run approval.
+The workspace layer is gated by [first-run approval](approval.md).
 
 ## Lifecycle
 

@@ -25,8 +25,7 @@ make build_grok
 make build_codex
 ```
 
-Or build them all at once with `make build_harnesses`. Each harness adds its own
-build to that target, so a harness added later joins it with no list to update.
+Or build them all at once with `make build_harnesses`.
 The images share every stage below the harness install, so `make -j -O build_harnesses`
 is worth it once one build has populated that cache (`-O` keeps the parallel logs apart).
 
@@ -39,14 +38,14 @@ is worth it once one build has populated that cache (`-O` keeps the parallel log
 - Pass OpenCode overrides as arguments (`oc PROFILE=work DATA_DIR=...`) or env vars (`PROFILE=work oc`).
 - Override the container timezone per run (affects git commit timestamps): `oc TIMEZONE=America/New_York`.
 
-[Installation](docs/installation.md) carries the rest: which rc file `install.sh` writes, pinning OpenCode to a release, the repo-local env file, and pointing several aliases at one checkout.
+[Installation](docs/installation.md) carries the rest: which rc file `install.sh` writes, pinning OpenCode to a release, and pointing several aliases at one checkout.
 
 ## Documentation
 
 [docs/](docs/README.md) is the index. The pages behind it:
 
 - [Installation](docs/installation.md), [swarmforge CLI](docs/cli.md), and [Git repos and worktrees](docs/git-guard.md) — getting a session running, and what the read-only git mounts change about it.
-- [OpenCode](docs/harnesses/opencode.md), [Claude Code](docs/harnesses/claude-code.md), [Grok Build CLI](docs/harnesses/grok.md), [Codex CLI](docs/harnesses/codex.md) — one page per harness, and [Ollama](docs/ollama.md) for models served locally.
+- [OpenCode](docs/harnesses/opencode.md), [Claude Code](docs/harnesses/claude-code.md), [Grok Build CLI](docs/harnesses/grok.md), [Codex CLI](docs/harnesses/codex.md) — one page per harness.
 - [Configuration and assets](docs/configuration.md), [Agents](docs/authoring/agents.md), [Skills](docs/authoring/skills.md), [Commands](docs/authoring/commands.md) — what every harness picks up, and how to write it once.
 - [Tongs](docs/tongs/README.md) — sidecar containers that hold what the agent must not, such as credentials.
 - [Harness lifecycle](docs/development/architecture.md) and [Testing](docs/development/testing.md) — working on Swarmforge itself.

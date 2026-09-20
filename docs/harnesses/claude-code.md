@@ -5,7 +5,7 @@ Claude state persists by mounting `$(CLAUDE_HOME_DIR)` to `/home/anvil`, keeping
 The repo is mounted at a stable path derived from the git remote slug (with `/workspace` still mounted for compatibility), which groups sessions consistently across worktrees without host-specific absolute paths.
 
 - To reuse existing host-native Claude sessions directly, run with `CLAUDE_HOME_DIR=$HOME`.
-- Remote slugs map deterministically, e.g. `git@github.com:crypticswarm/Swarmforge.git` -> `/repos/crypticswarm/Swarmforge`. Override with `SWARMFORGE_REPO_SLUG=crypticswarm/Swarmforge` and `SWARMFORGE_REMOTE_NAME=<remote>`.
+- Remote slugs map deterministically, e.g. `git@github.com:crypticswarm/Swarmforge.git` -> `/repos/crypticswarm/Swarmforge`.
 
 ## Claude config layering
 
@@ -13,7 +13,7 @@ The three [config layers](../configuration.md#config-layers) merge into Claude's
 
 ### The config directory
 
-Claude runs with `CLAUDE_CONFIG_DIR` pointed at a container-local path, rebuilt from the config layers and the [asset pipeline](../configuration.md#asset-layers) on every run. Everything Claude reads as configuration or code lives in that directory.
+Claude runs with `CLAUDE_CONFIG_DIR` pointed at a container-local path — not the persistent home, and gone when the container is — rebuilt from the config layers and the [asset pipeline](../configuration.md#asset-layers) on every run. Everything Claude reads as configuration or code lives in that directory, so one directory shared between containers would hand a session's writes to the next run and to whatever runs alongside it.
 
 State that must outlive the run (`projects/`, `history.jsonl`, …) is symlinked back in from the shared home. Credentials live in the same shared `~/.claude`, named by `CLAUDE_SECURESTORAGE_CONFIG_DIR`, so a login survives the run. `plugins/` is linked too, but read-only: plugin installs happen host-side.
 

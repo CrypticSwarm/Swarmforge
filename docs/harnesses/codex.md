@@ -4,10 +4,9 @@
 The image installs the official CLI via `curl -fsSL https://chatgpt.com/codex/install.sh | sh`.
 That release is a package rather than a lone binary -- `bin/codex` resolves ripgrep, `bwrap`, and a bundled zsh beside itself -- so it stays whole under `/opt/codex` and the installer's symlink is what lands on `PATH`.
 Codex state persists by mounting `$(CODEX_HOME_DIR)` to `/home/anvil`, keeping credentials, sessions, and the project trust levels a stable mount path keeps valid.
-`CODEX_HOME_DIR` defaults to `$(CODEX_DATA_DIR)/home`; use separate `CODEX_DATA_DIR` roots to isolate work/personal logins, as with `CLAUDE_DATA_DIR`.
 
 Codex reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
-Shared skills reach `~/.agents/skills/`, Codex's native user location, through the [asset pipeline](../configuration.md#asset-layers). Portable commands reach the same location as translated skills.
+Shared skills and commands arrive through the [asset pipeline](../configuration.md#asset-layers).
 Unified subagent definitions become temporary Codex role files under
 `/run/swarmforge/codex-agents/` and are registered through the derived
 `~/.codex/config.toml`. The checkout's native `.codex/agents/` is untouched.

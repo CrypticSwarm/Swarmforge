@@ -24,10 +24,7 @@ Ruff is a contributor tool, not a dependency: the harness image installs no thir
 
 A lightweight skill test harness runs scenario prompts against a chosen model and verifies expected behavior. It drives a real model inside the OpenCode image, which is why it is a separate target from the unit suite.
 
-- Run all skill tests: `make test-skills MODEL=<provider/model>`
-- Run a single skill's tests: `make test-skills MODEL=<provider/model> TEST_SKILL=<skill-name>`
-- Optional judge mode: `make test-skills MODEL=<student> TEST_ENABLE_JUDGE=1 EVAL_MODEL=<judge>`
-- Timeout override: `make test-skills MODEL=<provider/model> TEST_TIMEOUT_S=<seconds>`
+- Run them: `make test-skills MODEL=<provider/model>`
 
 Tests live in `skills/<skill-name>/tests/*.json`; the runner is `scripts/skill_eval.py`.
 Assertions can be:

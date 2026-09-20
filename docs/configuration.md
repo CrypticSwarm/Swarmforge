@@ -22,9 +22,9 @@ Skills, commands, and agents come from four layers, lowest to highest precedence
 - **repo** — this checkout's `skills/`, `commands/`, and `agents/`
 - **workspace** — `<workspace>/.agents/{skills,commands}` and `<workspace>/.swarmforge/agents/`
 
-Skills and commands follow the harness-neutral `.agents/{skills,commands}` convention. Skills are copied as-is; commands are copied for harnesses with native commands and translated into skills for Codex. Agents use the unified format (see [Agents](authoring/agents.md)) and are translated per harness.
+Skills and commands follow the harness-neutral `.agents/{skills,commands}` convention, and skills are copied as-is. Agents use the unified format (see [Agents](authoring/agents.md)) and are translated per harness.
 Harness-native dirs (`<layer>/.opencode/skills/`, `<layer>/.claude/skills/`) are not consumed for skills/commands.
-Override the `.agents` roots with `SWARMFORGE_USER_DOTAGENTS_DIR` / `SWARMFORGE_ORG_DOTAGENTS_DIR`, and the `.swarmforge` roots with `SWARMFORGE_USER_ASSETS_DIR` / `SWARMFORGE_ORG_ASSETS_DIR`. `SWARMFORGE_REPO_AGENTS_DIR` overrides the repo layer's agents dir, and points directly at an agents dir so the rest of the checkout is never mounted.
+Override the `.agents` roots with `SWARMFORGE_USER_DOTAGENTS_DIR` / `SWARMFORGE_ORG_DOTAGENTS_DIR`, and the `.swarmforge` roots with `SWARMFORGE_USER_ASSETS_DIR` / `SWARMFORGE_ORG_ASSETS_DIR`. `SWARMFORGE_REPO_AGENTS_DIR` overrides the repo layer's agents dir.
 
 ## Config layers
 
@@ -41,8 +41,9 @@ Every harness merges its own config from three sources, lowest to highest preced
 | [Grok Build CLI](harnesses/grok.md) | `grok/` | `~/.grok` | `.grok` |
 | [Codex CLI](harnesses/codex.md) | `codex/` | `~/.codex` | `.codex` |
 
-The two orders differ over this checkout: assets order by specificity, so a repo's own skill wins, while config orders by **trust**, because these files carry permissions, hooks, and env. A checkout is whatever repo you cloned and sits at the bottom; the org layer is installed deliberately and sits on top.
+The two orders differ over this checkout: assets order by specificity, so the checkout outranks org and user while the workspace outranks the checkout, whereas config orders by **trust**, because these files carry permissions, hooks, and env. A checkout is whatever repo you cloned and sits at the bottom; the org layer is installed deliberately and sits on top.
 
 A higher layer's file replaces the same-named file below it rather than merging into it. Where a merge lands, which files are the exception to that file-replacement rule and merge by key instead, and whether a harness stacks a layer of its own beneath these three for one of those files, are per harness.
 
 `.swarmforge/` is held out of this merge for every harness, as are the skills and commands dirs the asset pipeline fills, so those assets arrive by one route.
+Project-local config in the working repo (for example `.opencode/`) is no part of the merge either; the harness reads it natively.
