@@ -36,6 +36,7 @@ Run: python3 tests/test_harness_state.py
 
 import contextlib
 import dataclasses
+import io
 import os
 import shutil
 import subprocess
@@ -366,6 +367,81 @@ class WorktreeCase(StateCase):
         write_file(os.path.join(self.admin, "gitdir"), host_dotgit + "\n")
 
 
+class WorktreePointer(WorktreeCase):
+    """Which `.git` files name a git directory, and which name none.
+
+    The pointer is what decides whether the root phase writes a wrapper at
+    all, and it is read from a file git writes but anything can edit. One
+    `gitdir:` line is the record; a file carrying two of them names two
+    directories and so names none, rather than one of the two.
+    """
+
+    def pointer(self, text):
+        """What claude's reader makes of a `.git` file holding `text`."""
+        return claude.worktree_pointer(
+            write_file(os.path.join(self.ws, ".git"), text))
+
+    def test_one_line_names_its_directory(self):
+        self.assertEqual(
+            self.pointer("gitdir: /bare/worktrees/wt\n"), "/bare/worktrees/wt")
+
+    def test_the_spaces_after_the_colon_are_not_part_of_the_path(self):
+        """The reader is looser than git about the separator, which refuses a
+        record with no space and reads several as part of the path."""
+        self.assertEqual(self.pointer("gitdir:    /bare/wt\n"), "/bare/wt")
+        self.assertEqual(self.pointer("gitdir:/bare/wt\n"), "/bare/wt")
+
+    def test_the_value_runs_to_the_end_of_the_line(self):
+        """Only the spaces between the colon and the value separate them."""
+        self.assertEqual(self.pointer("gitdir: /bare/wt  \n"), "/bare/wt  ")
+
+    def test_an_indented_line_is_not_a_pointer(self):
+        """A record starts its line; an indented one is text."""
+        self.assertEqual(self.pointer("   gitdir: /bare/wt\n"), "")
+
+    def test_a_file_naming_no_gitdir_names_nothing(self):
+        self.assertEqual(self.pointer("ref: refs/heads/main\n"), "")
+
+    def test_an_empty_file_names_nothing(self):
+        self.assertEqual(self.pointer(""), "")
+
+    def test_a_line_below_the_pointer_leaves_it_alone(self):
+        """Only a second `gitdir:` line is a competing answer."""
+        self.assertEqual(self.pointer("gitdir: /bare/wt\nbogus\n"), "/bare/wt")
+
+    def test_two_pointers_name_nothing_and_say_so(self):
+        """The file is named, so whoever has to repair it knows which one.
+        The records it holds are not: naming them reads as a choice between
+        them, which is the one thing the reader will not make."""
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(self.pointer("gitdir: /a/one\ngitdir: /b/two\n"), "")
+        self.assertIn(os.path.join(self.ws, ".git"), stderr.getvalue())
+        self.assertIn("holds 2 gitdir: lines", stderr.getvalue())
+        self.assertNotIn("/a/one", stderr.getvalue())
+
+    def test_three_pointers_name_nothing_and_are_counted(self):
+        """The phrase around the count is what is asserted: the message names
+        the staging path, which carries digits of its own."""
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(
+                self.pointer("gitdir: /a\ngitdir: /b\ngitdir: /c\n"), "")
+        self.assertIn("holds 3 gitdir: lines", stderr.getvalue())
+
+    def test_a_second_pointer_with_no_value_names_nothing(self):
+        """A record that names nothing is still a second record."""
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.pointer("gitdir: /bare/wt\ngitdir:\n"), "")
+
+    def test_the_same_pointer_twice_names_nothing(self):
+        """A repeated record is still a second record: the reader counts the
+        lines rather than comparing what they say."""
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(
+                self.pointer("gitdir: /bare/wt\ngitdir: /bare/wt\n"), "")
+
+
 class WorktreeWrapperGuards(WorktreeCase):
     """No wrapper for a workspace whose worktree paths already resolve.
 
@@ -392,6 +468,17 @@ class WorktreeWrapperGuards(WorktreeCase):
     def test_a_git_file_naming_no_gitdir_gets_no_wrapper(self):
         write_file(os.path.join(self.ws, ".git"), "ref: refs/heads/main\n")
         self.assert_nothing_installed()
+
+    def test_a_git_file_naming_two_gitdirs_gets_no_wrapper(self):
+        """The first line names an administrative directory that does record
+        a host path, so the second line is the whole of what stands between
+        this workspace and a wrapper."""
+        write_file(os.path.join(self.ws, ".git"),
+                   "gitdir: %s\ngitdir: /elsewhere\n" % self.admin)
+        write_file(os.path.join(self.admin, "gitdir"),
+                   self.HOST_WORKTREE + "/.git\n")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assert_nothing_installed()
 
     def test_an_administrative_dir_without_a_reverse_pointer_gets_no_wrapper(self):
         """Nothing records the host path, so there is none to rewrite."""
