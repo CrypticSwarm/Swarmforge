@@ -240,8 +240,14 @@ def worktree_pointer(dotgit):
     """The git directory `dotgit` points at, empty when it points at none.
 
     A linked worktree carries a `.git` file naming its administrative
-    directory. A regular checkout has a `.git` directory instead, and a file
-    holding anything else names nothing.
+    directory in one `gitdir:` line. A regular checkout has a `.git`
+    directory instead, and a file holding anything else names nothing.
+
+    Two such lines name two directories and so name none: nothing here can
+    prefer one record to the other, and the pointer decides whether every git
+    command of the session runs behind a path rewrite. Git reads such a file
+    as one path and finds no repository at it, so no session loses a rewrite
+    it could have used.
     """
     if not os.path.isfile(dotgit):
         return ""
@@ -253,7 +259,14 @@ def worktree_pointer(dotgit):
         for line in text.split("\n")
         if line.startswith(prefix)
     ]
-    return "\n".join(found).rstrip("\n")
+    if len(found) > 1:
+        print(
+            "Warning: %s holds %d gitdir: lines; it names no git directory"
+            % (dotgit, len(found)),
+            file=sys.stderr,
+        )
+        return ""
+    return found[0] if found else ""
 
 
 def root_setup(ctx):
