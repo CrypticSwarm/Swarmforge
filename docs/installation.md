@@ -1,6 +1,7 @@
 # Installation
 
 The three install steps are in the [repo README](../README.md); this page carries the detail behind them.
+Every variable below has a row in [Environment variables](reference/environment.md), and every target one in [Make targets](reference/make-targets.md).
 
 ## The install script
 

@@ -34,6 +34,11 @@
 - [Harness lifecycle](development/architecture.md) — what a harness directory holds and the phases every run walks.
 - [Testing](development/testing.md) — the unit suite, the linter, and the skill evals.
 
+## Reference
+
+- [Environment variables](reference/environment.md) — every knob, its default, and whether it is a `make` variable, a host variable, or one the container is given.
+- [Make targets](reference/make-targets.md) — the build, run, update, and stop families, the Ollama and test targets, and what each one accepts.
+
 ## Reading paths
 
 - **First session in a container** — [Installation](installation.md), then your harness's page, then [Git repos and worktrees](git-guard.md) for what the read-only mounts change about git.
