@@ -213,17 +213,6 @@ define run_agent_container
 	set +x
 endef
 
-# A literal newline and a lone backslash, for assembling recipe text
-# inside $(eval). Reading a define body collapses literal
-# backslash-newlines, so harness_rules splices harness_bs where a recipe
-# needs a line continuation to survive into the generated rule.
-define harness_nl
-
-
-endef
-harness_blank :=
-harness_bs := \$(harness_blank)
-
 # Generates one harness's build/update/run/stop targets from the knobs its
 # harness.mk fragment declares. $(1) is the harness name as it appears in
 # target names and --build-arg AGENT; $(2) is the fragment's variable
@@ -239,13 +228,7 @@ define harness_rules
 .PHONY: build_$(1) update_$(1) run_$(1) stop_$(1)
 
 build_$(1):
-	docker build $(harness_bs)
-	  --target harness-runtime $(harness_bs)
-	  --build-arg AGENT=$(1) $(harness_bs)
-$(if $($(2)_EXTRA_BUILD_ARGS),	  $$($(2)_EXTRA_BUILD_ARGS) $(harness_bs)$(harness_nl))	  --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) $(harness_bs)
-	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) $(harness_bs)
-	  -f "$$(SWARMFORGE_DIR)/anvil/Dockerfile" $(harness_bs)
-	  -t $$($(2)_IMG) "$$(SWARMFORGE_DIR)"
+	docker build --target harness-runtime --build-arg AGENT=$(1)$(if $($(2)_EXTRA_BUILD_ARGS), $$($(2)_EXTRA_BUILD_ARGS)) --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) -f "$$(SWARMFORGE_DIR)/anvil/Dockerfile" -t $$($(2)_IMG) "$$(SWARMFORGE_DIR)"
 
 # Rebuild only from the harness install step onward.
 update_$(1):
