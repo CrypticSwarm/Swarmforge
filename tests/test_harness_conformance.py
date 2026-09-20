@@ -177,12 +177,6 @@ class DescriptorContract(unittest.TestCase):
             with self.subTest(harness=name):
                 self.assertEqual(spec.name, name)
 
-    def test_the_binary_is_a_name_the_exec_can_resolve(self):
-        for name, spec in specs():
-            with self.subTest(harness=name):
-                self.assertIsInstance(spec.binary, str)
-                self.assertTrue(spec.binary, "%s names no binary" % name)
-
     def test_a_pinned_config_destination_is_an_absolute_path(self):
         """The destination is handed to the driver as-is, from a working
         directory that is the workspace: a relative one would merge the
@@ -696,7 +690,7 @@ class ExecPassthrough(unittest.TestCase):
                 continue
             with self.subTest(harness=name):
                 path, argv, env = self.run_driver(name)
-                binary = execute.BIN_DIR + "/" + spec.binary
+                binary = execute.BIN_DIR + "/" + spec.name
                 self.assertEqual(path, binary)
                 self.assertEqual(argv, [binary] + SESSION_ARGS)
 
@@ -710,7 +704,7 @@ class ExecPassthrough(unittest.TestCase):
         for name, spec in specs():
             with self.subTest(harness=name):
                 path, argv, _ = self.run_driver(name)
-                binary = execute.BIN_DIR + "/" + spec.binary
+                binary = execute.BIN_DIR + "/" + spec.name
                 self.assertEqual(path, binary)
                 self.assertEqual(argv[0], binary)
 
@@ -853,9 +847,9 @@ class RunTargetArgv(unittest.TestCase):
         `opencode` when it is unset -- which is why the opencode target
         records no such variable -- and hands the same word to both drivers
         as the registry key while checking for it under /usr/local/bin. The
-        recorded value therefore has to be the harness's registry name and
-        its binary at once, or the container refuses to start."""
-        for target, name, spec in self.targets():
+        recorded value therefore has to be the harness's registry name, or
+        the container refuses to start."""
+        for target, name, _ in self.targets():
             with self.subTest(harness=name):
                 recorded = env_value(docker_argv(RUN_ARGV[target]),
                                      "SWARMFORGE_AGENT_BIN")
@@ -863,10 +857,6 @@ class RunTargetArgv(unittest.TestCase):
                 self.assertEqual(
                     selected, name,
                     "%s records a word the registry does not know" % name)
-                self.assertEqual(
-                    selected, spec.binary,
-                    "%s records a word the image installs no binary for"
-                    % name)
 
     def asset_dests(self, name, spec, argv):
         """Where this run's assets land inside the container.
