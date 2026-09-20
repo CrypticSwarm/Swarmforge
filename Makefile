@@ -114,7 +114,7 @@ TONGS_LAYER_ARGS = \
 	$(if $(and $(strip $(SWARMFORGE_ORG_ASSETS_DIR)),$(wildcard $(SWARMFORGE_ORG_ASSETS_DIR)/tongs)),--org-tongs "$(SWARMFORGE_ORG_ASSETS_DIR)/tongs",) \
 	$(if $(and $(strip $(SWARMFORGE_REPO_TONGS_DIR)),$(wildcard $(SWARMFORGE_REPO_TONGS_DIR))),--repo-tongs "$(SWARMFORGE_REPO_TONGS_DIR)",)
 
-.PHONY: opencode_network build_broker run_ollama logs_ollama stop_ollama gpu_stat clean \
+.PHONY: opencode_network build_harnesses build_broker run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills lint
 
 # The workspace is mounted read-write, but the paths inside its git dir that
@@ -222,8 +222,8 @@ endef
 # in full. The one knob spliced verbatim at eval time is $(2)_MKDIRS,
 # whose entries therefore carry $$-escaped references; each becomes a
 # quoted operand of the single mkdir the run recipe opens with, and a
-# harness that declares none runs no mkdir. .PHONY and clean accumulate
-# across evals, one contribution per harness.
+# harness that declares none runs no mkdir. .PHONY, build_harnesses, and
+# clean accumulate across evals, one contribution per harness.
 define harness_rules
 .PHONY: build_$(1) update_$(1) run_$(1) stop_$(1)
 
@@ -245,6 +245,10 @@ run_$(1): opencode_network
 
 stop_$(1):
 	@docker rm -f $$($(2)_CTR) >/dev/null 2>&1 || true
+
+# One build per harness. The prerequisites carry the work and no image
+# depends on another, so `make -j build_harnesses` builds them in parallel.
+build_harnesses: build_$(1)
 
 clean: stop_$(1)
 endef

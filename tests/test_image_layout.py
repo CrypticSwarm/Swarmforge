@@ -35,6 +35,7 @@ from swarmforge.harness import claude
 
 import make_argv_fixtures
 
+HARNESS_DIR = os.path.join(REPO_ROOT, "swarmforge", "harness")
 MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
 DOCKERFILE = os.path.join(REPO_ROOT, "anvil", "Dockerfile")
 ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
@@ -53,6 +54,19 @@ model: anthropic/claude-sonnet-4-6
 
 You are the reviewer agent.
 """
+
+
+def harness_fragment_names():
+    """The harnesses the Makefile globs a harness.mk for, sorted.
+
+    The glob is what decides which build targets exist, so a test that wants
+    "every harness" reads the same directory the Makefile does rather than
+    keeping a list of its own.
+    """
+    return sorted(
+        name for name in os.listdir(HARNESS_DIR)
+        if os.path.isfile(os.path.join(HARNESS_DIR, name, "harness.mk"))
+    )
 
 
 def dockerfile_copies():
@@ -269,8 +283,6 @@ class HarnessInstallLayout(unittest.TestCase):
     a mismatch is an image with no harness binary.
     """
 
-    HARNESS_DIR = os.path.join(REPO_ROOT, "swarmforge", "harness")
-
     def setUp(self):
         with open(DOCKERFILE) as handle:
             self.dockerfile = handle.read()
@@ -307,15 +319,12 @@ class HarnessInstallLayout(unittest.TestCase):
         The Makefile globs the fragments, so adding one advertises a build
         that only discovers the missing script partway through the image.
         """
-        fragments = sorted(
-            name for name in os.listdir(self.HARNESS_DIR)
-            if os.path.isfile(os.path.join(self.HARNESS_DIR, name, "harness.mk"))
-        )
+        fragments = harness_fragment_names()
         self.assertTrue(fragments, "no harness declares a harness.mk")
         for name in fragments:
             self.assertTrue(
                 os.path.isfile(
-                    os.path.join(self.HARNESS_DIR, name, "install.sh")),
+                    os.path.join(HARNESS_DIR, name, "install.sh")),
                 "harness %s has a build target but no install.sh" % name,
             )
 
@@ -352,10 +361,10 @@ class HarnessInstallLayout(unittest.TestCase):
         surfaces when a container cannot exec its harness.
         """
         scripts = sorted(
-            os.path.join(self.HARNESS_DIR, name, script)
-            for name in os.listdir(self.HARNESS_DIR)
+            os.path.join(HARNESS_DIR, name, script)
+            for name in os.listdir(HARNESS_DIR)
             for script in ("install.sh", "image.sh")
-            if os.path.isfile(os.path.join(self.HARNESS_DIR, name, script))
+            if os.path.isfile(os.path.join(HARNESS_DIR, name, script))
         )
         self.assertTrue(scripts, "no harness ships a build script")
         for path in scripts:
@@ -477,6 +486,53 @@ class BuildArgvBaseline(BuildRecipeCase):
 
     def test_build_codex_argv_matches_recording(self):
         self.assert_argv_matches_recording("build_codex")
+
+
+class BuildHarnessesAggregate(unittest.TestCase):
+    """`make build_harnesses` builds every harness and writes down no name.
+
+    Each fragment adds its own build target to the aggregate as it is
+    included, so a harness added later joins by existing. A version that
+    spelled the set out instead would keep building a stale one, and the
+    harness whose image was never built would only surface when a run tried
+    to start it.
+    """
+
+    def dry_run(self, target):
+        """The recipe lines `make` would run for a target, without running them."""
+        with tempfile.TemporaryDirectory(prefix="swarmforge-dryrun-") as home:
+            completed = subprocess.run(
+                ["make", "-C", REPO_ROOT, "-f", MAKEFILE,
+                 "--no-print-directory", "--dry-run", target],
+                env={"PATH": os.environ.get("PATH", ""), "HOME": home},
+                capture_output=True, text=True,
+            )
+        self.assertEqual(
+            completed.returncode, 0,
+            "make failed:\n%s\n%s" % (completed.stdout, completed.stderr),
+        )
+        return [line for line in completed.stdout.splitlines() if line.strip()]
+
+    def test_build_harnesses_covers_every_harness_once(self):
+        agents = [
+            re.search(r"--build-arg AGENT=(\S+)", line).group(1)
+            for line in self.dry_run("build_harnesses")
+            if "--build-arg AGENT=" in line
+        ]
+        self.assertEqual(sorted(agents), harness_fragment_names())
+
+    def test_the_aggregate_runs_each_harness_build_verbatim(self):
+        """Every line a harness's own build target would run is among the
+        aggregate's, down to the knobs one fragment overrides and another
+        does not -- so reaching the images through it builds what building
+        them one at a time builds.
+        """
+        aggregate = set(self.dry_run("build_harnesses"))
+        for name in harness_fragment_names():
+            own = self.dry_run("build_%s" % name)
+            self.assertTrue(own, "build_%s runs nothing" % name)
+            for line in own:
+                self.assertIn(line, aggregate)
 
 
 class ContainerImportLayout(unittest.TestCase):
