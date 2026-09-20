@@ -38,11 +38,19 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
 from swarmforge.agents import translate
 from swarmforge.config import merge_toml
 from swarmforge.harness import claude, init
 from swarmforge.harness.spec import Waiver
+
+from harness_fixtures import read_file, write_file
 
 AGENT_MD = """---
 description: Reviews code for defects.
@@ -56,21 +64,6 @@ You are the reviewer agent.
 # The asset layers, lowest precedence first. The workspace overlay ranks above
 # all three and arrives as a path rather than a mounted layer.
 LAYERS = ("user", "org", "repo")
-
-
-def write_file(path, text):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    return path
-
-
-def read_file(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
 
 
 def agent_document(body):

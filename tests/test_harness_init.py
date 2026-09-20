@@ -38,31 +38,24 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
 from swarmforge.config import merge_json, merge_toml, merge_toml_mcp
 from swarmforge.harness import claude, execute, init
-from swarmforge.harness.spec import Context, HarnessSpec, Waiver, provided
+from swarmforge.harness.spec import Context, Waiver, provided
+
+from harness_fixtures import fake_spec, read_file, write_file
 
 ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
 
 # Derived, not spelled out: a harness this suite does not name is a harness
 # it does not cover, and registering one is meant to be the whole step.
 HARNESSES = tuple(harness.names())
-
-
-def write_file(path, text):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    return path
-
-
-def read_file(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
 
 
 def read_json(path):
@@ -779,26 +772,6 @@ class ClaudeSettingsBuild(DriverCase):
         self.assertEqual(read_file(self.settings_file), "{}\n")
 
 
-def fake_spec(**overrides):
-    """A registrable spec whose config destination comes from the run."""
-    fields = dict(
-        name="fake",
-        config_dest=Waiver("the run's SWARMFORGE_CONFIG_DEST names the destination"),
-        config_reset=False,
-        layer_excludes=(),
-        skills_dest=Waiver("no portable skills destination is declared"),
-        commands_dest=Waiver("no portable commands destination is declared"),
-        agents_dest=Waiver("unified agent definitions are not delivered"),
-        mcp_fragment=lambda servers: {},
-        mcp_delivery=("env", "SWARMFORGE_TONG_MCP_FILE"),
-        mcp_merge="json-replace-mcp",
-        agent_emitter=Waiver("no emitter is defined"),
-        extra_chown_paths=(),
-    )
-    fields.update(overrides)
-    return HarnessSpec(**fields)
-
-
 class HookContract(DriverCase):
     """The config hooks run in order, around the merge each one depends on.
 
@@ -825,6 +798,7 @@ class HookContract(DriverCase):
             return hook
 
         self.spec = fake_spec(
+            mcp_merge="json-replace-mcp",
             build_config=record("build"),
             finalize_config=record("finalize"),
             publish_config=record("publish"),

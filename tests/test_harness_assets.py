@@ -36,9 +36,17 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
 from swarmforge.harness import claude, codex, init, spec
 from swarmforge.harness.spec import Waiver
+
+from harness_fixtures import read_file, tree, write_file
 
 # The asset layers, lowest precedence first.
 LAYERS = ("user", "org", "shared", "workspace")
@@ -49,21 +57,6 @@ HARNESSES = tuple(harness.names())
 
 # What the translator writes in place of the portable argument placeholder.
 ARGUMENTS = "the arguments supplied with this skill invocation"
-
-
-def write_file(path, text):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    return path
-
-
-def read_file(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
 
 
 def command_document(description, body):
@@ -77,28 +70,6 @@ def translated_command(name, description, body):
     """The skill package text the translator writes for one command."""
     return "---\nname: %s\ndescription: %s\n---\n\n%s\n" % (
         name, description, body)
-
-
-def tree(root):
-    """Every path under `root`, relative, mapped to what stands there.
-
-    A file maps to its text, a symlink to `("link", target)` with the target
-    string it was created with, and a directory to None. A missing root is an
-    empty mapping, so a destination that was never created and one that was
-    created empty read differently.
-    """
-    found = {}
-    for dirpath, dirnames, filenames in os.walk(root):
-        for name in sorted(dirnames + filenames):
-            path = os.path.join(dirpath, name)
-            key = os.path.relpath(path, root)
-            if os.path.islink(path):
-                found[key] = ("link", os.readlink(path))
-            elif os.path.isdir(path):
-                found[key] = None
-            else:
-                found[key] = read_file(path)
-    return found
 
 
 class AssetCase(unittest.TestCase):

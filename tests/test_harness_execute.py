@@ -49,20 +49,16 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
 from swarmforge.harness import claude, execute, init, spec
 
-
-def write_file(path, text, mode=None):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    if mode is not None:
-        os.chmod(path, mode)
-    return path
+from harness_fixtures import write_file
 
 
 class ExecuteCase(unittest.TestCase):

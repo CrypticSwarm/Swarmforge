@@ -56,6 +56,7 @@ from swarmforge.harness.spec import (
     provided,
 )
 
+from harness_fixtures import read_file, write_file
 from make_argv_fixtures import RUN_ARGV
 
 # The layer variables every run target hands the container, whatever the
@@ -125,21 +126,6 @@ def skill_document(layer):
 
 def command_document(layer):
     return "---\ndescription: Demo command.\n---\n\n%s command\n" % layer
-
-
-def write_file(path, text):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    return path
-
-
-def read_file(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
 
 
 def specs():
