@@ -114,7 +114,14 @@ ARG SWARMFORGE_HARNESS_INSTALL_BUST=0
 # harness ships the script that installs its binary inside its own package
 # directory. An AGENT with no such script is not one this image can build, so
 # the missing file fails the build rather than producing a binary-less image.
+# AGENT reaches a path here, so it is held to a bare name first: dispatching on
+# the registry costs the enumeration that used to reject everything else.
 RUN set -eux; \
+    case "${AGENT}" in \
+      ''|*[!a-z0-9_-]*) \
+        printf '%s\n' "AGENT is not a harness name: ${AGENT}" >&2; \
+        exit 1 ;; \
+    esac; \
     install_sh="/usr/local/lib/swarmforge/swarmforge/harness/${AGENT}/install.sh"; \
     if [ ! -f "${install_sh}" ]; then \
       printf '%s\n' "Unsupported AGENT: ${AGENT}" >&2; \
@@ -130,6 +137,11 @@ ARG AGENT=opencode
 # A harness's build-time asset install is its optional image.sh, run out of
 # the copied package. A harness that ships none adds nothing to the image.
 RUN set -eux; \
+    case "${AGENT}" in \
+      ''|*[!a-z0-9_-]*) \
+        printf '%s\n' "AGENT is not a harness name: ${AGENT}" >&2; \
+        exit 1 ;; \
+    esac; \
     image_sh="/usr/local/lib/swarmforge/swarmforge/harness/${AGENT}/image.sh"; \
     if [ -f "${image_sh}" ]; then sh "${image_sh}"; fi
 
