@@ -355,22 +355,6 @@ def root_setup(name, home, environ, cwd=None):
     return 0
 
 
-def ownership_argv(spec, home, owner, workspace):
-    """Every chown one harness's ownership handover runs, in order.
-
-    The home first, then the paths that harness builds outside it, then the
-    workspace. The extras change hands with `-Rh`, which changes the links
-    themselves rather than what they point at: they hold the state links back
-    into the home, whose targets the home pass already covered, so following
-    them would be wasted work at best.
-    """
-    return (
-        [["chown", "-R", owner, home]]
-        + [["chown", "-Rh", owner, path] for path in spec.extra_chown_paths]
-        + [["chown", "-R", owner, workspace]]
-    )
-
-
 def _chown(argv):
     """Run one chown, letting it fail.
 
@@ -390,12 +374,20 @@ def deliver_ownership(name, home, uid, gid, workspace=WORKSPACE, chown=None):
 
     The last phase, run after every phase that writes as root, so nothing root
     creates afterwards is left behind owned by root once privileges drop.
+
+    The home changes hands first, then the paths that harness builds outside
+    it, then the workspace. The extras change hands with `-Rh`, which changes
+    the links themselves rather than what they point at: they hold the state
+    links back into the home, whose targets the home pass already covered, so
+    following them would be wasted work at best.
     """
     spec = harness.get(name).SPEC
     owner = "%s:%s" % (uid, gid)
     run_chown = chown or _chown
-    for argv in ownership_argv(spec, home, owner, workspace):
-        run_chown(argv)
+    run_chown(["chown", "-R", owner, home])
+    for path in spec.extra_chown_paths:
+        run_chown(["chown", "-Rh", owner, path])
+    run_chown(["chown", "-R", owner, workspace])
     return 0
 
 
