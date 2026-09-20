@@ -18,6 +18,7 @@ name the harness-neutral asset layers the agent definitions come from, and
 `SWARMFORGE_COMMAND_DIR` name the portable skill and command layers.
 """
 
+import dataclasses
 import os
 import shutil
 import subprocess
@@ -315,8 +316,8 @@ def install_assets(spec, ctx, environ, workspace=WORKSPACE):
     return 0
 
 
-def link_state(name, home, environ):
-    """Link the persistent state of the harness named `name` into its config.
+def link_state(spec, ctx):
+    """Link the persistent state the harness `spec` declares into its config.
 
     A harness whose config destination is rebuilt for every run keeps what has
     to outlive it in the persistent home and links those entries back in; one
@@ -327,13 +328,12 @@ def link_state(name, home, environ):
     A failed link is not caught: the state it stands for would silently die
     with the container.
     """
-    spec = harness.get(name).SPEC
-    spec.link_state(asset_context(spec, home, environ))
+    spec.link_state(ctx)
     return 0
 
 
-def root_setup(name, home, environ, cwd=None):
-    """Prepare the container for the harness named `name`, as root.
+def root_setup(spec, ctx, cwd=None):
+    """Prepare the container for the harness `spec` declares, as root.
 
     Runs on a container whose config, assets, and state links are already in
     place, just before ownership changes hands -- so whatever the hook creates
@@ -344,9 +344,7 @@ def root_setup(name, home, environ, cwd=None):
     A failed preparation is not caught: the session would start without
     whatever the hook stands for and only root can supply.
     """
-    spec = harness.get(name).SPEC
-    ctx = asset_context(spec, home, environ, cwd=cwd or os.getcwd())
-    spec.root_setup(ctx)
+    spec.root_setup(dataclasses.replace(ctx, cwd=cwd or os.getcwd()))
     return 0
 
 
@@ -364,8 +362,8 @@ def _chown(argv):
         pass
 
 
-def deliver_ownership(name, home, uid, gid, workspace=WORKSPACE, chown=None):
-    """Hand what root built to the anvil uid, for the harness named `name`.
+def deliver_ownership(spec, ctx, uid, gid, workspace=WORKSPACE, chown=None):
+    """Hand what root built to the anvil uid, for the harness `spec` declares.
 
     The last phase, run after every phase that writes as root, so nothing root
     creates afterwards is left behind owned by root once privileges drop.
@@ -376,10 +374,9 @@ def deliver_ownership(name, home, uid, gid, workspace=WORKSPACE, chown=None):
     links back into the home, whose targets the home pass already covered, so
     following them would be wasted work at best.
     """
-    spec = harness.get(name).SPEC
     owner = "%s:%s" % (uid, gid)
     run_chown = chown or _chown
-    run_chown(["chown", "-R", owner, home])
+    run_chown(["chown", "-R", owner, ctx.home])
     for path in spec.extra_chown_paths:
         run_chown(["chown", "-Rh", owner, path])
     run_chown(["chown", "-R", owner, workspace])
@@ -403,9 +400,9 @@ def run(name, home, uid, gid, environ, workspace=WORKSPACE, cwd=None):
 
     translate_agents(spec, ctx, environ, workspace)
     install_assets(spec, ctx, environ, workspace)
-    link_state(name, home, environ)
-    root_setup(name, home, environ, cwd)
-    deliver_ownership(name, home, uid, gid, workspace)
+    link_state(spec, ctx)
+    root_setup(spec, ctx, cwd)
+    deliver_ownership(spec, ctx, uid, gid, workspace)
     return 0
 
 

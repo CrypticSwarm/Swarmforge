@@ -332,7 +332,8 @@ class ClaudeEnvironment(ExecuteCase):
         the same shared home; a disagreement puts the session's history in one
         directory and its token in another."""
         with self.redirected("claude"):
-            init.link_state("claude", self.home, {})
+            staged = harness.get("claude").SPEC
+            init.link_state(staged, init.asset_context(staged, self.home, {}))
         _, _, env = self.execute("claude")
 
         parents = {
