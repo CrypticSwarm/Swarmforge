@@ -878,6 +878,18 @@ class DriverArgv(DriverCase):
         self.assertEqual(status, 2)
         self.assertIn("unknown harness: nosuch", captured.getvalue())
 
+    def test_an_unregistered_harness_stops_the_whole_run(self):
+        """The config phase is the only one that looks the name up against
+        the registry; every phase after it reads the spec the run resolved
+        without a guard of its own. The refusal reaching the entrypoint as a
+        status, rather than the run carrying an unregistered name past the
+        config phase, is what keeps that read total."""
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            status = init.run("nosuch", self.home, "0", "0", {})
+        self.assertEqual(status, 2)
+        self.assertIn("unknown harness: nosuch", captured.getvalue())
+
     def test_too_few_arguments_are_refused(self):
         for argv in ([], ["one"], ["one", "two"], ["one", "two", "three"]):
             with self.subTest(argv=argv):

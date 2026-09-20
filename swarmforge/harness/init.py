@@ -250,11 +250,11 @@ def asset_context(spec, home, environ, cwd=""):
     The config layer sources and the tong fragment are the same strings the
     config phase read. `config_dest` differs: the config phase leaves it empty
     when the run names no destination and skips itself, while for the phases
-    after it "{config}" always stands for a concrete directory -- the pinned one,
-    the one the run named, or the harness's default under the home -- because
-    that is where the harness reads its assets from either way. `cwd` is filled
-    in only for the phases that act on the directory the harness process starts
-    in, and empty for the rest.
+    after it "{config}" always stands for a concrete directory -- the pinned
+    one, the one the run named, or the harness's default under the home --
+    because that is where the harness reads its assets from either way. `cwd`
+    is filled in only for the phases that act on the directory the harness
+    process starts in, and empty for the rest.
     """
     return Context(
         harness=spec.name,
@@ -280,10 +280,12 @@ def install_assets(spec, ctx, environ, workspace=WORKSPACE):
     caught: the container stops rather than starting a session whose assets
     are half-written.
     """
-    skills_dest = (resolve_dest(spec.skills_dest, ctx.home, ctx.config_dest)
-                   if provided(spec.skills_dest) else "")
-    commands_dest = (resolve_dest(spec.commands_dest, ctx.home, ctx.config_dest)
-                     if provided(spec.commands_dest) else "")
+    skills_dest = (
+        resolve_dest(spec.skills_dest, ctx.home, ctx.config_dest)
+        if provided(spec.skills_dest) else "")
+    commands_dest = (
+        resolve_dest(spec.commands_dest, ctx.home, ctx.config_dest)
+        if provided(spec.commands_dest) else "")
 
     def dotagents(variable):
         root = environ.get(variable) or ""

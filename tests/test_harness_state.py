@@ -168,8 +168,10 @@ class StateCase(unittest.TestCase):
     def staged(self, name):
         """The spec and context the driver would hand `name`'s phases.
 
-        Read inside `redirected`, so it carries the replaced paths the
-        staging tree stands in for rather than the ones the harness pins.
+        The registry is read at the call, so the paths the pair carries are
+        whichever stand at that point: the staging tree's replacements from
+        inside `redirected`, and the ones the harness really pins from
+        outside it.
         """
         declared = harness.get(name).SPEC
         return declared, init.asset_context(declared, self.home, self.env())
