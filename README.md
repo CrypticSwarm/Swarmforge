@@ -29,6 +29,11 @@ make build_grok
 make build_codex
 ```
 
+Or build them all at once with `make build_harnesses`. Each harness adds its own
+build to that target, so a harness added later joins it with no list to update.
+The images share every stage below the harness install, so `make -j -O build_harnesses`
+is worth it once one build has populated that cache (`-O` keeps the parallel logs apart).
+
 To pin OpenCode to a specific release instead of latest:
 
 ```bash
@@ -268,7 +273,7 @@ Relax it per run with `CODEX_ARGS='--dangerously-bypass-approvals-and-sandbox'`,
 A harness is one directory, `swarmforge/harness/<name>/`, holding everything Swarmforge knows about it:
 
 - `__init__.py` — the spec module: a `HarnessSpec` and the hook functions it points at.
-- `harness.mk` — the fragment the Makefile includes to generate `build_<name>`, `update_<name>`, `run_<name>`, and `stop_<name>`.
+- `harness.mk` — the fragment the Makefile includes to generate `build_<name>`, `update_<name>`, `run_<name>`, and `stop_<name>`, and to add that build to `build_harnesses`.
 - `install.sh` — run by the image build, leaving the harness binary under `/usr/local/bin/`.
 - `image.sh` — optional, run next, installing any build-time assets the harness ships (Claude's `statusline.sh` and `claude-settings.json`).
 
