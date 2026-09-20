@@ -204,8 +204,8 @@ def resolve_dest(template, home, config):
     return template.replace("{home}", home).replace("{config}", config)
 
 
-def translate_agents(name, home, environ, workspace=WORKSPACE):
-    """Translate the unified agent definitions for the harness named `name`.
+def translate_agents(spec, ctx, environ, workspace=WORKSPACE):
+    """Translate the unified agent definitions for the harness `spec` declares.
 
     One definition serves every harness, in the format under "Agents" in the
     README. Sources are the .swarmforge asset layers and the workspace
@@ -217,14 +217,12 @@ def translate_agents(name, home, environ, workspace=WORKSPACE):
     warning, since a session can run without subagents while a stopped
     container serves nobody.
     """
-    spec = harness.get(name).SPEC
     # The Waiver is the opt-out on record: unified agent definitions are not
     # delivered to this harness, so nothing is written and nothing is warned.
     if not provided(spec.agents_dest):
         return 0
 
-    dest = resolve_dest(
-        spec.agents_dest, home, config_root(spec, home, environ))
+    dest = resolve_dest(spec.agents_dest, ctx.home, ctx.config_dest)
     sources = [
         (environ.get("SWARMFORGE_ASSETS_USER_DIR") or "") + "/agents",
         (environ.get("SWARMFORGE_ASSETS_ORG_DIR") or "") + "/agents",
@@ -233,25 +231,25 @@ def translate_agents(name, home, environ, workspace=WORKSPACE):
     ]
 
     try:
-        status = translate.run(name, dest, sources, home=home)
+        status = translate.run(spec.name, dest, sources, home=ctx.home)
     except Exception:
         status = 1
     if status != 0:
         print(
             "Warning: unified agent translation failed for %s; continuing"
-            % name,
+            % spec.name,
             file=sys.stderr,
         )
     return 0
 
 
 def asset_context(spec, home, environ, cwd=""):
-    """What one asset-phase run knows, for the harness's install hooks.
+    """What the phases after the config merge know, for the harness's hooks.
 
     The config layer sources and the tong fragment are the same strings the
     config phase read. `config_dest` differs: the config phase leaves it empty
-    when the run names no destination and skips itself, while for the asset
-    phase "{config}" always stands for a concrete directory -- the pinned one,
+    when the run names no destination and skips itself, while for the phases
+    after it "{config}" always stands for a concrete directory -- the pinned one,
     the one the run named, or the harness's default under the home -- because
     that is where the harness reads its assets from either way. `cwd` is filled
     in only for the phases that act on the directory the harness process starts
@@ -269,8 +267,8 @@ def asset_context(spec, home, environ, cwd=""):
     )
 
 
-def install_assets(name, home, environ, workspace=WORKSPACE):
-    """Install the portable skills and commands for the harness named `name`.
+def install_assets(spec, ctx, environ, workspace=WORKSPACE):
+    """Install the portable skills and commands the harness `spec` declares.
 
     Skills and commands are portable across harnesses, so copying them into
     the harness's native locations is the whole translation, and the config
@@ -281,11 +279,9 @@ def install_assets(name, home, environ, workspace=WORKSPACE):
     caught: the container stops rather than starting a session whose assets
     are half-written.
     """
-    spec = harness.get(name).SPEC
-    config = config_root(spec, home, environ)
-    skills_dest = (resolve_dest(spec.skills_dest, home, config)
+    skills_dest = (resolve_dest(spec.skills_dest, ctx.home, ctx.config_dest)
                    if provided(spec.skills_dest) else "")
-    commands_dest = (resolve_dest(spec.commands_dest, home, config)
+    commands_dest = (resolve_dest(spec.commands_dest, ctx.home, ctx.config_dest)
                      if provided(spec.commands_dest) else "")
 
     def dotagents(variable):
@@ -314,7 +310,6 @@ def install_assets(name, home, environ, workspace=WORKSPACE):
         ),
     ]
 
-    ctx = asset_context(spec, home, environ)
     for layer in layers:
         spec.install_assets(ctx, layer)
     return 0
@@ -392,12 +387,22 @@ def deliver_ownership(name, home, uid, gid, workspace=WORKSPACE, chown=None):
 
 
 def run(name, home, uid, gid, environ, workspace=WORKSPACE, cwd=None):
-    """Run the container root phases for the harness registered as `name`."""
+    """Run the container root phases for the harness registered as `name`.
+
+    The config phase is the one that looks the name up, and it fails the run
+    for a name the registry does not hold -- so the lookup below is of a name
+    already known to be registered, and the phases after it are handed the
+    spec and the context they all read rather than resolving either again.
+    """
     status = initialize(name, home, environ)
     if status != 0:
         return status
-    translate_agents(name, home, environ, workspace)
-    install_assets(name, home, environ, workspace)
+
+    spec = harness.get(name).SPEC
+    ctx = asset_context(spec, home, environ)
+
+    translate_agents(spec, ctx, environ, workspace)
+    install_assets(spec, ctx, environ, workspace)
     link_state(name, home, environ)
     root_setup(name, home, environ, cwd)
     deliver_ownership(name, home, uid, gid, workspace)
