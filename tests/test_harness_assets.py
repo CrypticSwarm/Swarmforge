@@ -43,7 +43,9 @@ from swarmforge.harness.spec import Waiver
 # The asset layers, lowest precedence first.
 LAYERS = ("user", "org", "shared", "workspace")
 
-HARNESSES = ("claude", "codex", "grok", "opencode")
+# Derived, not spelled out: a harness this suite does not name is a harness
+# it does not cover, and registering one is meant to be the whole step.
+HARNESSES = tuple(harness.names())
 
 # What the translator writes in place of the portable argument placeholder.
 ARGUMENTS = "the arguments supplied with this skill invocation"

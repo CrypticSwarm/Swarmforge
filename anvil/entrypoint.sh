@@ -89,14 +89,9 @@ if ! getent passwd "${ANVIL_UID}" >/dev/null 2>&1; then
     "${ANVIL_USER}" >/dev/null 2>&1 || true
 fi
 
-# The root phases: merge the layered config (repo, then user, then org) into
-# the harness's destination and run the harness's config hooks, translate the
-# unified agent definitions into the harness's native destination, then install
-# the portable skills and commands into the harness's native asset locations.
-# The SWARMFORGE_CONFIG_*, SWARMFORGE_ASSETS_*, and SWARMFORGE_DOTAGENTS_*
-# layer variables, SWARMFORGE_SKILLS_DIR, SWARMFORGE_COMMAND_DIR, and
-# SWARMFORGE_TONG_MCP_FILE are read from the environment. This runs as root,
-# before the privilege drop, and a failure here stops the container.
+# The root phases, as root and before the privilege drop. A failure here stops
+# the container. swarmforge/harness/init.py names the phases and the layer
+# variables they read out of the environment.
 PYTHONPATH=/usr/local/lib/swarmforge python3 -P -s -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}"
 
 if [ "${AGENT_BIN}" = "claude" ]; then

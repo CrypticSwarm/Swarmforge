@@ -27,9 +27,12 @@ from swarmforge.harness.spec import AssetLayer, Context, provided
 
 USAGE = "usage: python3 -m swarmforge.harness.init HARNESS HOME"
 
-# The container mounts the checkout here; a parameter below so a test can
-# stage one of its own.
+# The container mounts the checkout here.
 WORKSPACE = "/workspace"
+
+# Layer variables are concatenated onto, never joined with, their subdirectory:
+# an empty layer yields an absolute "/skills" that no source check passes,
+# where a join would name a path relative to the workspace this runs in.
 
 
 def layer_exclude_args(spec):
@@ -156,9 +159,6 @@ def initialize(name, home, environ):
     for src in (ctx.config_repo_src, ctx.config_user_src, ctx.config_org_src):
         merge_config_layer(src, dest, excludes)
         for keyed in spec.keyed_files:
-            # Concatenated rather than joined: an empty layer yields an
-            # absolute "/<name>" that fails the source check, where a join
-            # would name a file relative to the workspace this runs in.
             merge_config_file(src + "/" + keyed, dest + "/" + keyed)
 
     spec.build_config(ctx)
@@ -201,25 +201,15 @@ def resolve_dest(template, home, config):
 def translate_agents(name, home, environ, workspace=WORKSPACE):
     """Translate the unified agent definitions for the harness named `name`.
 
-    Unified definitions are markdown files whose YAML frontmatter is a superset
-    of the OpenCode agent schema (description, mode, model, temperature, tools)
-    plus optional per-harness override blocks (claude:, codex:, opencode:).
-    They live under <dir>/agents in the harness-neutral .swarmforge asset
-    layers, mounted read-only via SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR, plus
-    <workspace>/.swarmforge/agents. One definition serves every harness; native
-    agents/ directories inside harness config dirs are never transported by
-    this asset pipeline. For OpenCode they still reach the harness through the
-    layered config merge (the merged config dir is OpenCode's own discovery),
-    while for Claude they are excluded from the merge as well -- Claude-native
-    definitions belong to Claude's own discovery (for example
-    <workspace>/.claude/agents).
+    One definition serves every harness, in the format under "Agents" in the
+    README. Sources are the .swarmforge asset layers and the workspace
+    overlay, lowest- to highest-precedence, later files winning by name. Only
+    the destination differs, and the registered spec names the emitter.
 
-    Sources are identical for every harness and applied lowest- to
-    highest-precedence (later files win by name): user, org, repo asset layers,
-    then the workspace overlay. Only the destination differs, and dispatch to
-    the emitter that writes it is through the registered spec. A failure
-    degrades to a warning: the session can run without subagents, while a
-    stopped container serves nobody.
+    A native agents/ directory inside a harness config dir is never carried
+    here: those belong to the harness's own discovery. A failure degrades to a
+    warning, since a session can run without subagents while a stopped
+    container serves nobody.
     """
     spec = harness.get(name).SPEC
     # The Waiver is the opt-out on record: unified agent definitions are not
@@ -230,9 +220,6 @@ def translate_agents(name, home, environ, workspace=WORKSPACE):
     dest = resolve_dest(
         spec.agents_dest, home, config_root(spec, home, environ))
     sources = [
-        # Concatenated rather than joined: an empty layer variable yields an
-        # absolute "/agents" that no directory check passes, where a join
-        # would name a path relative to the workspace this runs in.
         (environ.get("SWARMFORGE_ASSETS_USER_DIR") or "") + "/agents",
         (environ.get("SWARMFORGE_ASSETS_ORG_DIR") or "") + "/agents",
         (environ.get("SWARMFORGE_ASSETS_REPO_DIR") or "") + "/agents",
@@ -277,28 +264,13 @@ def install_assets(name, home, environ, workspace=WORKSPACE):
     """Install the portable skills and commands for the harness named `name`.
 
     Skills and commands are portable across harnesses, so copying them into
-    the harness's native locations is the whole translation. The config merge
-    excludes both from every layer, which makes this their only transport.
+    the harness's native locations is the whole translation, and the config
+    merge excludes both from every layer to make this their only transport.
 
-    Sources are identical for every harness and applied lowest- to
-    highest-precedence:
-
-      1. The portable .agents layers, user then org, mounted via
-         SWARMFORGE_DOTAGENTS_USER_DIR and SWARMFORGE_DOTAGENTS_ORG_DIR. They
-         follow the harness-neutral .agents/{skills,commands} convention, so
-         the source directory names are the same for every harness.
-      2. The shared Swarmforge assets, the repo's own skills/ and commands/,
-         mounted via SWARMFORGE_SKILLS_DIR and SWARMFORGE_COMMAND_DIR.
-      3. The workspace overlay, <workspace>/.agents/{skills,commands}.
-
-    Harness-native config dirs inside a layer (such as <layer>/.claude) are
-    never consumed for skills or commands; those formats are portable and live
-    under the .agents convention instead. Claude's destinations resolve into
-    the container-local config dir, so each run starts empty and a repo's
-    assets never leak into the next repo's session.
-
-    A failed install is not caught: the container stops rather than starting a
-    session whose assets are half-written.
+    The layers and their order are the ones under "Shared assets" in the
+    README; only the destination is per-harness. A failed install is not
+    caught: the container stops rather than starting a session whose assets
+    are half-written.
     """
     spec = harness.get(name).SPEC
     config = config_root(spec, home, environ)
@@ -308,9 +280,6 @@ def install_assets(name, home, environ, workspace=WORKSPACE):
                      if provided(spec.commands_dest) else "")
 
     def dotagents(variable):
-        # Concatenated rather than joined: an empty layer variable yields an
-        # absolute "/skills" that no directory check passes, where a join
-        # would name a path relative to the workspace this runs in.
         root = environ.get(variable) or ""
         return AssetLayer(
             skills_src=root + "/skills",

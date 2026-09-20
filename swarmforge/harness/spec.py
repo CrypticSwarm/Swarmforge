@@ -72,14 +72,11 @@ def copy_dir_entries(src_dir, dst_dir):
     behind cannot contribute stray files to a higher layer's copy of the same
     name, and per-entry symlinks left by earlier runs get cleaned up.
 
-    Symlinks are recreated pointing at the same target rather than followed,
-    directories are copied whole with their own symlinks intact, and files keep
-    their permissions and times. Top-level entries whose name starts with a dot
-    are skipped: the portable asset contract is a directory of named skill and
-    command entries, and dotfiles beside them are the editor and VCS droppings
-    of whoever authored the layer. Hidden files inside a copied entry travel
-    with it. An empty `dst_dir` is a destination the harness waived, and
-    nothing is copied or created for it.
+    A top-level entry whose name starts with a dot is skipped: the portable
+    asset contract is a directory of named skill and command entries, and
+    dotfiles beside them belong to whoever authored the layer. Hidden files
+    inside a copied entry travel with it. An empty `dst_dir` is a destination
+    the harness waived, and nothing is copied or created for it.
     """
     if not src_dir or not os.path.isdir(src_dir):
         return
