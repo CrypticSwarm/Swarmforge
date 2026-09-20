@@ -1,6 +1,6 @@
 # swarmforge CLI
 
-`install.sh` links `bin/swarmforge` into `~/.local/bin`, which gives you a `swarmforge` command that creates git repos laid out for worktrees.
+`swarmforge`, the command [`install.sh`](../README.md) puts on your `PATH`, creates git repos laid out for worktrees.
 
 ```bash
 swarmforge clone git@github.com:owner/repo.git             # -> ./repo
@@ -30,8 +30,6 @@ Removing one is `git worktree remove ../feature`.
 
 The `run_*` harness targets auto-detect the git root from `PROJECT_DIR` and mount it at `/workspace`.
 For a linked git worktree they also mount the shared git common directory so git operations keep working inside the container.
-This means `oc` works from repo roots, subdirectories, and linked worktrees without extra flags.
-
-Run the harnesses from `repo/main`, or any other branch directory, as you would from a clone: `oc`, `make run_claude PROJECT_DIR=$(pwd)`, and the other `run_*` targets need nothing extra.
+So `oc` works from repo roots, subdirectories, and linked worktrees such as `repo/main` with no extra flags, and the other `run_*` targets from the same places with their usual `PROJECT_DIR=$(pwd)`.
 Each session sees the one branch you launched it from.
-The layout is safe under the git guard: both subcommands configure the repo for it at creation (see [Git repos and worktrees](git-guard.md)).
+The layout is safe under the [git guard](git-guard.md).
