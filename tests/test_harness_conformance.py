@@ -210,21 +210,6 @@ class DescriptorContract(unittest.TestCase):
                         "%s excludes an unanchored pattern: %s"
                         % (name, entry))
 
-    def test_keyed_files_are_bare_names_beside_the_destination(self):
-        """Each keyed file is merged by joining the name onto a layer and
-        onto the destination; a name carrying a path would merge from and
-        into somewhere else entirely."""
-        for name, spec in specs():
-            with self.subTest(harness=name):
-                self.assertIsInstance(spec.keyed_files, tuple)
-                for entry in spec.keyed_files:
-                    self.assertIsInstance(entry, str)
-                    self.assertTrue(entry, "%s keys an empty name" % name)
-                    self.assertNotIn(
-                        "/", entry,
-                        "%s keys a path rather than a name: %s"
-                        % (name, entry))
-
     def test_asset_destinations_resolve_to_absolute_paths(self):
         """Every placeholder a destination uses has to be one the driver
         fills in: an unresolved "{" survives into a directory name, and a

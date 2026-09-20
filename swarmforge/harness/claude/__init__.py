@@ -362,7 +362,6 @@ SPEC = HarnessSpec(
         "./settings.json",
         "./.credentials.json",
     ),
-    keyed_files=("opencode.json",),
     skills_dest="{config}/skills",
     commands_dest="{config}/commands",
     agents_dest="{config}/agents",

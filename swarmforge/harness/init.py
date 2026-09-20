@@ -33,6 +33,10 @@ USAGE = "usage: python3 -m swarmforge.harness.init HARNESS HOME UID GID"
 # The container mounts the checkout here.
 WORKSPACE = "/workspace"
 
+# The config file the layer merge keys for every harness instead of overlaying
+# it whole, so a higher layer replaces only the keys it names.
+KEYED_FILE = "opencode.json"
+
 # Layer variables are concatenated onto, never joined with, their subdirectory:
 # an empty layer yields an absolute "/skills" that no source check passes,
 # where a join would name a path relative to the workspace this runs in.
@@ -40,17 +44,17 @@ WORKSPACE = "/workspace"
 
 def layer_exclude_args(spec):
     """The tar `--exclude` arguments for one harness's config layer merge."""
-    return (
-        # Keyed files are excluded from the overlay because they merge
+    return [
+        # The keyed file is excluded from the overlay because it merges
         # key-by-key instead of being copied whole.
-        ["--exclude=./" + name for name in spec.keyed_files]
+        "--exclude=./" + KEYED_FILE,
         # .swarmforge/ asset dirs are read via their own mounts, never through
         # the config merge, so transporting them here would only litter the
         # dest (or, for Claude, accumulate junk in the persistent home).
-        + ["--exclude=./.swarmforge"]
+        "--exclude=./.swarmforge",
         # Everything else the harness itself keeps out of the overlay.
-        + ["--exclude=" + entry for entry in spec.layer_excludes]
-    )
+        *["--exclude=" + entry for entry in spec.layer_excludes],
+    ]
 
 
 def merge_config_layer(src_dir, dst_dir, exclude_args):
@@ -161,8 +165,7 @@ def initialize(name, home, environ):
     excludes = layer_exclude_args(spec)
     for src in (ctx.config_repo_src, ctx.config_user_src, ctx.config_org_src):
         merge_config_layer(src, dest, excludes)
-        for keyed in spec.keyed_files:
-            merge_config_file(src + "/" + keyed, dest + "/" + keyed)
+        merge_config_file(src + "/" + KEYED_FILE, dest + "/" + KEYED_FILE)
 
     spec.build_config(ctx)
 
