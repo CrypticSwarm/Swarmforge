@@ -554,18 +554,52 @@ class RecordedFixtureTests(unittest.TestCase):
     as an absolute path. A deliberate output change is re-recorded by running
     main() over src/ and substituting `{DEST}` back; nothing rewrites the
     recordings automatically.
+
+    Stderr is part of that output: RECORDED_STDERR holds that same run's
+    warnings in full, so a warning that stops firing and a warning that newly
+    appears both fail here.
     """
 
     maxDiff = None
+
+    # Every line a run over src/ writes to stderr, in the order it arrives:
+    # sources in filename order, and within a source the order its emitter
+    # warns. opencode's emitter warns about nothing, so its run is silent.
+    RECORDED_STDERR = {
+        "opencode": [],
+        "claude": [
+            "swarmforge.agents.translate: agent 'coder': unknown tool 'foo' skipped",
+            "swarmforge.agents.translate: agent 'nodesc' has no description",
+            "swarmforge.agents.translate: agent 'nodesc': "
+            "'tools' must be a map of tool -> bool",
+        ],
+        "codex": [
+            "swarmforge.agents.translate: agent 'coder': "
+            "tool restrictions are not translated for Codex; "
+            "use codex sandbox/MCP settings",
+            "swarmforge.agents.translate: agent 'enabled': "
+            "Codex name normalized to 'agent-enabled'",
+            "swarmforge.agents.translate: agent 'nodesc' has no description",
+            "swarmforge.agents.translate: agent 'nodesc': "
+            "tool restrictions are not translated for Codex; "
+            "use codex sandbox/MCP settings",
+            "swarmforge.agents.translate: agent 'reviewer': "
+            "tool restrictions are not translated for Codex; "
+            "use codex sandbox/MCP settings",
+        ],
+    }
 
     def assert_output_matches_recording(self, target):
         src = os.path.join(FIXTURE_DIR, "src")
         expected_dir = os.path.join(FIXTURE_DIR, "expected", target)
         dest = tempfile.mkdtemp(prefix="translate-recorded-")
         self.addCleanup(shutil.rmtree, dest, True)
-        with contextlib.redirect_stderr(io.StringIO()):
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
             rc = ta.main([target, dest, src])
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 0, captured.getvalue())
+        stderr_lines = captured.getvalue().replace(dest, "{DEST}").splitlines()
+        self.assertEqual(stderr_lines, self.RECORDED_STDERR[target], "stderr")
         self.assertEqual(sorted(os.listdir(dest)), sorted(os.listdir(expected_dir)))
         for filename in sorted(os.listdir(expected_dir)):
             with open(os.path.join(dest, filename), encoding="utf-8") as handle:
