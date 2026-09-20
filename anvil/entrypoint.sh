@@ -57,10 +57,7 @@ fi
 # variables they read out of the environment.
 PYTHONPATH=/usr/local/lib/swarmforge python3 -P -s -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}" "${ANVIL_UID}" "${ANVIL_GID}"
 
-# The user phase: privileges drop and the pre-exec driver replaces itself with
-# the harness binary, with HOME set to the anvil home, the two variables this
-# launch sets scrubbed back out, and the harness's pre_exec hook given the last
-# word on the argv and the environment it starts with. PYTHONCOERCECLOCALE=0
-# keeps interpreter startup from editing LC_CTYPE into the environment the
-# binary inherits.
-exec gosu "${ANVIL_UID}:${ANVIL_GID}" env PYTHONCOERCECLOCALE=0 PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.execute "${AGENT_BIN}" "${ANVIL_HOME}" -- "$@"
+# The user phase: privileges drop and the pre-exec driver execs the harness.
+# PYTHONCOERCECLOCALE=0 keeps interpreter startup from editing LC_CTYPE into
+# the environment the binary inherits.
+exec gosu "${ANVIL_UID}:${ANVIL_GID}" env PYTHONCOERCECLOCALE=0 PYTHONPATH=/usr/local/lib/swarmforge python3 -P -s -m swarmforge.harness.execute "${AGENT_BIN}" "${ANVIL_HOME}" -- "$@"

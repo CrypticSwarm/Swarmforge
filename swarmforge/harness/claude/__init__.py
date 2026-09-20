@@ -335,7 +335,7 @@ def pre_exec(ctx, argv, env):
     """
     env = dict(env)
     if os.access(WRAPPER_DIR + "/git", os.X_OK):
-        env["PATH"] = WRAPPER_DIR + ":" + env["PATH"]
+        env["PATH"] = WRAPPER_DIR + ":" + env.get("PATH", "")
     if os.path.isfile(SETTINGS_FILE):
         argv = argv[:1] + [
             "--settings", SETTINGS_FILE,

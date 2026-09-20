@@ -24,7 +24,6 @@ from swarmforge.harness import init
 
 USAGE = "usage: python3 -m swarmforge.harness.execute HARNESS HOME -- [ARG...]"
 
-# Where the image installs every harness binary.
 BIN_DIR = "/usr/local/bin"
 
 # The variables this driver's own launch adds, which the exec it performs must

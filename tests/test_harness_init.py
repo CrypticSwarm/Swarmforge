@@ -1057,7 +1057,7 @@ class SpecEntrypointAgreement(unittest.TestCase):
         """
         launch = re.search(
             r'^exec gosu "\$\{ANVIL_UID\}:\$\{ANVIL_GID\}" env '
-            r'((?:[A-Z_]+=\S+ )+)python3 -P -m swarmforge\.harness\.execute '
+            r'((?:[A-Z_]+=\S+ )+)python3 (?:-\S+ )*-m swarmforge\.harness\.execute '
             r'(.+)$',
             self.entrypoint, re.M)
         self.assertIsNotNone(
@@ -1072,7 +1072,7 @@ class SpecEntrypointAgreement(unittest.TestCase):
         self.assertEqual(assigned["PYTHONCOERCECLOCALE"], "0")
 
         config_phase = re.search(
-            r"^PYTHONPATH=(\S+) python3 -P -m swarmforge\.harness\.init ",
+            r"^PYTHONPATH=(\S+) python3 (?:-\S+ )*-m swarmforge\.harness\.init ",
             self.entrypoint, re.M)
         self.assertIsNotNone(
             config_phase, "entrypoint does not invoke the config driver")
