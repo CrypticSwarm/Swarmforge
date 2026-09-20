@@ -429,10 +429,14 @@ class WorktreeWrapperInstall(WorktreeCase):
             self.run_wrapper("status", "--short"),
             "passthrough: status --short\n")
 
-    def test_the_wrapper_is_executable(self):
-        """PATH only reaches a file the shell may run."""
+    def test_the_wrapper_is_executable_under_a_restrictive_umask(self):
+        """PATH only reaches a file the shell may run, and the shell is the
+        session user's -- not the root that wrote the wrapper. The mode the
+        root phase leaves is the same one whatever umask it inherits, so the
+        execute bit that user needs does not ride on the umask.
+        """
         self.stage_linked_worktree(self.HOST_WORKTREE + "/.git")
-        umask = os.umask(0o022)
+        umask = os.umask(0o077)
         self.addCleanup(os.umask, umask)
 
         self.assertEqual(self.prepare("claude", self.ws), 0)

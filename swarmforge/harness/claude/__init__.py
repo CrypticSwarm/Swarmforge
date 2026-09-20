@@ -307,11 +307,9 @@ def root_setup(ctx):
             "workspace": workspace,
         })
 
-    # `chmod +x`: the execute bits the umask in force allows, added to
-    # whatever the file already carries.
-    umask = os.umask(0o022)
-    os.umask(umask)
-    os.chmod(path, (os.stat(path).st_mode & 0o7777) | (0o111 & ~umask))
+    # Root owns the wrapper and the unprivileged session user execs it off
+    # PATH.
+    os.chmod(path, 0o755)
 
 
 def pre_exec(ctx, argv, env):
