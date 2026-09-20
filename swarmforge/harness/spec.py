@@ -169,9 +169,6 @@ class HarnessSpec:
     # The name the harness is registered and selected by.
     name: str
 
-    # The executable under /usr/local/bin the pre-exec driver execs.
-    binary: str
-
     # Container path the layered config is merged into when the harness forces
     # one; a Waiver when the run's SWARMFORGE_CONFIG_DEST decides instead, and
     # an unset variable skips the config phase.
@@ -190,9 +187,6 @@ class HarnessSpec:
     # replaces the whole package, never file-merges into it), where the tar
     # merge would union layers file-by-file.
     layer_excludes: tuple
-
-    # Files merged key-by-key per layer rather than overlaid whole.
-    keyed_files: tuple
 
     # Where portable skills and commands land. A string may hold the
     # placeholders "{home}" (the anvil user's home) and "{config}" (the merged

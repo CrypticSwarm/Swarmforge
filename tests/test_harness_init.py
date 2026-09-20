@@ -8,15 +8,16 @@ Every guarantee here is checked by running the driver over staged layer trees
 in a temporary directory and reading what landed, so a reordered merge or a
 dropped hook fails a test rather than surviving as a silent precedence change.
 
-Nothing here may write outside the temporary directory: the harnesses that pin
-a destination under /run/swarmforge have that destination, and Claude's two
-settings paths, redirected for the duration of each run.
+Nothing here may write outside the temporary directory:
+`harness_fixtures.redirected` replaces every path the harness under test pins
+-- its config destination, the destinations it names outright, and the paths
+it hands to the anvil uid -- along with the three paths claude names as module
+constants, for the duration of each run.
 
 Run: python3 tests/test_harness_init.py
 """
 
 import contextlib
-import dataclasses
 import io
 import json
 import os
@@ -38,31 +39,24 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
 from swarmforge.config import merge_json, merge_toml, merge_toml_mcp
 from swarmforge.harness import claude, execute, init
-from swarmforge.harness.spec import Context, HarnessSpec, Waiver, provided
+from swarmforge.harness.spec import Context, Waiver
+
+from harness_fixtures import fake_spec, read_file, redirected, staged, write_file
 
 ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
 
 # Derived, not spelled out: a harness this suite does not name is a harness
 # it does not cover, and registering one is meant to be the whole step.
 HARNESSES = tuple(harness.names())
-
-
-def write_file(path, text):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    return path
-
-
-def read_file(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
 
 
 def read_json(path):
@@ -81,11 +75,11 @@ class DriverCase(unittest.TestCase):
     def setUp(self):
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-init-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.dest = os.path.join(self.tmp, "dest")
+        self.dest = staged(self.tmp, "config_dest")
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
-        self.settings_file = os.path.join(self.tmp, "claude-settings.json")
-        self.image_defaults = os.path.join(self.tmp, "image-defaults.json")
+        self.settings_file = staged(self.tmp, "settings_file")
+        self.image_defaults = staged(self.tmp, "image_defaults")
 
     def layer(self, name):
         """The directory for the named config layer, created on first use."""
@@ -124,22 +118,10 @@ class DriverCase(unittest.TestCase):
     def run_driver(self, name, environ=None):
         """Run the config phase for `name` with every pinned path redirected."""
         environ = self.env() if environ is None else environ
-        module = harness.get(name)
-        self.assertIsNotNone(module, "no harness registered as %s" % name)
-
-        with contextlib.ExitStack() as stack:
-            if provided(module.SPEC.config_dest):
-                stack.enter_context(mock.patch.object(
-                    module, "SPEC",
-                    dataclasses.replace(module.SPEC, config_dest=self.dest)))
-            if name == "claude":
-                stack.enter_context(
-                    mock.patch.object(claude, "SETTINGS_FILE", self.settings_file))
-                stack.enter_context(mock.patch.object(
-                    claude, "IMAGE_DEFAULT_SETTINGS", self.image_defaults))
-            if name == "codex":
-                # Codex publishes into a directory its image already ships.
-                os.makedirs(os.path.join(self.home, ".codex"), exist_ok=True)
+        if name == "codex":
+            # Codex publishes into a directory its image already ships.
+            os.makedirs(os.path.join(self.home, ".codex"), exist_ok=True)
+        with redirected(name, self.tmp):
             return init.initialize(name, self.home, environ)
 
 
@@ -165,7 +147,7 @@ class LayerPrecedence(DriverCase):
                 self.assertEqual(
                     read_file(os.path.join(self.dest, "repo-only.md")), "repo")
 
-    def test_keyed_files_merge_by_key_rather_than_being_overlaid_whole(self):
+    def test_the_keyed_file_merges_by_key_rather_than_being_overlaid_whole(self):
         """opencode.json travels outside the tar overlay for every harness.
 
         Overlaid whole, the org layer's copy would drop every key the repo and
@@ -200,10 +182,10 @@ class LayerExcludes(DriverCase):
     def stage_excluded_entries(self, layer, spec):
         """Stage one file or directory in `layer` per entry the overlay skips.
 
-        Every keyed file is staged too: those merge key-by-key, so the overlay
-        carrying one whole would silently outrank the merge.
+        The keyed file is staged too: it merges key-by-key, so the overlay
+        carrying it whole would silently outrank the merge.
         """
-        for entry in tuple(spec.keyed_files) + (".swarmforge",) + spec.layer_excludes:
+        for entry in (init.KEYED_FILE, ".swarmforge") + spec.layer_excludes:
             name = entry.removeprefix("./")
             path = os.path.join(self.layer(layer), name)
             if "." in name[1:]:
@@ -779,28 +761,6 @@ class ClaudeSettingsBuild(DriverCase):
         self.assertEqual(read_file(self.settings_file), "{}\n")
 
 
-def fake_spec(**overrides):
-    """A registrable spec whose config destination comes from the run."""
-    fields = dict(
-        name="fake",
-        binary="fake",
-        config_dest=Waiver("the run's SWARMFORGE_CONFIG_DEST names the destination"),
-        config_reset=False,
-        layer_excludes=(),
-        keyed_files=("opencode.json",),
-        skills_dest=Waiver("no portable skills destination is declared"),
-        commands_dest=Waiver("no portable commands destination is declared"),
-        agents_dest=Waiver("unified agent definitions are not delivered"),
-        mcp_fragment=lambda servers: {},
-        mcp_delivery=("env", "SWARMFORGE_TONG_MCP_FILE"),
-        mcp_merge="json-replace-mcp",
-        agent_emitter=Waiver("no emitter is defined"),
-        extra_chown_paths=(),
-    )
-    fields.update(overrides)
-    return HarnessSpec(**fields)
-
-
 class HookContract(DriverCase):
     """The config hooks run in order, around the merge each one depends on.
 
@@ -827,6 +787,7 @@ class HookContract(DriverCase):
             return hook
 
         self.spec = fake_spec(
+            mcp_merge="json-replace-mcp",
             build_config=record("build"),
             finalize_config=record("finalize"),
             publish_config=record("publish"),
@@ -877,6 +838,18 @@ class DriverArgv(DriverCase):
         captured = io.StringIO()
         with contextlib.redirect_stderr(captured):
             status = init.initialize("nosuch", self.home, {})
+        self.assertEqual(status, 2)
+        self.assertIn("unknown harness: nosuch", captured.getvalue())
+
+    def test_an_unregistered_harness_stops_the_whole_run(self):
+        """The config phase is the only one that looks the name up against
+        the registry; every phase after it reads the spec the run resolved
+        without a guard of its own. The refusal reaching the entrypoint as a
+        status, rather than the run carrying an unregistered name past the
+        config phase, is what keeps that read total."""
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            status = init.run("nosuch", self.home, "0", "0", {})
         self.assertEqual(status, 2)
         self.assertIn("unknown harness: nosuch", captured.getvalue())
 
@@ -957,21 +930,13 @@ class SpecEntrypointAgreement(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
-        self.wrapper = os.path.join(self.tmp, "wrapper")
-        self.settings_file = os.path.join(self.tmp, "claude-settings.json")
-
-    @contextlib.contextmanager
-    def redirected(self):
-        """Claude's two pinned paths, replaced by ones under the tree."""
-        with mock.patch.object(claude, "SETTINGS_FILE", self.settings_file), \
-                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper):
-            yield
+        self.settings_file = staged(self.tmp, "settings_file")
 
     def pre_exec(self):
         """Run claude's hook the way the pre-exec driver runs it."""
         spec = harness.get("claude").SPEC
         ctx = init.asset_context(spec, self.home, {})
-        with self.redirected():
+        with redirected("claude", self.tmp):
             return spec.pre_exec(
                 ctx, ["/usr/local/bin/claude"], {"PATH": self.PATH})
 
@@ -988,7 +953,7 @@ class SpecEntrypointAgreement(unittest.TestCase):
         """One constant ties the build to the delivery: the config phase
         writes the file and the hook splices that same path into the argv."""
         ctx = init.asset_context(harness.get("claude").SPEC, self.home, {})
-        with self.redirected():
+        with redirected("claude", self.tmp):
             claude.finalize_config(ctx)
         self.assertTrue(os.path.isfile(self.settings_file))
 
@@ -1019,7 +984,7 @@ class SpecEntrypointAgreement(unittest.TestCase):
         _, env = self.pre_exec()
         self.assertEqual(env["PATH"], self.PATH)
 
-        with self.redirected():
+        with redirected("claude", self.tmp):
             path = write_file(claude.WRAPPER_DIR + "/git", self.GIT_WRAPPER)
             os.chmod(path, 0o755)
 

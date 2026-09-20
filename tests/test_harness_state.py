@@ -27,22 +27,22 @@ the chowns it runs: the home, whatever the harness built outside it, and the
 workspace, in that order. A path the handover misses is one the session finds
 owned by root, with no privileges left to change it.
 
-Nothing here may write outside the temporary directory: claude pins a config
-destination under /run/swarmforge and a wrapper directory under
-/usr/local/libexec, and both are replaced for the duration of each run.
+Nothing here may write outside the temporary directory:
+`harness_fixtures.redirected` replaces every path the harness under test pins
+-- its config destination, the destinations it names outright, and the paths
+it hands to the anvil uid -- along with the three paths claude names as module
+constants, for the duration of each run.
 
 Run: python3 tests/test_harness_state.py
 """
 
 import contextlib
-import dataclasses
 import io
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-import types
 import unittest
 from unittest import mock
 
@@ -55,9 +55,23 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
 from swarmforge.harness import claude, init, spec
-from swarmforge.harness.spec import HarnessSpec, Waiver
+
+from harness_fixtures import (
+    fake_spec,
+    read_file,
+    redirected,
+    staged,
+    tree,
+    write_file,
+)
 
 # Every harness that keeps nothing across runs of its own.
 UNLINKED = ("codex", "grok", "opencode")
@@ -68,71 +82,12 @@ UNLINKED = ("codex", "grok", "opencode")
 HARNESSES = tuple(harness.names())
 
 
-def write_file(path, text):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    return path
-
-
-def read_file(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
-
-
-def tree(root):
-    """Every path under `root`, relative, mapped to what stands there.
-
-    A file maps to its text, a symlink to `("link", target)` with the target
-    string it was created with, and a directory to None. A missing root is an
-    empty mapping, so a destination that was never created and one that was
-    created empty read differently.
-    """
-    found = {}
-    for dirpath, dirnames, filenames in os.walk(root):
-        for name in sorted(dirnames + filenames):
-            path = os.path.join(dirpath, name)
-            key = os.path.relpath(path, root)
-            if os.path.islink(path):
-                found[key] = ("link", os.readlink(path))
-            elif os.path.isdir(path):
-                found[key] = None
-            else:
-                found[key] = read_file(path)
-    return found
-
-
-def fake_spec(**overrides):
-    """A registrable spec that declares nothing but the hooks under test."""
-    fields = dict(
-        name="fake",
-        binary="fake",
-        config_dest=Waiver("the run's SWARMFORGE_CONFIG_DEST names the destination"),
-        config_reset=False,
-        layer_excludes=(),
-        keyed_files=(),
-        skills_dest=Waiver("no portable skills destination is declared"),
-        commands_dest=Waiver("no portable commands destination is declared"),
-        agents_dest=Waiver("unified agent definitions are not delivered"),
-        mcp_fragment=lambda servers: {},
-        mcp_delivery=("env", "SWARMFORGE_TONG_MCP_FILE"),
-        mcp_merge=Waiver("nothing merges the fragment into a config file"),
-        agent_emitter=Waiver("no emitter is defined"),
-        extra_chown_paths=(),
-    )
-    fields.update(overrides)
-    return HarnessSpec(**fields)
-
-
 class StateCase(unittest.TestCase):
     """Runs the link phase over a staged home inside a temporary directory.
 
-    Claude pins the config destination its state is linked into, so that field
-    is replaced for the run and a test never reaches the live /run/swarmforge
-    the development host has.
+    The destination state is linked into is one of the paths the staging tree
+    replaces, so a test never reaches the live /run/swarmforge the development
+    host has.
     """
 
     def setUp(self):
@@ -141,8 +96,8 @@ class StateCase(unittest.TestCase):
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.shared = os.path.join(self.home, ".claude")
-        self.dest = os.path.join(self.tmp, "dest")
-        self.wrapper = os.path.join(self.tmp, "wrapper")
+        self.dest = staged(self.tmp, "config_dest")
+        self.wrapper = staged(self.tmp, "wrapper_dir")
 
     def env(self, **overrides):
         """The environment the entrypoint hands the driver."""
@@ -150,29 +105,21 @@ class StateCase(unittest.TestCase):
         environ.update(overrides)
         return {name: value for name, value in environ.items() if value is not None}
 
-    @contextlib.contextmanager
-    def redirected(self, name):
-        """Every path `name` pins, replaced by one under the staging tree."""
-        module = harness.get(name)
-        self.assertIsNotNone(module, "no harness registered as %s" % name)
-        with contextlib.ExitStack() as stack:
-            # The wrapper directory belongs to claude's module and is where any
-            # root phase that writes one puts it, so it moves for every run.
-            stack.enter_context(
-                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper))
-            if name == "claude":
-                stack.enter_context(mock.patch.object(
-                    module, "SPEC",
-                    dataclasses.replace(
-                        module.SPEC,
-                        config_dest=self.dest,
-                        extra_chown_paths=(self.dest,))))
-            yield
+    def staged(self, name):
+        """The spec and context the driver would hand `name`'s phases.
+
+        The registry is read at the call, so the paths the pair carries are
+        whichever stand at that point: the staging tree's replacements from
+        inside `redirected`, and the ones the harness really pins from
+        outside it.
+        """
+        declared = harness.get(name).SPEC
+        return declared, init.asset_context(declared, self.home, self.env())
 
     def link(self, name):
         """Run the driver's link phase for `name` with every pinned path moved."""
-        with self.redirected(name):
-            return init.link_state(name, self.home, self.env())
+        with redirected(name, self.tmp):
+            return init.link_state(*self.staged(name))
 
     def prepare(self, name, cwd):
         """Run the driver's root phase for `name` over the workspace `cwd`.
@@ -181,8 +128,8 @@ class StateCase(unittest.TestCase):
         linked worktree, so a phase falling back to the test process's own
         directory would read real worktree metadata and write a real wrapper.
         """
-        with self.redirected(name):
-            return init.root_setup(name, self.home, self.env(), cwd=cwd)
+        with redirected(name, self.tmp):
+            return init.root_setup(*self.staged(name), cwd=cwd)
 
     def snapshot(self):
         """Every path under the staging tree, so any write at all shows."""
@@ -570,10 +517,14 @@ class WorktreeWrapperInstall(WorktreeCase):
             self.run_wrapper("status", "--short"),
             "passthrough: status --short\n")
 
-    def test_the_wrapper_is_executable(self):
-        """PATH only reaches a file the shell may run."""
+    def test_the_wrapper_is_executable_under_a_restrictive_umask(self):
+        """PATH only reaches a file the shell may run, and the shell is the
+        session user's -- not the root that wrote the wrapper. The mode the
+        root phase leaves is the same one whatever umask it inherits, so the
+        execute bit that user needs does not ride on the umask.
+        """
         self.stage_linked_worktree(self.HOST_WORKTREE + "/.git")
-        umask = os.umask(0o022)
+        umask = os.umask(0o077)
         self.addCleanup(os.umask, umask)
 
         self.assertEqual(self.prepare("claude", self.ws), 0)
@@ -591,12 +542,13 @@ class RootSetupContext(StateCase):
 
     def test_the_working_directory_reaches_the_hook(self):
         seen = []
-        module = types.SimpleNamespace(SPEC=fake_spec(root_setup=seen.append))
+        declared = fake_spec(root_setup=seen.append)
         workdir = os.path.join(self.tmp, "repos", "proj")
 
-        with mock.patch.dict(harness._REGISTRY, {"fake": module}):
-            status = init.root_setup(
-                "fake", self.home, self.env(), cwd=workdir)
+        status = init.root_setup(
+            declared,
+            init.asset_context(declared, self.home, self.env()),
+            cwd=workdir)
 
         self.assertEqual(status, 0)
         self.assertEqual([ctx.cwd for ctx in seen], [workdir])
@@ -701,7 +653,7 @@ class OwnershipHandover(StateCase):
                 workspace = os.path.join(self.tmp, "workspace")
 
                 status = init.deliver_ownership(
-                    name, self.home, "1000", "1000",
+                    *self.staged(name), "1000", "1000",
                     workspace=workspace, chown=recorded.append)
 
                 self.assertEqual(status, 0)
@@ -793,7 +745,7 @@ class OwnershipDelivery(StateCase):
         uid, gid = self.owner()
 
         status = init.deliver_ownership(
-            "grok", self.home, uid, gid, workspace=workspace)
+            *self.staged("grok"), uid, gid, workspace=workspace)
 
         self.assertEqual(status, 0)
         self.assertEqual(tree(self.home), {
@@ -809,14 +761,17 @@ class OwnershipDelivery(StateCase):
         uid, gid = self.owner()
         statuses = []
 
-        with self.redirected("claude"):
+        with redirected("claude", self.tmp):
+            spec, ctx = self.staged("claude")
             noise = self.stderr_of(
                 lambda: statuses.append(init.deliver_ownership(
-                    "claude", self.home, uid, gid, workspace=workspace)))
+                    spec, ctx, uid, gid, workspace=workspace)))
+            standing = [path for path in spec.extra_chown_paths
+                        if os.path.exists(path)]
 
         self.assertEqual(statuses, [0])
         self.assertEqual(noise, "")
-        self.assertEqual(tree(self.dest), {})
+        self.assertEqual(standing, [])
 
     def test_a_run_without_a_chown_binary_is_passed_over_in_silence(self):
         """Resolution happens before the child runs, so a missing binary
@@ -830,7 +785,7 @@ class OwnershipDelivery(StateCase):
         with mock.patch.dict(os.environ, {"PATH": empty}):
             noise = self.stderr_of(lambda: self.assertEqual(
                 init.deliver_ownership(
-                    "grok", self.home, uid, gid, workspace=workspace), 0))
+                    *self.staged("grok"), uid, gid, workspace=workspace), 0))
 
         self.assertEqual(noise, "")
 

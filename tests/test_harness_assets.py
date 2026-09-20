@@ -10,15 +10,17 @@ and reading what landed, so a reordered layer, a destination that drifted from
 the spec, or a copy that started merging fails a test rather than surfacing as
 a session running somebody else's version of a skill.
 
-Nothing here may write outside the temporary directory: the harnesses that pin
-a config destination under /run/swarmforge have it redirected for the duration
-of each run, and the rest resolve their destinations under the staged home.
+Nothing here may write outside the temporary directory:
+`harness_fixtures.redirected` replaces every path the harness under test pins
+-- its config destination, the destinations it names outright, and the paths
+it hands to the anvil uid -- along with the three paths claude names as module
+constants, for the duration of each run. The rest resolve their destinations
+under the staged home.
 
 Run: python3 tests/test_harness_assets.py
 """
 
 import contextlib
-import dataclasses
 import io
 import os
 import shutil
@@ -36,9 +38,17 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
-from swarmforge.harness import claude, codex, init, spec
+from swarmforge.harness import codex, init, spec
 from swarmforge.harness.spec import Waiver
+
+from harness_fixtures import read_file, redirected, staged, tree, write_file
 
 # The asset layers, lowest precedence first.
 LAYERS = ("user", "org", "shared", "workspace")
@@ -49,21 +59,6 @@ HARNESSES = tuple(harness.names())
 
 # What the translator writes in place of the portable argument placeholder.
 ARGUMENTS = "the arguments supplied with this skill invocation"
-
-
-def write_file(path, text):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    return path
-
-
-def read_file(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
 
 
 def command_document(description, body):
@@ -79,35 +74,12 @@ def translated_command(name, description, body):
         name, description, body)
 
 
-def tree(root):
-    """Every path under `root`, relative, mapped to what stands there.
-
-    A file maps to its text, a symlink to `("link", target)` with the target
-    string it was created with, and a directory to None. A missing root is an
-    empty mapping, so a destination that was never created and one that was
-    created empty read differently.
-    """
-    found = {}
-    for dirpath, dirnames, filenames in os.walk(root):
-        for name in sorted(dirnames + filenames):
-            path = os.path.join(dirpath, name)
-            key = os.path.relpath(path, root)
-            if os.path.islink(path):
-                found[key] = ("link", os.readlink(path))
-            elif os.path.isdir(path):
-                found[key] = None
-            else:
-                found[key] = read_file(path)
-    return found
-
-
 class AssetCase(unittest.TestCase):
     """Runs the asset phase over staged sources inside a temporary directory.
 
-    Every path a harness can write to is rooted here. Claude pins a config
-    destination its assets resolve out of, so that field is replaced for the
-    run and a test never reaches the live /run/swarmforge the development host
-    has.
+    Every path a harness can write to is rooted here: the destinations it pins
+    resolve out of the staging tree, so a test never reaches the live
+    /run/swarmforge the development host has.
     """
 
     def setUp(self):
@@ -116,7 +88,7 @@ class AssetCase(unittest.TestCase):
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.workspace = os.path.join(self.tmp, "workspace")
-        self.dest = os.path.join(self.tmp, "dest")
+        self.dest = staged(self.tmp, "config_dest")
         self.dotagents_user = os.path.join(self.tmp, "dotagents-user")
         self.dotagents_org = os.path.join(self.tmp, "dotagents-org")
         self.shared_skills = os.path.join(self.tmp, "shared-skills")
@@ -188,32 +160,15 @@ class AssetCase(unittest.TestCase):
         environ.update(overrides)
         return {name: value for name, value in environ.items() if value is not None}
 
-    @contextlib.contextmanager
-    def redirected(self, name):
-        """Every path `name` pins, replaced by one under the staging tree."""
-        module = harness.get(name)
-        self.assertIsNotNone(module, "no harness registered as %s" % name)
-        with contextlib.ExitStack() as stack:
-            # The wrapper directory belongs to claude's module and is where
-            # any root phase that writes one puts it, so it moves for every
-            # run.
-            stack.enter_context(mock.patch.object(
-                claude, "WRAPPER_DIR", os.path.join(self.tmp, "wrapper")))
-            if name == "claude":
-                stack.enter_context(mock.patch.object(
-                    module, "SPEC",
-                    dataclasses.replace(
-                        module.SPEC,
-                        config_dest=self.dest,
-                        extra_chown_paths=(self.dest,))))
-            yield
-
     def install(self, name, environ=None):
         """Run the asset phase for `name` with every pinned path moved."""
-        with self.redirected(name):
+        with redirected(name, self.tmp):
+            spec = harness.get(name).SPEC
+            environ = self.env() if environ is None else environ
             return init.install_assets(
-                name, self.home,
-                self.env() if environ is None else environ,
+                spec,
+                init.asset_context(spec, self.home, environ),
+                environ,
                 self.workspace,
             )
 
@@ -641,7 +596,7 @@ class PhaseOrder(AssetCase):
 
     def drive(self, stack):
         """Run the driver for claude with every pinned path moved."""
-        stack.enter_context(self.redirected("claude"))
+        stack.enter_context(redirected("claude", self.tmp))
         # cwd is always named: this checkout is itself a linked worktree,
         # so a run falling back to the test process's own directory would
         # read real worktree metadata.

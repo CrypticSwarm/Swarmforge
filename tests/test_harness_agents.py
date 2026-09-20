@@ -10,16 +10,16 @@ directory and reading what landed, so a reordered source list or a destination
 that drifted from the spec fails a test rather than surfacing as a session
 whose subagents are quietly missing.
 
-Nothing here may write outside the temporary directory: the harnesses that pin
-a config or agents destination under /run/swarmforge have those destinations,
-Claude's two settings paths, and the directory its root phase writes a git
-wrapper to, redirected for the duration of each run.
+Nothing here may write outside the temporary directory:
+`harness_fixtures.redirected` replaces every path the harness under test pins
+-- its config destination, the destinations it names outright, and the paths
+it hands to the anvil uid -- along with the three paths claude names as module
+constants, for the duration of each run.
 
 Run: python3 tests/test_harness_agents.py
 """
 
 import contextlib
-import dataclasses
 import io
 import os
 import shutil
@@ -38,11 +38,19 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
 from swarmforge.agents import translate
 from swarmforge.config import merge_toml
-from swarmforge.harness import claude, init
+from swarmforge.harness import init
 from swarmforge.harness.spec import Waiver
+
+from harness_fixtures import read_file, redirected, staged, write_file
 
 AGENT_MD = """---
 description: Reviews code for defects.
@@ -56,21 +64,6 @@ You are the reviewer agent.
 # The asset layers, lowest precedence first. The workspace overlay ranks above
 # all three and arrives as a path rather than a mounted layer.
 LAYERS = ("user", "org", "repo")
-
-
-def write_file(path, text):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    return path
-
-
-def read_file(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
 
 
 def agent_document(body):
@@ -94,11 +87,8 @@ class TranslationCase(unittest.TestCase):
         # Codex publishes into a directory its image already ships.
         os.makedirs(os.path.join(self.home, ".codex"))
         self.workspace = os.path.join(self.tmp, "workspace")
-        self.dest = os.path.join(self.tmp, "dest")
-        self.agents_dest = os.path.join(self.tmp, "codex-agents")
-        self.settings_file = os.path.join(self.tmp, "claude-settings.json")
-        self.image_defaults = os.path.join(self.tmp, "image-defaults.json")
-        self.wrapper_dir = os.path.join(self.tmp, "wrapper")
+        self.dest = staged(self.tmp, "config_dest")
+        self.agents_dest = staged(self.tmp, "agents_dest")
 
     def source(self, layer):
         """The agents directory of one asset source, created on first use."""
@@ -126,41 +116,15 @@ class TranslationCase(unittest.TestCase):
         environ.update(overrides)
         return {name: value for name, value in environ.items() if value is not None}
 
-    @contextlib.contextmanager
-    def redirected(self, name):
-        """Every path `name` pins, replaced by one under the staging tree."""
-        module = harness.get(name)
-        self.assertIsNotNone(module, "no harness registered as %s" % name)
-        with contextlib.ExitStack() as stack:
-            if name == "claude":
-                stack.enter_context(mock.patch.object(
-                    module, "SPEC",
-                    dataclasses.replace(
-                        module.SPEC,
-                        config_dest=self.dest,
-                        extra_chown_paths=(self.dest,))))
-                stack.enter_context(
-                    mock.patch.object(claude, "SETTINGS_FILE", self.settings_file))
-                stack.enter_context(mock.patch.object(
-                    claude, "IMAGE_DEFAULT_SETTINGS", self.image_defaults))
-                stack.enter_context(
-                    mock.patch.object(claude, "WRAPPER_DIR", self.wrapper_dir))
-            if name == "codex":
-                stack.enter_context(mock.patch.object(
-                    module, "SPEC",
-                    dataclasses.replace(
-                        module.SPEC,
-                        config_dest=self.dest,
-                        agents_dest=self.agents_dest,
-                        extra_chown_paths=(self.agents_dest,))))
-            yield
-
     def translate_agents(self, name, environ=None):
         """Run the translation phase for `name` with every pinned path moved."""
-        with self.redirected(name):
+        with redirected(name, self.tmp):
+            spec = harness.get(name).SPEC
+            environ = self.env() if environ is None else environ
             return init.translate_agents(
-                name, self.home,
-                self.env() if environ is None else environ,
+                spec,
+                init.asset_context(spec, self.home, environ),
+                environ,
                 self.workspace,
             )
 
@@ -347,7 +311,7 @@ class CodexRegistration(TranslationCase):
             SWARMFORGE_CONFIG_DEST=self.dest,
         )
 
-        with self.redirected("codex"):
+        with redirected("codex", self.tmp):
             status = init.run(
                 "codex", self.home, str(os.getuid()), str(os.getgid()),
                 environ, self.workspace, cwd=self.workspace)
@@ -444,7 +408,7 @@ class PhaseOrder(TranslationCase):
         with mock.patch.object(init, "initialize", record("config", 0)):
             with mock.patch.object(init, "translate_agents", record("agents", 0)):
                 with mock.patch.object(init, "install_assets", record("assets", 0)):
-                    with self.redirected("claude"):
+                    with redirected("claude", self.tmp):
                         status = init.run(
                             "claude", self.home, str(os.getuid()),
                             str(os.getgid()), self.env(), self.workspace,
@@ -462,7 +426,7 @@ class PhaseOrder(TranslationCase):
         with mock.patch.object(init, "initialize", return_value=2):
             with mock.patch.object(init, "translate_agents", translated):
                 with mock.patch.object(init, "install_assets", installed):
-                    with self.redirected("claude"):
+                    with redirected("claude", self.tmp):
                         status = init.run(
                             "claude", self.home, str(os.getuid()),
                             str(os.getgid()), self.env(), self.workspace,

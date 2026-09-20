@@ -11,7 +11,6 @@ the Dockerfile lays them out.
 Run: python3 tests/test_image_layout.py
 """
 
-import dataclasses
 import json
 import os
 import posixpath
@@ -21,7 +20,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -33,7 +31,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from swarmforge import harness
-from swarmforge.harness import claude, init
+from swarmforge.harness import claude
 
 import make_argv_fixtures
 
@@ -176,172 +174,30 @@ class ImportRootAgreement(unittest.TestCase):
             )
 
 
-class PreExecCase(unittest.TestCase):
-    """Runs a harness's pre-exec hook over paths staged in a temporary tree.
+class ClaudePerRunPaths(unittest.TestCase):
+    """What a claude run derives for itself stays off the host's own mounts.
 
-    Claude's hook reads the settings file it delivers and the wrapper
-    directory it may put on PATH, and both are live directories on a
-    development host that runs Swarmforge itself; staging them is what keeps a
-    test's answer off whatever the last container left behind.
+    /home/anvil is the persistent home every container for this user shares
+    and /workspace is the checkout: both outlive the run, and both are the
+    host's. The merged config destination and the built settings file are
+    derived from whatever layers this run mounted, so either one landing in a
+    mount carries an org layer's permissions, hooks, and env into later runs
+    that never mounted it.
     """
 
-    ARGS = ["--model", "sonnet", "run the thing"]
-    PATH = "/usr/local/bin:/usr/bin:/bin"
-
-    def setUp(self):
-        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-image-"))
-        self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.home = os.path.join(self.tmp, "home")
-        os.makedirs(self.home)
-        self.dest = os.path.join(self.tmp, "dest")
-        self.wrapper = os.path.join(self.tmp, "wrapper")
-        self.settings = os.path.join(self.tmp, "claude-settings.json")
-
-    def staged_spec(self):
-        """Claude's spec with its pinned config destination under the tree."""
-        return dataclasses.replace(
-            harness.get("claude").SPEC, config_dest=self.dest)
-
-    def stage_settings(self):
-        """A built settings file standing where the hook looks for one."""
-        with open(self.settings, "w", encoding="utf-8") as handle:
-            handle.write("{}\n")
-        return self.settings
-
-    def pre_exec(self, spec, ctx=None):
-        """Run `spec`'s hook with claude's two staged paths in place."""
-        if ctx is None:
-            ctx = init.asset_context(spec, self.home, {})
-        argv = ["/usr/local/bin/" + spec.binary] + self.ARGS
-        with mock.patch.object(claude, "SETTINGS_FILE", self.settings), \
-                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper):
-            return spec.pre_exec(ctx, argv, {"PATH": self.PATH})
-
-
-class ClaudeSettingsDelivery(PreExecCase):
-    """The built settings reach claude as arguments, not as a file in the home.
-
-    The build writes the file and the exec names it on the command line, and
-    one module constant is all that ties them together; `user` stays in the
-    sources because that scope carries asset discovery.
-    """
-
-    def test_the_built_file_lives_outside_every_host_mount(self):
-        """/home/anvil is the persistent home every container for this
-        user shares, and /workspace is the checkout; a build landing in
-        either is the leak the command-line delivery exists to end."""
+    def test_the_built_settings_file_lives_outside_every_host_mount(self):
         path = claude.SETTINGS_FILE
         for mounted in ("/home/", "/workspace"):
             self.assertFalse(
                 path.startswith(mounted),
                 "settings build lands in a host mount: %s" % path)
 
-    def test_the_exec_hands_claude_the_file_the_build_writes(self):
-        """The build and the exec read one constant, so running the build and
-        then reading the argv follows the whole chain rather than comparing
-        two strings that happen to match."""
-        spec = harness.get("claude").SPEC
-        org = os.path.join(self.tmp, "layer-org")
-        os.makedirs(org)
-        with open(os.path.join(org, "settings.json"), "w",
-                  encoding="utf-8") as handle:
-            handle.write('{"model": "org/m"}')
-        ctx = init.asset_context(
-            spec, self.home, {"SWARMFORGE_CONFIG_ORG_DIR": org})
-
-        with mock.patch.object(claude, "SETTINGS_FILE", self.settings):
-            claude.finalize_config(ctx)
-        self.assertTrue(os.path.isfile(self.settings))
-
-        argv, _ = self.pre_exec(spec, ctx=ctx)
-
-        self.assertIn("--settings", argv)
-        self.assertEqual(argv[argv.index("--settings") + 1], self.settings)
-
-    def test_the_setting_sources_name_every_scope(self):
-        """`user` carries claude's skills, commands, and agents discovery;
-        project and local carry the workspace's own .claude settings."""
-        self.stage_settings()
-
-        argv, _ = self.pre_exec(harness.get("claude").SPEC)
-
-        self.assertIn("--setting-sources", argv)
-        self.assertEqual(
-            argv[argv.index("--setting-sources") + 1].split(","),
-            ["user", "project", "local"])
-
-    def test_only_claude_is_handed_the_flags(self):
-        """The same driver execs every harness, and the flags are claude's."""
-        self.stage_settings()
-        for name in harness.names():
-            if name == "claude":
-                continue
-            with self.subTest(harness=name):
-                spec = harness.get(name).SPEC
-                expected = ["/usr/local/bin/" + spec.binary] + self.ARGS
-
-                argv, _ = self.pre_exec(spec)
-
-                self.assertEqual(argv, expected)
-
-
-class ClaudeConfigHome(PreExecCase):
-    """Claude's config dir dies with the container; its credentials do not.
-
-    The destination the driver merges into is the one the exec names to
-    claude, and it stays out of every host mount, or the session reads its
-    configuration and assets from somewhere else. The credential store is
-    named in the persistent home instead, since a rename-based write replaces
-    a link.
-    """
-
     def test_the_config_home_is_outside_every_host_mount(self):
-        """/home/anvil is the shared persistent home and /workspace is the
-        checkout; a config dir in either outlives the container."""
         path = harness.get("claude").SPEC.config_dest
         for mounted in ("/home/", "/workspace"):
             self.assertFalse(
                 path.startswith(mounted),
                 "claude config dir lands in a host mount: %s" % path)
-
-    def test_every_asset_destination_resolves_to_the_config_home(self):
-        """The destinations and the config dir are one guarantee: assets in
-        the shared home would be read from nowhere and kept forever.
-
-        Skills, commands, and translated agents all resolve "{config}" to
-        claude's pinned destination, which is the config dir this class
-        covers.
-        """
-        spec = harness.get("claude").SPEC
-        self.assertEqual(spec.skills_dest, "{config}/skills")
-        self.assertEqual(spec.commands_dest, "{config}/commands")
-        self.assertEqual(spec.agents_dest, "{config}/agents")
-        self.assertEqual(init.config_root(spec, self.home, {}), spec.config_dest)
-
-    def test_claude_is_told_where_its_config_lives(self):
-        _, env = self.pre_exec(self.staged_spec())
-
-        self.assertEqual(env["CLAUDE_CONFIG_DIR"], self.dest)
-
-    def test_the_credential_store_is_named_not_linked(self):
-        """A rename-based write replaces a link, so the store cannot be one."""
-        _, env = self.pre_exec(self.staged_spec())
-
-        store = env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]
-        self.assertEqual(store, os.path.join(self.home, ".claude"))
-        self.assertFalse(os.path.islink(store))
-        self.assertFalse(os.path.exists(store))
-
-    def test_the_credential_store_outlives_the_container(self):
-        """The home the hook is handed is the persistent mount every
-        container for this user shares, and it is also the directory the
-        state links point into: the store the exec names and the state the
-        links serve have to stay one directory."""
-        _, env = self.pre_exec(self.staged_spec())
-
-        self.assertEqual(
-            env["CLAUDE_SECURESTORAGE_CONFIG_DIR"],
-            os.path.join(self.home, ".claude"))
 
 
 class StatusLineAgreement(unittest.TestCase):

@@ -45,14 +45,12 @@ def mcp_fragment(servers):
 
 SPEC = HarnessSpec(
     name="opencode",
-    binary="opencode",
     config_dest=Waiver(
         "the run's SWARMFORGE_CONFIG_DEST names the destination, and an unset "
         "variable skips the config phase"
     ),
     config_reset=False,
     layer_excludes=("./skills", "./command"),
-    keyed_files=("opencode.json",),
     skills_dest="{config}/skills",
     commands_dest="{config}/command",
     agents_dest="{config}/agents",

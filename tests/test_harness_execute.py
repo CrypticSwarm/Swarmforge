@@ -8,29 +8,29 @@ the argv carries the settings file that decides whose permissions, hooks, and
 env the session runs under. An env delta lost here is a session that cannot
 find its secrets or silently runs on the checkout's own settings.
 
-The other half of the contract is that no harness inherits claude's plumbing.
-Every harness but claude keeps the default hook, so its exec has to stay
-byte-identical to a direct exec of the binary -- the same file, the same
-argv, and the same environment save for the home and the two variables the
-driver's own launch adds. Those two are asserted absent for every
-harness: they exist only because this driver is a python module, and a harness
-that inherits them is one running with an import root pointing at Swarmforge's
-own package.
+Those deltas are claude's alone, and this file pins them one at a time and
+then all together, as a run on a linked worktree has them. The rest is what
+the driver owns whatever it starts: the argv it accepts, which harness may
+shape its own exec, and the signal dispositions it clears. Whether a harness
+on the default hook is exec'd byte-identically to a direct exec of its binary
+is a question about the registry rather than about claude, and
+tests/test_harness_conformance.py asks it of every registered harness.
 
 Every guarantee here is checked by running the driver with a recording execve
 and reading the call it made, so a dropped variable or a reordered argv fails a
 test rather than surfacing as a session that lost its history.
 
 Nothing here may write outside the temporary directory, and nothing may read
-the live /run/swarmforge the development host has: claude's settings file, its
-wrapper directory, and its pinned config destination are all replaced for the
-duration of each run.
+the live /run/swarmforge the development host has:
+`harness_fixtures.redirected` replaces every path the harness under test pins
+-- its config destination, the destinations it names outright, and the paths
+it hands to the anvil uid -- along with the three paths claude names as module
+constants, for the duration of each run.
 
 Run: python3 tests/test_harness_execute.py
 """
 
 import contextlib
-import dataclasses
 import io
 import os
 import shutil
@@ -50,33 +50,26 @@ REPO_ROOT = os.path.dirname(HERE)
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+# Discovery and `python3 tests/<file>.py` both put this directory on the path,
+# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
+# has to import under all three.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 from swarmforge import harness
 from swarmforge.harness import claude, execute, init, spec
 
-# Every registered harness that starts exactly as it was invoked.
-PLAIN = ("codex", "grok", "opencode")
-
-
-def write_file(path, text, mode=None):
-    """Write `text` at `path`, creating the parent directories."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-    if mode is not None:
-        os.chmod(path, mode)
-    return path
+from harness_fixtures import redirected, staged, write_file
 
 
 class ExecuteCase(unittest.TestCase):
     """Runs the driver with a recording execve over a staged container.
 
-    Claude pins the settings file, the wrapper directory, and the config
-    destination its hook names, so all three are replaced for the run and a
-    test never reads the live /run/swarmforge the development host has. The
-    execve stub returns instead of replacing the process, which is the one
-    thing the real call cannot do.
+    The settings file, the wrapper directory, and the config destination
+    claude's hook names all stand in the staging tree, so a test never reads
+    the live /run/swarmforge the development host has. The execve stub returns
+    instead of replacing the process, which is the one thing the real call
+    cannot do.
     """
 
     ARGS = ["--model", "sonnet", "run the thing"]
@@ -87,9 +80,9 @@ class ExecuteCase(unittest.TestCase):
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.shared = os.path.join(self.home, ".claude")
-        self.dest = os.path.join(self.tmp, "dest")
-        self.wrapper = os.path.join(self.tmp, "wrapper")
-        self.settings = os.path.join(self.tmp, "claude-settings.json")
+        self.dest = staged(self.tmp, "config_dest")
+        self.wrapper = staged(self.tmp, "wrapper_dir")
+        self.settings = staged(self.tmp, "settings_file")
         self.libdir = os.path.join(self.tmp, "lib")
         self.recorded = []
         # The driver defaults the interpreter's ignored dispositions before
@@ -127,28 +120,10 @@ class ExecuteCase(unittest.TestCase):
         expected["HOME"] = self.home
         return expected
 
-    @contextlib.contextmanager
-    def redirected(self, name):
-        """Every path `name` pins, replaced by one under the staging tree."""
-        module = harness.get(name)
-        self.assertIsNotNone(module, "no harness registered as %s" % name)
-        with contextlib.ExitStack() as stack:
-            # Both belong to claude's module and both are read by its hook,
-            # so they move for every run.
-            stack.enter_context(
-                mock.patch.object(claude, "WRAPPER_DIR", self.wrapper))
-            stack.enter_context(
-                mock.patch.object(claude, "SETTINGS_FILE", self.settings))
-            if name == "claude":
-                stack.enter_context(mock.patch.object(
-                    module, "SPEC",
-                    dataclasses.replace(module.SPEC, config_dest=self.dest)))
-            yield
-
     def execute(self, name, args=None, environ=None):
         """Run the driver for `name`, recording the exec it performs."""
         environ = self.env() if environ is None else environ
-        with self.redirected(name):
+        with redirected(name, self.tmp):
             status = execute.run(
                 name, self.home, self.ARGS if args is None else args,
                 environ, execv=self.record)
@@ -169,44 +144,14 @@ class ExecuteCase(unittest.TestCase):
             mode=mode)
 
 
-class HarnessPassthrough(ExecuteCase):
-    """The harnesses that keep the default hook start as they were invoked.
+class InheritedDispositions(ExecuteCase):
+    """What the interpreter's own startup leaves behind for the exec.
 
-    The driver stands between the container and the binary for every harness,
-    not just the one with an exec to shape, so the identity hook has to leave
-    the exec indistinguishable from a direct one. Anything the driver adds here
-    is claude's plumbing reaching a harness that never asked for it, and the
-    environment is compared whole so a stray variable fails rather than
-    surviving unnoticed. Claude's own artifacts are staged where its hook
-    would find them, so the passthrough is proven against the run most
-    tempted to decorate it.
+    The driver is a python module standing between the container and the
+    binary, and an interpreter arranges its process for itself before any of
+    this runs. What survives the exec is what the harness lives with, so the
+    driver has to undo the arrangement rather than pass it on.
     """
-
-    def test_every_plain_harness_execs_its_own_binary_unchanged(self):
-        for name in PLAIN:
-            with self.subTest(harness=name):
-                self.setUp()
-                self.stage_settings()
-                self.stage_wrapper()
-                environ = self.env()
-                binary = "/usr/local/bin/" + harness.get(name).SPEC.binary
-
-                file, argv, env = self.execute(name, environ=environ)
-
-                self.assertEqual(file, binary)
-                self.assertEqual(argv, [binary] + self.ARGS)
-                self.assertEqual(env, self.passed_through(environ))
-
-    def test_no_harness_inherits_the_variables_of_the_launch(self):
-        """They exist only because the driver is a python module: an import
-        root pointing at Swarmforge's own package and a startup knob for a
-        locale the harness never asked about."""
-        for name in harness.names():
-            with self.subTest(harness=name):
-                self.setUp()
-                _, _, env = self.execute(name)
-                for var in ("PYTHONPATH", "PYTHONCOERCECLOCALE"):
-                    self.assertNotIn(var, env)
 
     def test_the_ignored_signal_dispositions_are_defaulted_for_the_exec(self):
         """The interpreter ignores SIGPIPE and SIGXFSZ at startup, and an
@@ -224,7 +169,7 @@ class HarnessPassthrough(ExecuteCase):
             for sig in execute.IGNORED_SIGNALS:
                 seen[sig] = signal.getsignal(sig)
 
-        with self.redirected("grok"):
+        with redirected("grok", self.tmp):
             status = execute.run(
                 "grok", self.home, [], self.env(), execv=record)
 
@@ -327,12 +272,24 @@ class ClaudeEnvironment(ExecuteCase):
         expected["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = self.shared
         self.assertEqual(env, expected)
 
+    def test_the_credential_store_is_named_and_nothing_more(self):
+        """The hook only says where the store is. Standing a link there, or
+        a directory the shared home did not already have, is what a
+        rename-based write would replace with a container-local file, taking
+        the token with it when the container ends."""
+        _, _, env = self.execute("claude")
+
+        store = env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]
+        self.assertFalse(os.path.islink(store))
+        self.assertFalse(os.path.exists(store))
+
     def test_the_credential_store_is_where_the_state_links_point(self):
         """The links the root phase makes and the directory the exec names are
         the same shared home; a disagreement puts the session's history in one
         directory and its token in another."""
-        with self.redirected("claude"):
-            init.link_state("claude", self.home, {})
+        with redirected("claude", self.tmp):
+            staged = harness.get("claude").SPEC
+            init.link_state(staged, init.asset_context(staged, self.home, {}))
         _, _, env = self.execute("claude")
 
         parents = {
@@ -436,15 +393,6 @@ class DriverArgv(ExecuteCase):
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn(execute.USAGE, completed.stderr)
 
-    def test_every_harness_is_selected_by_the_name_of_its_binary(self):
-        """The entrypoint guards /usr/local/bin/<selector> and the driver
-        execs /usr/local/bin/<spec.binary> after looking the selector up as
-        a registry name; the two are one path only while every harness's
-        name is its binary."""
-        for name in harness.names():
-            with self.subTest(harness=name):
-                self.assertEqual(harness.get(name).SPEC.binary, name)
-
 
 class PreExecDescriptor(unittest.TestCase):
     """Which harnesses shape their own exec at all.
@@ -454,16 +402,16 @@ class PreExecDescriptor(unittest.TestCase):
     environment built for somebody else's config directory.
     """
 
-    def test_every_harness_declares_a_callable_hook(self):
-        for name in harness.names():
-            with self.subTest(harness=name):
-                self.assertTrue(callable(harness.get(name).SPEC.pre_exec))
-
     def test_claude_shapes_its_own_exec(self):
         self.assertIs(harness.get("claude").SPEC.pre_exec, claude.pre_exec)
 
     def test_every_other_harness_starts_as_invoked(self):
-        for name in PLAIN:
+        """Read from the registry rather than a list of names, so the
+        conformance suite's filter on the default hook stands for "everything
+        but claude" however many harnesses are registered."""
+        for name in harness.names():
+            if name == "claude":
+                continue
             with self.subTest(harness=name):
                 self.assertIs(harness.get(name).SPEC.pre_exec, spec.pre_exec)
 

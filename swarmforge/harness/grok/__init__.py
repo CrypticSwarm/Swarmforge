@@ -4,7 +4,6 @@ from swarmforge.harness.spec import HarnessSpec, Waiver, toml_mcp_fragment
 
 SPEC = HarnessSpec(
     name="grok",
-    binary="grok",
     config_dest=Waiver(
         "the run's SWARMFORGE_CONFIG_DEST names the destination, and an unset "
         "variable skips the config phase"
@@ -14,7 +13,6 @@ SPEC = HarnessSpec(
     # the dest is a persistent home: the container has its own
     # /usr/local/bin/grok, so copying them in would only leave them there.
     layer_excludes=("./skills", "./commands", "./bin", "./downloads", "./completions"),
-    keyed_files=("opencode.json",),
     skills_dest="{home}/.grok/skills",
     commands_dest="{home}/.grok/commands",
     agents_dest=Waiver(

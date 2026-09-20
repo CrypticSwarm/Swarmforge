@@ -202,7 +202,6 @@ def publish_config(ctx):
 
 SPEC = HarnessSpec(
     name="codex",
-    binary="codex",
     config_dest="/run/swarmforge/codex-config",
     config_reset=True,
     # packages, sessions, history.jsonl, and log are session state the dest
@@ -216,7 +215,6 @@ SPEC = HarnessSpec(
         "./log",
         "./config.toml",
     ),
-    keyed_files=("opencode.json",),
     skills_dest="{home}/.agents/skills",
     commands_dest=Waiver(
         "portable commands become skill packages under the skills destination "
