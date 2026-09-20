@@ -7,23 +7,19 @@ Codex state persists by mounting `$(CODEX_HOME_DIR)` to `/home/anvil`, keeping c
 `CODEX_HOME_DIR` defaults to `$(CODEX_DATA_DIR)/home`; use separate `CODEX_DATA_DIR` roots to isolate work/personal logins, as with `CLAUDE_DATA_DIR`.
 
 Codex reads the repo-root `AGENTS.md` family natively from the git root down, so it picks up this repo's instructions with no extra config.
-Shared skills reach `~/.agents/skills/`, Codex's native user location, through the [asset pipeline](../configuration.md). Portable commands reach the same location as translated skills.
+Shared skills reach `~/.agents/skills/`, Codex's native user location, through the [asset pipeline](../configuration.md#asset-layers). Portable commands reach the same location as translated skills.
 Unified subagent definitions become temporary Codex role files under
 `/run/swarmforge/codex-agents/` and are registered through the derived
 `~/.codex/config.toml`. The checkout's native `.codex/agents/` is untouched.
 MCP tongs reach Codex as `[mcp_servers.<name>]` entries in a managed block of the derived `~/.codex/config.toml`, rewritten from the current layers every run and yielding to a server the user already defines under that name.
 
-Codex config layering uses the same three sources and order of trust as [Claude](claude-code.md#claude-config-layering) (lowest to highest precedence):
-- `SWARMFORGE_REPO_CONFIG_DIR` (default `codex/`, if present)
-- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.codex`)
-- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.codex` when that root is set)
-
-Each launch builds `config.toml` from scratch in repo → user → org order,
-merging by key, and copies it to Codex's native path. The canonical output
-preserves values and tables, but not comments or formatting. The native file
-remains writable for Codex's atomic settings updates, but the next launch
-rebuilds it; put durable settings in a source layer. Rebuild only the Codex
-install layer with `make update_codex`.
+Each launch builds `config.toml` from scratch across the three
+[config layers](../configuration.md#config-layers), merging by key, and copies
+it to Codex's native path. The canonical output preserves values and tables,
+but not comments or formatting. The native file remains writable for Codex's
+atomic settings updates, but the next launch rebuilds it; put durable settings
+in a source layer. Rebuild only the Codex install layer with
+`make update_codex`.
 The merge skips `packages/` -- the host installer's release tree, which the container has no use for -- along with `sessions/`, `history.jsonl`, and `log/`, so one machine's transcripts do not follow the user config layer into the container's home.
 
 Codex brings its own sandbox, which is redundant inside an anvil and may not initialize in one at all, since its Landlock and `bwrap` paths need kernel permissions a container is not guaranteed.

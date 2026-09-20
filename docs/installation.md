@@ -38,7 +38,7 @@ alias ccd='make -C PATH_TO_SWARMFORGE run_claude PROJECT_DIR=$(pwd) CLAUDE_DATA_
 
 - `GITCONFIG_FILE` points at an agent-specific git config instead of `~/.gitconfig`.
 - For Claude Code, use separate `CLAUDE_DATA_DIR` roots to isolate work/personal logins and session state. `CLAUDE_HOME_DIR` defaults to `$(CLAUDE_DATA_DIR)/home`.
-- Config layering uses `SWARMFORGE_USER_CONFIG_DIR`, `SWARMFORGE_ORG_CONFIG_DIR`, and `SWARMFORGE_REPO_CONFIG_DIR` (their defaults differ per harness — see [OpenCode layering](harnesses/opencode.md) and [Claude config layering](harnesses/claude-code.md#claude-config-layering)). Set `SWARMFORGE_ORG_CONFIG_ROOT=/path/to/org-repo` to resolve org defaults to each harness's own directory under that root (`.opencode`, `.claude`, `.grok`, `.codex`).
+- Config layering uses `SWARMFORGE_USER_CONFIG_DIR`, `SWARMFORGE_ORG_CONFIG_DIR`, and `SWARMFORGE_REPO_CONFIG_DIR` (their defaults differ per harness — see [Config layers](configuration.md#config-layers)). Set `SWARMFORGE_ORG_CONFIG_ROOT=/path/to/org-repo` to resolve org defaults to each harness's own directory under that root.
 
 `SWARMFORGE_REPO_CONFIG_DIR` refers to the Swarmforge checkout (the harness repo), not the working project mounted at `/workspace`.
 By default each `run_*` target points it at that harness's directory in the checkout: `$(SWARMFORGE_DIR)/opencode`, and `$(SWARMFORGE_DIR)/claude`, `/grok`, `/codex` if present.

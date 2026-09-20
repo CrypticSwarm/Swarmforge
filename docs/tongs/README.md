@@ -5,7 +5,7 @@ The name captures the primary use case: holding something hot — usually creden
 A credential-holding tong runs as a sibling container exposing an **MCP server** the agent calls over the session network; the secret material lives only in the tong's process space.
 Tongs can also be plain network services (a throwaway Postgres, a fixture server), volume providers, or background side-effect processes.
 
-Tongs are YAML files discovered across the **same four layers** as [agents](../authoring/agents.md).
+Tongs are YAML files discovered across the same four [asset layers](../configuration.md#asset-layers).
 The host-side launcher (`swarmforge/anvil/`, run through `bin/run-anvil`) discovers, approves, starts, and tears them down; `make run_opencode` / `make run_claude` already delegate to it.
 
 ## Quick start: run a tong

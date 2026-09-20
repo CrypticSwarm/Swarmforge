@@ -9,24 +9,13 @@ The repo is mounted at a stable path derived from the git remote slug (with `/wo
 
 ## Claude config layering
 
-Three sources merge into Claude's config dir at startup (lowest to highest precedence):
-- `SWARMFORGE_REPO_CONFIG_DIR` (default `claude/`, if present)
-- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude`)
-- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude` when that root is set)
-
-Skills, commands, and `agents/` are excluded from this merge — they travel through the [asset pipeline](../configuration.md).
-
-Config layers stack in the opposite order to the [asset layers](../configuration.md): assets order by specificity, so a repo's own skill wins, while config orders by **trust**, because these files carry permissions, hooks, and env. A checkout is whatever repo you cloned and sits at the bottom; the org layer is installed deliberately and sits on top.
+The three [config layers](../configuration.md#config-layers) merge into Claude's config dir at startup. `agents/` is held out of the merge along with the asset dirs: unified agent translation is its only source.
 
 ### The config directory
 
-Claude runs with `CLAUDE_CONFIG_DIR` pointed at a container-local path, rebuilt from the config layers and the asset pipeline on every run. Everything Claude reads as configuration or code lives in that directory, so a shared one would hand a session's writes to the next container and to any running alongside it.
+Claude runs with `CLAUDE_CONFIG_DIR` pointed at a container-local path, rebuilt from the config layers and the [asset pipeline](../configuration.md#asset-layers) on every run. Everything Claude reads as configuration or code lives in that directory.
 
-State that must outlive the run (`projects/`, `history.jsonl`, …) is symlinked back in from the shared home; the allowlist is `STATE_DIRS`/`STATE_FILES` in `swarmforge/harness/claude/`. It fails safe — a directory Claude learns to load in a later release stays inert until listed — at the cost that an unlisted new state directory dies with the container. A link holds only what Claude writes in place: an entry it rewrites by rename replaces the link with a container-local file.
-
-Credentials are that second kind, so `CLAUDE_SECURESTORAGE_CONFIG_DIR` names their store instead: `~/.claude` in the shared home. The rename lands on the persistent mount, and Claude's token-refresh lock sits in the same directory, so concurrent containers rotate the shared token one at a time.
-
-`plugins/` is linked but mounted read-only: marketplace clones are worth keeping, but a session must not rewrite what the next container executes, so plugin installs happen host-side.
+State that must outlive the run (`projects/`, `history.jsonl`, …) is symlinked back in from the shared home. Credentials live in the same shared `~/.claude`, named by `CLAUDE_SECURESTORAGE_CONFIG_DIR`, so a login survives the run. `plugins/` is linked too, but read-only: plugin installs happen host-side.
 
 ### settings.json
 

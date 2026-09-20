@@ -16,7 +16,7 @@
 
 ## Configuration and assets
 
-- [Shared assets](configuration.md) — the layers skills, commands, and agents are collected from.
+- [Configuration and assets](configuration.md) — the four layers skills, commands, and agents are collected from, the three a harness's config is merged from, and why this checkout ranks differently in each.
 - [Agents](authoring/agents.md) — the unified subagent format and what each harness makes of it.
 - [Skills](authoring/skills.md)
 - [Commands](authoring/commands.md)
@@ -38,5 +38,5 @@
 
 - **First session in a container** — [Installation](installation.md), then your harness's page, then [Git repos and worktrees](git-guard.md) for what the read-only mounts change about git.
 - **Giving an agent a credential without handing it over** — [Tongs](tongs/README.md), [Definition format](tongs/definitions.md), [Secret providers](tongs/secrets.md).
-- **Sharing skills, commands, and agents across repos** — [Shared assets](configuration.md), then [Agents](authoring/agents.md).
+- **Sharing skills, commands, and agents across repos** — [Configuration and assets](configuration.md), then [Agents](authoring/agents.md).
 - **Adding a harness or changing startup** — [Harness lifecycle](development/architecture.md), then [Testing](development/testing.md).
