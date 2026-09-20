@@ -50,3 +50,4 @@ is worth it once one build has populated that cache (`-O` keeps the parallel log
 - [Configuration and assets](docs/configuration.md), [Agents](docs/authoring/agents.md), [Skills](docs/authoring/skills.md), [Commands](docs/authoring/commands.md) — what every harness picks up, and how to write it once.
 - [Tongs](docs/tongs/README.md) — sidecar containers that hold what the agent must not, such as credentials.
 - [Harness lifecycle](docs/development/architecture.md) and [Testing](docs/development/testing.md) — working on Swarmforge itself.
+- [Environment variables](docs/reference/environment.md) and [Make targets](docs/reference/make-targets.md) — every knob and every target, for looking one up.
