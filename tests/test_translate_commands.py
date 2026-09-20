@@ -35,13 +35,13 @@ class CodexCommandTranslation(unittest.TestCase):
             result,
         )
 
-    def test_two_positionals_are_named_together_and_described_in_the_plural(self):
+    def test_two_positionals_are_listed_in_order_and_described_in_the_plural(self):
         result = self.translate(
             "---\ndescription: Compare two paths\n---\n"
-            "Difference: !`diff $1 $2`\n"
+            "Difference: !`diff $2 $1`\n"
         )
         self.assertIn(
-            "Run `diff $1 $2`, replacing $1, $2 with the corresponding "
+            "Run `diff $2 $1`, replacing $1, $2 with the corresponding "
             "positional invocation arguments and use its output.",
             result,
         )
@@ -52,11 +52,11 @@ class CodexCommandWarnings(unittest.TestCase):
 
     The warning is the only report a command gets that it produced no skill,
     so it has to say which module dropped it -- these assert the whole line,
-    prefix included, rather than the part after the colon.
+    prefix included.
     """
 
     def skip_warning(self, text):
-        """Translate a command that cannot be translated; return its path and stderr."""
+        """Run the translator over a command it must skip; return its path and stderr."""
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory() as root:
             source = os.path.join(root, "commands")
