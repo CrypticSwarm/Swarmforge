@@ -40,8 +40,9 @@ IGNORED_SIGNALS = (signal.SIGPIPE, signal.SIGXFSZ)
 def run(name, home, args, environ, execv=os.execve):
     """Exec the harness registered as `name` with the environment it expects.
 
-    The file exec'd is always the binary the spec names; the hook has the last
-    word on the argv and the environment it starts with.
+    The file exec'd is always BIN_DIR plus the harness's own name, the path
+    the entrypoint checked for executability; the hook has the last word on
+    the argv and the environment it starts with.
     """
     module = harness.get(name)
     if module is None:
