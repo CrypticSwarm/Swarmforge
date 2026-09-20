@@ -31,8 +31,7 @@ OPENCODE_ORG_CONFIG_DIR = $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFOR
 OPENCODE_REPO_CONFIG_DIR = $(OPENCODE_CONFIG_DIR)
 OPENCODE_CONFIG_DEST = $(ANVIL_HOME)/.config/opencode
 OPENCODE_CONFIG_RESET = 1
-# $$-escaped so each path expands in the run_opencode recipe, where the
-# target-scoped config-layer defaults are in effect.
+# $$-escaped: these expand in the run_opencode recipe, not here.
 OPENCODE_MKDIRS = \
 	$$(SWARMFORGE_USER_CONFIG_DIR) \
 	$$(SWARMFORGE_REPO_CONFIG_DIR) \

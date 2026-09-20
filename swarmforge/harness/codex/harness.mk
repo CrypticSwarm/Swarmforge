@@ -27,8 +27,7 @@ CODEX_ORG_CONFIG_DIR = $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_
 CODEX_REPO_CONFIG_DIR = $(SWARMFORGE_DIR)/codex
 CODEX_CONFIG_DEST =
 CODEX_CONFIG_RESET = 0
-# $$-escaped so each path expands in the run_codex recipe, where the
-# target-scoped SWARMFORGE_USER_CONFIG_DIR default is in effect.
+# $$-escaped: these expand in the run_codex recipe, not here.
 CODEX_MKDIRS = \
 	$$(CODEX_HOME_DIR) \
 	$$(SWARMFORGE_USER_CONFIG_DIR) \

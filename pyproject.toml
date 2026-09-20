@@ -55,3 +55,13 @@ packages = [
     "swarmforge.harness.opencode",
     "swarmforge.tongs",
 ]
+
+# The harness packages carry the files the image build and the Makefile read
+# out of them -- the make fragment, the install and image scripts, and Claude's
+# settings layer and status line. Without this a built distribution holds the
+# python alone, and the harness it installs cannot build an image. Keyed on "*"
+# rather than the four harness packages by name: setuptools takes a module name
+# or "*" here and no glob between them, and the package tree holds no other
+# non-python file, so a new harness needs no second edit.
+[tool.setuptools.package-data]
+"*" = ["*.mk", "*.sh", "*.json"]

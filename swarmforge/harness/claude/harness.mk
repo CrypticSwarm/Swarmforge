@@ -27,8 +27,7 @@ CLAUDE_ORG_CONFIG_DIR = $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE
 CLAUDE_REPO_CONFIG_DIR = $(SWARMFORGE_DIR)/claude
 CLAUDE_CONFIG_DEST =
 CLAUDE_CONFIG_RESET = 0
-# $$-escaped so each path expands in the run_claude recipe, where the
-# target-scoped SWARMFORGE_USER_CONFIG_DIR default is in effect.
+# $$-escaped: these expand in the run_claude recipe, not here.
 CLAUDE_MKDIRS = \
 	$$(CLAUDE_HOME_DIR) \
 	$$(SWARMFORGE_USER_CONFIG_DIR) \

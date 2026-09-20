@@ -28,8 +28,7 @@ GROK_ORG_CONFIG_DIR = $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_O
 GROK_REPO_CONFIG_DIR = $(SWARMFORGE_DIR)/grok
 GROK_CONFIG_DEST = $(ANVIL_HOME)/.grok
 GROK_CONFIG_RESET = 0
-# $$-escaped so each path expands in the run_grok recipe, where the
-# target-scoped SWARMFORGE_USER_CONFIG_DIR default is in effect.
+# $$-escaped: these expand in the run_grok recipe, not here.
 GROK_MKDIRS = \
 	$$(GROK_HOME_DIR) \
 	$$(SWARMFORGE_USER_CONFIG_DIR) \
