@@ -54,7 +54,7 @@ def run(name, home, args, environ, execv=os.execve):
         env.pop(var, None)
     env["HOME"] = home
 
-    binary = BIN_DIR + "/" + spec.binary
+    binary = BIN_DIR + "/" + spec.name
     ctx = init.asset_context(spec, home, environ, cwd=os.getcwd())
     argv, env = spec.pre_exec(ctx, [binary] + list(args), env)
     for sig in IGNORED_SIGNALS:

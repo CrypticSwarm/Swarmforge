@@ -212,7 +212,7 @@ class PreExecCase(unittest.TestCase):
         """Run `spec`'s hook with claude's two staged paths in place."""
         if ctx is None:
             ctx = init.asset_context(spec, self.home, {})
-        argv = ["/usr/local/bin/" + spec.binary] + self.ARGS
+        argv = ["/usr/local/bin/" + spec.name] + self.ARGS
         with mock.patch.object(claude, "SETTINGS_FILE", self.settings), \
                 mock.patch.object(claude, "WRAPPER_DIR", self.wrapper):
             return spec.pre_exec(ctx, argv, {"PATH": self.PATH})
@@ -278,7 +278,7 @@ class ClaudeSettingsDelivery(PreExecCase):
                 continue
             with self.subTest(harness=name):
                 spec = harness.get(name).SPEC
-                expected = ["/usr/local/bin/" + spec.binary] + self.ARGS
+                expected = ["/usr/local/bin/" + spec.name] + self.ARGS
 
                 argv, _ = self.pre_exec(spec)
 

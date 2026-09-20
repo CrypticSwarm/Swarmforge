@@ -189,7 +189,7 @@ class HarnessPassthrough(ExecuteCase):
                 self.stage_settings()
                 self.stage_wrapper()
                 environ = self.env()
-                binary = "/usr/local/bin/" + harness.get(name).SPEC.binary
+                binary = "/usr/local/bin/" + harness.get(name).SPEC.name
 
                 file, argv, env = self.execute(name, environ=environ)
 

@@ -696,7 +696,7 @@ class ExecPassthrough(unittest.TestCase):
                 continue
             with self.subTest(harness=name):
                 path, argv, env = self.run_driver(name)
-                binary = execute.BIN_DIR + "/" + spec.binary
+                binary = execute.BIN_DIR + "/" + spec.name
                 self.assertEqual(path, binary)
                 self.assertEqual(argv, [binary] + SESSION_ARGS)
 
@@ -710,7 +710,7 @@ class ExecPassthrough(unittest.TestCase):
         for name, spec in specs():
             with self.subTest(harness=name):
                 path, argv, _ = self.run_driver(name)
-                binary = execute.BIN_DIR + "/" + spec.binary
+                binary = execute.BIN_DIR + "/" + spec.name
                 self.assertEqual(path, binary)
                 self.assertEqual(argv[0], binary)
 
