@@ -1,4 +1,31 @@
-"""The Claude Code harness."""
+"""The Claude Code harness.
+
+The config destination is a container-local path rather than a directory
+in the shared home. Claude loads configuration and code out of the dir
+CLAUDE_CONFIG_DIR names, so one directory shared between containers would
+hand a session's writes to the next run and to anything running alongside
+it. The destination is rebuilt from the config layers and the asset
+pipeline on every run.
+
+STATE_DIRS and STATE_FILES are the allowlist that outlives that rebuild:
+each name is linked back to its entry under the shared ~/.claude. The
+.claude.json claude keeps beside that dir is linked in too, outside both
+tuples, being the one piece of state it puts there; nothing else in the
+destination survives the container. Listing what survives rather than
+what does not fails safe -- a directory claude learns to load in a later
+release stays inert until someone lists it -- at the cost that a new state
+directory nobody has listed is thrown away with the run. `plugins/` is on
+the list and its mount is read-only besides: a marketplace clone is worth
+keeping, and a session must not rewrite what the next container executes,
+so plugins are installed host-side.
+
+A link only holds what claude writes in place; an entry it rewrites by
+rename replaces the link with a container-local file. Credentials are that
+second kind, so CLAUDE_SECURESTORAGE_CONFIG_DIR names their store instead
+of linking it. The rename lands on the persistent mount, and claude's
+token-refresh lock sits in the same directory, so concurrent containers
+rotate the shared token one at a time.
+"""
 
 import os
 import shutil
@@ -201,13 +228,9 @@ def link_entry(target, path):
 def link_state(ctx):
     """Link the state that outlives the run into the config destination.
 
-    Only the allowlisted state survives: claude loads configuration and code
-    out of this dir, and a shared one would hand a session's writes to the
-    next container. A link holds only what claude writes in place -- an entry
-    rewritten by rename replaces it. A directory must exist in the shared home
-    before it is linked, or claude's own mkdir fails on the link. This runs
-    after the config merge, which wipes this destination under
-    SWARMFORGE_CONFIG_RESET.
+    A directory must exist in the shared home before it is linked, or
+    claude's own mkdir fails on the link. This runs after the config merge,
+    which wipes this destination under SWARMFORGE_CONFIG_RESET.
 
     A link that cannot be made stops the container: a session started without
     it writes its history into a directory that dies with the run.
@@ -215,7 +238,6 @@ def link_state(ctx):
     shared = ctx.home + "/.claude"
     os.makedirs(ctx.config_dest, exist_ok=True)
 
-    # The one piece of state claude keeps beside its config dir, not inside it.
     link_entry(ctx.home + "/.claude.json",
                os.path.join(ctx.config_dest, ".claude.json"))
 
@@ -338,11 +360,8 @@ def pre_exec(ctx, argv, env):
     agents discovery. The flags go ahead of the caller's arguments, which
     leaves the session's own trailing arguments the last word.
 
-    The config directory is the destination the root phases merged. The
-    credential store is named rather than linked, because credentials are
-    written by rename and a rename replaces a link with a container-local
-    file; claude's token-refresh lock sits in the same directory, so
-    concurrent containers rotate the shared token one at a time.
+    The config directory is the destination the root phases merged, and
+    the credential store is named rather than linked.
     """
     env = dict(env)
     if os.access(WRAPPER_DIR + "/git", os.X_OK):
