@@ -213,24 +213,6 @@ define run_agent_container
 	set +x
 endef
 
-# A literal newline, a lone backslash, and a single space, for assembling
-# recipe text inside $(eval). Reading a define body collapses literal
-# backslash-newlines, so harness_rules splices harness_bs where a recipe
-# needs a line continuation to survive into the generated rule.
-define harness_nl
-
-
-endef
-harness_blank :=
-harness_bs := \$(harness_blank)
-harness_space := $(harness_blank) $(harness_blank)
-
-# One recipe line per directory. $(1) holds $$-escaped paths, so each
-# expands in the run_<name> recipe where the target-scoped config-layer
-# defaults are in effect. foreach joins iterations with a space; strip
-# the space that would otherwise trail each generated line.
-harness_mkdir_lines = $(subst $(harness_space)$(harness_nl),$(harness_nl),$(foreach dir,$(1),$(harness_nl)	@mkdir -p "$(dir)"))
-
 # Generates one harness's build/update/run/stop targets from the knobs its
 # harness.mk fragment declares. $(1) is the harness name as it appears in
 # target names and --build-arg AGENT; $(2) is the fragment's variable
@@ -238,19 +220,15 @@ harness_mkdir_lines = $(subst $(harness_space)$(harness_nl),$(harness_nl),$(fore
 # the generated recipes and expand when a recipe runs, so command-line and
 # environment overrides behave exactly as they would on a rule written out
 # in full. The one knob spliced verbatim at eval time is $(2)_MKDIRS,
-# whose entries therefore carry $$-escaped references. .PHONY and clean
-# accumulate across evals, one contribution per harness.
+# whose entries therefore carry $$-escaped references; each becomes a
+# quoted operand of the single mkdir the run recipe opens with, and a
+# harness that declares none runs no mkdir. .PHONY and clean accumulate
+# across evals, one contribution per harness.
 define harness_rules
 .PHONY: build_$(1) update_$(1) run_$(1) stop_$(1)
 
 build_$(1):
-	docker build $(harness_bs)
-	  --target harness-runtime $(harness_bs)
-	  --build-arg AGENT=$(1) $(harness_bs)
-$(if $($(2)_EXTRA_BUILD_ARGS),	  $$($(2)_EXTRA_BUILD_ARGS) $(harness_bs)$(harness_nl))	  --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) $(harness_bs)
-	  --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) $(harness_bs)
-	  -f "$$(SWARMFORGE_DIR)/anvil/Dockerfile" $(harness_bs)
-	  -t $$($(2)_IMG) "$$(SWARMFORGE_DIR)"
+	docker build --target harness-runtime --build-arg AGENT=$(1)$(if $($(2)_EXTRA_BUILD_ARGS), $$($(2)_EXTRA_BUILD_ARGS)) --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) -f "$$(SWARMFORGE_DIR)/anvil/Dockerfile" -t $$($(2)_IMG) "$$(SWARMFORGE_DIR)"
 
 # Rebuild only from the harness install step onward.
 update_$(1):
@@ -261,7 +239,8 @@ run_$(1): SWARMFORGE_ORG_CONFIG_DIR ?= $$($(2)_ORG_CONFIG_DIR)
 run_$(1): SWARMFORGE_REPO_CONFIG_DIR ?= $$($(2)_REPO_CONFIG_DIR)
 run_$(1): SWARMFORGE_CONFIG_DEST ?= $$($(2)_CONFIG_DEST)
 run_$(1): SWARMFORGE_CONFIG_RESET ?= $$($(2)_CONFIG_RESET)
-run_$(1): opencode_network$(call harness_mkdir_lines,$($(2)_MKDIRS))
+run_$(1): opencode_network
+	$(if $($(2)_MKDIRS),@mkdir -p $(foreach dir,$($(2)_MKDIRS),"$(dir)"))
 	$$(call run_agent_container,$$($(2)_CTR),$$($(2)_RUN_ENV),$$($(2)_RUN_MOUNTS),$$($(2)_IMG),$$($(2)_RUN_ARGS),$$($(2)_WORKDIR_MODE),$(1))
 
 stop_$(1):
