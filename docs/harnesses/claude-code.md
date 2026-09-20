@@ -9,14 +9,7 @@ The repo is mounted at a stable path derived from the git remote slug (with `/wo
 
 ## Claude config layering
 
-Three sources merge into Claude's config dir at startup (lowest to highest precedence):
-- `SWARMFORGE_REPO_CONFIG_DIR` (default `claude/`, if present)
-- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.claude`)
-- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.claude` when that root is set)
-
-Skills, commands, and `agents/` are excluded from this merge — they travel through the [asset pipeline](../configuration.md).
-
-Config layers stack in the opposite order to the [asset layers](../configuration.md): assets order by specificity, so a repo's own skill wins, while config orders by **trust**, because these files carry permissions, hooks, and env. A checkout is whatever repo you cloned and sits at the bottom; the org layer is installed deliberately and sits on top.
+The three [config layers](../configuration.md#config-layers) merge into Claude's config dir at startup. `agents/` is held out of the merge along with the asset dirs: unified agent translation is its only source.
 
 ### The config directory
 

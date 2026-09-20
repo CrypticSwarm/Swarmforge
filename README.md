@@ -47,6 +47,6 @@ is worth it once one build has populated that cache (`-O` keeps the parallel log
 
 - [Installation](docs/installation.md), [swarmforge CLI](docs/cli.md), and [Git repos and worktrees](docs/git-guard.md) — getting a session running, and what the read-only git mounts change about it.
 - [OpenCode](docs/harnesses/opencode.md), [Claude Code](docs/harnesses/claude-code.md), [Grok Build CLI](docs/harnesses/grok.md), [Codex CLI](docs/harnesses/codex.md) — one page per harness, and [Ollama](docs/ollama.md) for models served locally.
-- [Shared assets](docs/configuration.md), [Agents](docs/authoring/agents.md), [Skills](docs/authoring/skills.md), [Commands](docs/authoring/commands.md) — what every harness picks up, and how to write it once.
+- [Configuration and assets](docs/configuration.md), [Agents](docs/authoring/agents.md), [Skills](docs/authoring/skills.md), [Commands](docs/authoring/commands.md) — what every harness picks up, and how to write it once.
 - [Tongs](docs/tongs/README.md) — sidecar containers that hold what the agent must not, such as credentials.
 - [Harness lifecycle](docs/development/architecture.md) and [Testing](docs/development/testing.md) — working on Swarmforge itself.

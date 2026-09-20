@@ -35,12 +35,7 @@ Field handling per harness:
 - `claude:`, `codex:`, and `opencode:` blocks merge into that harness's output. Put Codex-only fields such as `model_reasoning_effort` and `sandbox_mode` in `codex:`.
 - `disable: true` passes through to OpenCode and skips the agent for Claude Code and Codex.
 
-Unified agents live in harness-neutral `.swarmforge/agents/` directories across the same four layers as shared assets (lowest to highest precedence):
-
-- **user** — `~/.swarmforge/agents/` (override the `.swarmforge` root with `SWARMFORGE_USER_ASSETS_DIR`)
-- **org** — `$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge/agents/` (override with `SWARMFORGE_ORG_ASSETS_DIR`)
-- **repo** — `agents/` in the checkout (override with `SWARMFORGE_REPO_AGENTS_DIR`, which points directly at an agents dir so the rest of the checkout is never mounted)
-- **workspace** — `<workspace>/.swarmforge/agents/`
+Unified agents live in the agents dir of each of the four [asset layers](../configuration.md#asset-layers) — harness-neutral `.swarmforge/agents/`, except in the repo layer, where it is the checkout's own `agents/`.
 
 Layers mount read-only under `/tmp/swarmforge-assets/{user,org}` and `/tmp/swarmforge-assets/repo/agents` (the in-container `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` env vars point at the layer roots). Startup translates them into `~/.config/opencode/agents/` for OpenCode, `agents/` inside Claude's container-local config dir (the one `CLAUDE_CONFIG_DIR` names), and temporary registered role files for Codex. Later layers override earlier ones by filename.
 Claude-native repo-local definitions (for example `<workspace>/.claude/agents/`) are still discovered by Claude directly, outside this pipeline.

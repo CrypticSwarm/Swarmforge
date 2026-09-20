@@ -2,14 +2,10 @@
 
 A coding-agent harness that exposes a standard set of code-editing tools to the LLM.
 
-`make run_opencode` merges config into `/home/anvil/.config/opencode` from three sources (lowest to highest precedence — see the note on trust ordering under [Claude config layering](claude-code.md#claude-config-layering)):
-- `SWARMFORGE_REPO_CONFIG_DIR` (default repo-local `opencode/`)
-- `SWARMFORGE_USER_CONFIG_DIR` (default `~/.config/opencode`)
-- `SWARMFORGE_ORG_CONFIG_DIR` (optional; defaults to `$(SWARMFORGE_ORG_CONFIG_ROOT)/.opencode` when that root is set)
+`make run_opencode` merges the three [config layers](../configuration.md#config-layers) into `/home/anvil/.config/opencode`. Skills and commands come separately, through the [asset pipeline](../configuration.md#asset-layers).
 
 `opencode.json` is merged by key (not file overwrite), so org-level MCP servers survive even when the repo layer also defines `opencode.json`.
 Your own `~/.config/opencode/opencode.json` overrides the toolchain defaults this checkout ships in `opencode/opencode.json`.
-Skills and commands are excluded from this merge and travel through the asset pipeline described under [Shared assets](../configuration.md).
 
 You can also define MCP servers in a project-local `.opencode/opencode.json` — often the cleanest place to attach them to a specific repo:
 
