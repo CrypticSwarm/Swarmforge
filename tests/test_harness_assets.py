@@ -211,9 +211,12 @@ class AssetCase(unittest.TestCase):
     def install(self, name, environ=None):
         """Run the asset phase for `name` with every pinned path moved."""
         with self.redirected(name):
+            spec = harness.get(name).SPEC
+            environ = self.env() if environ is None else environ
             return init.install_assets(
-                name, self.home,
-                self.env() if environ is None else environ,
+                spec,
+                init.asset_context(spec, self.home, environ),
+                environ,
                 self.workspace,
             )
 

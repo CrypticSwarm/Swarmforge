@@ -41,7 +41,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import types
 import unittest
 from unittest import mock
 
@@ -166,10 +165,21 @@ class StateCase(unittest.TestCase):
                         extra_chown_paths=(self.dest,))))
             yield
 
+    def staged(self, name):
+        """The spec and context the driver would hand `name`'s phases.
+
+        The registry is read at the call, so the paths the pair carries are
+        whichever stand at that point: the staging tree's replacements from
+        inside `redirected`, and the ones the harness really pins from
+        outside it.
+        """
+        declared = harness.get(name).SPEC
+        return declared, init.asset_context(declared, self.home, self.env())
+
     def link(self, name):
         """Run the driver's link phase for `name` with every pinned path moved."""
         with self.redirected(name):
-            return init.link_state(name, self.home, self.env())
+            return init.link_state(*self.staged(name))
 
     def prepare(self, name, cwd):
         """Run the driver's root phase for `name` over the workspace `cwd`.
@@ -179,7 +189,7 @@ class StateCase(unittest.TestCase):
         directory would read real worktree metadata and write a real wrapper.
         """
         with self.redirected(name):
-            return init.root_setup(name, self.home, self.env(), cwd=cwd)
+            return init.root_setup(*self.staged(name), cwd=cwd)
 
     def snapshot(self):
         """Every path under the staging tree, so any write at all shows."""
@@ -502,12 +512,13 @@ class RootSetupContext(StateCase):
 
     def test_the_working_directory_reaches_the_hook(self):
         seen = []
-        module = types.SimpleNamespace(SPEC=fake_spec(root_setup=seen.append))
+        declared = fake_spec(root_setup=seen.append)
         workdir = os.path.join(self.tmp, "repos", "proj")
 
-        with mock.patch.dict(harness._REGISTRY, {"fake": module}):
-            status = init.root_setup(
-                "fake", self.home, self.env(), cwd=workdir)
+        status = init.root_setup(
+            declared,
+            init.asset_context(declared, self.home, self.env()),
+            cwd=workdir)
 
         self.assertEqual(status, 0)
         self.assertEqual([ctx.cwd for ctx in seen], [workdir])
@@ -612,7 +623,7 @@ class OwnershipHandover(StateCase):
                 workspace = os.path.join(self.tmp, "workspace")
 
                 status = init.deliver_ownership(
-                    name, self.home, "1000", "1000",
+                    *self.staged(name), "1000", "1000",
                     workspace=workspace, chown=recorded.append)
 
                 self.assertEqual(status, 0)
@@ -704,7 +715,7 @@ class OwnershipDelivery(StateCase):
         uid, gid = self.owner()
 
         status = init.deliver_ownership(
-            "grok", self.home, uid, gid, workspace=workspace)
+            *self.staged("grok"), uid, gid, workspace=workspace)
 
         self.assertEqual(status, 0)
         self.assertEqual(tree(self.home), {
@@ -723,7 +734,7 @@ class OwnershipDelivery(StateCase):
         with self.redirected("claude"):
             noise = self.stderr_of(
                 lambda: statuses.append(init.deliver_ownership(
-                    "claude", self.home, uid, gid, workspace=workspace)))
+                    *self.staged("claude"), uid, gid, workspace=workspace)))
 
         self.assertEqual(statuses, [0])
         self.assertEqual(noise, "")
@@ -741,7 +752,7 @@ class OwnershipDelivery(StateCase):
         with mock.patch.dict(os.environ, {"PATH": empty}):
             noise = self.stderr_of(lambda: self.assertEqual(
                 init.deliver_ownership(
-                    "grok", self.home, uid, gid, workspace=workspace), 0))
+                    *self.staged("grok"), uid, gid, workspace=workspace), 0))
 
         self.assertEqual(noise, "")
 

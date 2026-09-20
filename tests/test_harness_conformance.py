@@ -541,8 +541,12 @@ class ContainerRun(unittest.TestCase):
                 self.stage()
                 captured = io.StringIO()
                 with self.redirected(name), contextlib.redirect_stderr(captured):
+                    staged = harness.get(name).SPEC
+                    environ = self.env()
                     status = init.translate_agents(
-                        name, self.home, self.env(), workspace=self.workspace)
+                        staged,
+                        init.asset_context(staged, self.home, environ),
+                        environ, workspace=self.workspace)
                 self.assertEqual(status, 0)
                 self.assertEqual(captured.getvalue(), "")
 
