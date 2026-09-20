@@ -27,7 +27,7 @@ Read by every `run_<harness>` target.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `PROJECT_DIR` | `$(CURDIR)` | The project to run against. Computed with `:=`, so an exported value is ignored. |
-| `GITCONFIG_FILE` | `$(HOME)/.gitconfig` | Mounted read-only at `/home/anvil/.gitconfig` when it is a file, and skipped when it is not. |
+| `GITCONFIG_FILE` | `$(HOME)/.gitconfig` | Mounted read-only at `/home/anvil/.gitconfig` when it is a file, and skipped when it is not, so an agent commits under your `user.name` and `user.email`. |
 | `ENV_FILE` | `$(PROJECT_DIR)/.swarmforge/env` | Passed as `docker run --env-file` when the file exists. The route for anything the harness wants in its environment that no make variable names. |
 | `TIMEZONE` | `Etc/UTC` | Arrives as `TZ`. A name with no file under `/usr/share/zoneinfo` keeps the image default and warns on stderr. |
 | `NETWORK` | `opencode-net` | The docker network the anvil, the tongs, and Ollama share. |
@@ -131,7 +131,7 @@ What each target runs is in [Testing](../development/testing.md).
 
 ## Ollama
 
-The targets are in [Ollama](../ollama.md).
+The targets are in [Make targets](make-targets.md#ollama).
 
 | Variable | Default | What it does |
 | --- | --- | --- |
