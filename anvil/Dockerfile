@@ -144,5 +144,3 @@ RUN set -eux; \
     esac; \
     image_sh="/usr/local/lib/swarmforge/swarmforge/harness/${AGENT}/image.sh"; \
     if [ -f "${image_sh}" ]; then sh "${image_sh}"; fi
-
-FROM harness-runtime AS default
