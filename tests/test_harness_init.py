@@ -45,7 +45,9 @@ from swarmforge.harness.spec import Context, HarnessSpec, Waiver, provided
 
 ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
 
-HARNESSES = ("claude", "codex", "grok", "opencode")
+# Derived, not spelled out: a harness this suite does not name is a harness
+# it does not cover, and registering one is meant to be the whole step.
+HARNESSES = tuple(harness.names())
 
 
 def write_file(path, text):
@@ -220,7 +222,7 @@ class LayerExcludes(DriverCase):
 
                 init.merge_config_layer(
                     self.layer("repo"), self.dest, init.layer_exclude_args(spec))
-                self.assertEqual(os.listdir(self.dest), ["control.md"])
+                self.assertEqual(sorted(os.listdir(self.dest)), ["control.md"])
 
     def test_a_full_run_leaves_the_asset_trees_in_their_own_pipelines(self):
         """skills/ and .swarmforge/ reach the container through their own
@@ -241,9 +243,15 @@ class LayerExcludes(DriverCase):
                 self.assertEqual(landed & {"skills", ".swarmforge"}, set())
                 self.assertIn("control.md", landed)
 
-    def test_claude_exclude_arguments_match_the_recorded_flags(self):
+    def assertExcludes(self, name, expected):
+        """The flags one harness excludes, in any order: tar takes them in any."""
         self.assertEqual(
-            init.layer_exclude_args(harness.get("claude").SPEC),
+            sorted(init.layer_exclude_args(harness.get(name).SPEC)),
+            sorted(expected))
+
+    def test_claude_exclude_arguments_match_the_recorded_flags(self):
+        self.assertExcludes(
+            "claude",
             [
                 "--exclude=./opencode.json",
                 "--exclude=./.swarmforge",
@@ -256,8 +264,8 @@ class LayerExcludes(DriverCase):
         )
 
     def test_codex_exclude_arguments_match_the_recorded_flags(self):
-        self.assertEqual(
-            init.layer_exclude_args(harness.get("codex").SPEC),
+        self.assertExcludes(
+            "codex",
             [
                 "--exclude=./opencode.json",
                 "--exclude=./.swarmforge",
@@ -271,8 +279,8 @@ class LayerExcludes(DriverCase):
         )
 
     def test_grok_exclude_arguments_match_the_recorded_flags(self):
-        self.assertEqual(
-            init.layer_exclude_args(harness.get("grok").SPEC),
+        self.assertExcludes(
+            "grok",
             [
                 "--exclude=./opencode.json",
                 "--exclude=./.swarmforge",
@@ -285,8 +293,8 @@ class LayerExcludes(DriverCase):
         )
 
     def test_opencode_exclude_arguments_match_the_recorded_flags(self):
-        self.assertEqual(
-            init.layer_exclude_args(harness.get("opencode").SPEC),
+        self.assertExcludes(
+            "opencode",
             [
                 "--exclude=./opencode.json",
                 "--exclude=./.swarmforge",

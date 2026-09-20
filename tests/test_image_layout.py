@@ -139,6 +139,17 @@ class ImportRootAgreement(unittest.TestCase):
             self.assertIn(
                 "-P", flags, "%s runs with the workspace on sys.path" % module)
 
+    def test_no_module_run_reads_the_home_for_python_to_import(self):
+        """-s keeps the user site directory out of every interpreter here.
+
+        `site` imports usercustomize from the home before main runs, and the
+        home is a persistent mount the session can write, so without -s a
+        session leaves python that the next run executes on its way up.
+        """
+        for _, flags, module in self.module_runs():
+            self.assertIn(
+                "-s", flags, "%s imports from the user site directory" % module)
+
     def test_the_image_python_understands_the_flags_the_entrypoint_passes(self):
         """-P needs 3.11, and the image builds its own interpreter.
 

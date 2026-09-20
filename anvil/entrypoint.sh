@@ -71,7 +71,7 @@ translate_codex_commands() {
   [ -n "${src_dir}" ] || return 0
   [ -d "${src_dir}" ] || return 0
 
-  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.commands.translate \
+  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -s -m swarmforge.commands.translate \
     "${skills_dst}" "${src_dir}" \
     || printf '%s\n' "Warning: command translation failed for Codex; continuing" >&2
 }
@@ -225,7 +225,7 @@ prepare_unified_agents() {
   # to /usr/local/lib/swarmforge; -P keeps the working directory off sys.path,
   # so a workspace that happens to contain a swarmforge/ directory cannot
   # shadow it. These run as root, before the drop to the invoking user.
-  if ! PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.agents.translate \
+  if ! PYTHONPATH=/usr/local/lib/swarmforge python3 -P -s -m swarmforge.agents.translate \
     "${AGENT_BIN}" "${agents_dst}" \
     "${SWARMFORGE_ASSETS_USER_DIR:-}/agents" \
     "${SWARMFORGE_ASSETS_ORG_DIR:-}/agents" \
@@ -240,7 +240,7 @@ register_codex_agents() {
   [ "${AGENT_BIN}" = "codex" ] || return 0
   [ -f "${CODEX_AGENTS_HOME}/config.toml" ] || return 0
 
-  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.config.merge_toml \
+  PYTHONPATH=/usr/local/lib/swarmforge python3 -P -s -m swarmforge.config.merge_toml \
     --build "${CODEX_CONFIG_FILE}" \
     "${CODEX_AGENTS_HOME}/config.toml" "${CODEX_CONFIG_FILE}" \
     || printf '%s\n' "Warning: Codex agent registration failed; continuing" >&2
@@ -277,7 +277,7 @@ fi
 # SWARMFORGE_CONFIG_* layer variables and SWARMFORGE_TONG_MCP_FILE are read
 # from the environment. This runs as root, before the privilege drop, and a
 # failure here stops the container.
-PYTHONPATH=/usr/local/lib/swarmforge python3 -P -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}"
+PYTHONPATH=/usr/local/lib/swarmforge python3 -P -s -m swarmforge.harness.init "${AGENT_BIN}" "${ANVIL_HOME}"
 prepare_unified_agents
 register_codex_agents
 copy_shared_assets
