@@ -4,7 +4,6 @@ from swarmforge.harness.spec import HarnessSpec, Waiver, toml_mcp_fragment
 
 SPEC = HarnessSpec(
     name="grok",
-    binary="grok",
     config_dest=Waiver(
         "the run's SWARMFORGE_CONFIG_DEST names the destination, and an unset "
         "variable skips the config phase"

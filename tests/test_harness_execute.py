@@ -436,15 +436,6 @@ class DriverArgv(ExecuteCase):
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn(execute.USAGE, completed.stderr)
 
-    def test_every_harness_is_selected_by_the_name_of_its_binary(self):
-        """The entrypoint guards /usr/local/bin/<selector> and the driver
-        execs /usr/local/bin/<spec.binary> after looking the selector up as
-        a registry name; the two are one path only while every harness's
-        name is its binary."""
-        for name in harness.names():
-            with self.subTest(harness=name):
-                self.assertEqual(harness.get(name).SPEC.binary, name)
-
 
 class PreExecDescriptor(unittest.TestCase):
     """Which harnesses shape their own exec at all.

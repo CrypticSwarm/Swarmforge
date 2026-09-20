@@ -348,7 +348,6 @@ def pre_exec(ctx, argv, env):
 
 SPEC = HarnessSpec(
     name="claude",
-    binary="claude",
     config_dest="/run/swarmforge/claude-config",
     config_reset=False,
     # agents/ is kept out because unified agent translation is its sole

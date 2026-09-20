@@ -783,7 +783,6 @@ def fake_spec(**overrides):
     """A registrable spec whose config destination comes from the run."""
     fields = dict(
         name="fake",
-        binary="fake",
         config_dest=Waiver("the run's SWARMFORGE_CONFIG_DEST names the destination"),
         config_reset=False,
         layer_excludes=(),

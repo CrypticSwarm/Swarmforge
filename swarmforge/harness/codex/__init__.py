@@ -202,7 +202,6 @@ def publish_config(ctx):
 
 SPEC = HarnessSpec(
     name="codex",
-    binary="codex",
     config_dest="/run/swarmforge/codex-config",
     config_reset=True,
     # packages, sessions, history.jsonl, and log are session state the dest

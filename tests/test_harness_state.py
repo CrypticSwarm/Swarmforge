@@ -108,7 +108,6 @@ def fake_spec(**overrides):
     """A registrable spec that declares nothing but the hooks under test."""
     fields = dict(
         name="fake",
-        binary="fake",
         config_dest=Waiver("the run's SWARMFORGE_CONFIG_DEST names the destination"),
         config_reset=False,
         layer_excludes=(),
