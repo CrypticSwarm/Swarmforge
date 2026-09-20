@@ -293,6 +293,17 @@ class ClaudeEnvironment(ExecuteCase):
         expected["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = self.shared
         self.assertEqual(env, expected)
 
+    def test_the_credential_store_is_named_and_nothing_more(self):
+        """The hook only says where the store is. Standing a link there, or
+        a directory the shared home did not already have, is what a
+        rename-based write would replace with a container-local file, taking
+        the token with it when the container ends."""
+        _, _, env = self.execute("claude")
+
+        store = env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]
+        self.assertFalse(os.path.islink(store))
+        self.assertFalse(os.path.exists(store))
+
     def test_the_credential_store_is_where_the_state_links_point(self):
         """The links the root phase makes and the directory the exec names are
         the same shared home; a disagreement puts the session's history in one
