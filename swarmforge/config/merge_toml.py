@@ -15,6 +15,9 @@ USAGE = "usage: python3 -m swarmforge.config.merge_toml --build DST [SRC ...]"
 
 _BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
+_DEL = "\x7f"
+_DEL_TOML_ESCAPE = "\\u007F"
+
 
 def merge(base, override, *, path=()):
     """Deep-merge two parsed TOML values, with ``override`` taking precedence."""
@@ -45,19 +48,18 @@ def read_layer(path, *, err=sys.stderr):
     return value
 
 
-def _key(value):
-    return value if _BARE_KEY.fullmatch(value) else _string(value)
+def _toml_key(value):
+    return value if _BARE_KEY.fullmatch(value) else _toml_string(value)
 
 
-def _string(value):
-    # JSON basic strings are also TOML basic strings. Keeping Unicode literal
-    # avoids surrogate escapes, while DEL still needs an explicit TOML escape.
-    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007F")
+def _toml_string(value):
+    # JSON basic strings are TOML basic strings, but TOML has no surrogate escapes.
+    return json.dumps(value, ensure_ascii=False).replace(_DEL, _DEL_TOML_ESCAPE)
 
 
-def _value(value):
+def _toml_value(value):
     if isinstance(value, str):
-        return _string(value)
+        return _toml_string(value)
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
@@ -71,9 +73,9 @@ def _value(value):
     if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
         return value.isoformat()
     if isinstance(value, list):
-        return "[" + ", ".join(_value(item) for item in value) + "]"
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     if isinstance(value, dict):
-        fields = ("%s = %s" % (_key(key), _value(item)) for key, item in value.items())
+        fields = ("%s = %s" % (_toml_key(key), _toml_value(item)) for key, item in value.items())
         return "{ " + ", ".join(fields) + " }"
     raise TypeError("unsupported TOML value: %r" % (value,))
 
@@ -86,14 +88,14 @@ def dumps(value):
         if heading:
             if lines and lines[-1] != "":
                 lines.append("")
-            lines.append("[" + ".".join(_key(part) for part in path) + "]")
+            lines.append("[" + ".".join(_toml_key(part) for part in path) + "]")
 
         child_tables = []
         for key, item in table.items():
             if isinstance(item, dict):
                 child_tables.append((key, item))
             else:
-                lines.append("%s = %s" % (_key(key), _value(item)))
+                lines.append("%s = %s" % (_toml_key(key), _toml_value(item)))
 
         for key, child in child_tables:
             emit_table(child, path + (key,), heading=True)
@@ -111,8 +113,7 @@ def build_file(dst_path, src_paths, *, err=sys.stderr):
             merged = merge(merged, layer)
 
     text = dumps(merged)
-    # Refuse to replace a valid destination with serializer output that our
-    # own parser cannot read back.
+    # Refuse to replace a valid destination with output our parser cannot read.
     tomllib.loads(text)
 
     directory = os.path.dirname(os.path.abspath(dst_path))

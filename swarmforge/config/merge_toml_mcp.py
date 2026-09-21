@@ -57,9 +57,7 @@ def _toml_key(name):
 
 
 def _toml_value(value):
-    # JSON scalar/array syntax is valid TOML for strings, booleans, numbers,
-    # and arrays of those; the launcher's fragment never contains nested
-    # tables as values.
+    # Fragment values are scalars and arrays of them, whose JSON syntax is TOML's.
     return json.dumps(value)
 
 
@@ -77,8 +75,7 @@ def _existing_server_names(text, path):
     try:
         parsed = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        # The harness itself will refuse the invalid config with its own
-        # error; the duplicate check is all that degrades here.
+        # The harness reports the invalid config itself; only this check degrades.
         print(
             "Warning: could not parse %s (%s); skipping duplicate-name check"
             % (path, exc),
@@ -103,13 +100,13 @@ def merge(config_path, fragment_path=None):
     except FileNotFoundError:
         original = None
 
-    base = strip_block(original) if original else ""
+    outside_block = strip_block(original) if original else ""
 
     kept = {}
     if servers:
-        taken = _existing_server_names(base, config_path)
+        names_outside_block = _existing_server_names(outside_block, config_path)
         for name in sorted(servers):
-            if name in taken:
+            if name in names_outside_block:
                 print(
                     "Warning: mcp server '%s' already defined in %s; keeping the existing entry"
                     % (name, config_path),
@@ -118,7 +115,7 @@ def merge(config_path, fragment_path=None):
                 continue
             kept[name] = servers[name]
 
-    trimmed = base.rstrip("\n")
+    trimmed = outside_block.rstrip("\n")
     if kept:
         block = render_block(kept)
         new_text = trimmed + "\n\n" + block if trimmed else block

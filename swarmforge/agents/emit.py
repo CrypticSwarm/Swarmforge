@@ -11,7 +11,6 @@ import sys
 
 from swarmforge.yamlite import parse_map, parse_scalar
 
-# Unified-schema fields only OpenCode consumes; other harnesses drop them.
 OPENCODE_ONLY_FIELDS = {
     "mode",
     "temperature",
@@ -92,9 +91,12 @@ def emit_toml_string(value):
     return json.dumps(str(value), ensure_ascii=False)
 
 
+TOML_MULTILINE_DELIMITER = '"""'
+
+
 def emit_toml_multiline(value):
     text = str(value).replace("\\", "\\\\").replace('"', '\\"')
-    return chr(34) * 3 + "\n" + text + chr(34) * 3
+    return TOML_MULTILINE_DELIMITER + "\n" + text + TOML_MULTILINE_DELIMITER
 
 
 def emit_toml_value(value):

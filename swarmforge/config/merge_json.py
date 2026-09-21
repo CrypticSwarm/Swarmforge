@@ -92,8 +92,7 @@ def main(argv, err=sys.stderr):
         if len(argv) < 2:
             print(USAGE, file=err)
             return 2
-        # A layer path is never an option, and an absent layer is skipped
-        # quietly -- so without this a misspelled flag is dropped silently.
+        # A missing layer is skipped quietly, so a misspelled flag would vanish with it.
         for argument in argv[2:]:
             if argument.startswith("--"):
                 print("unknown argument %r" % argument, file=err)
