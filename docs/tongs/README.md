@@ -24,7 +24,7 @@ One YAML file per tong under `.swarmforge/tongs/`, merged **by name** (filename 
 - **repo** — `tongs/` in the checkout (override with `SWARMFORGE_REPO_TONGS_DIR`, which points directly at the directory)
 - **workspace** — `<workspace>/.swarmforge/tongs/`
 
-A higher layer replaces a same-named tong wholesale; `disable: true` switches off an inherited tong.
+A higher layer replaces a same-named tong wholesale, except the workspace, which may only `disable: true` one it inherits.
 The workspace layer is gated by [first-run approval](approval.md).
 
 ## Lifecycle
