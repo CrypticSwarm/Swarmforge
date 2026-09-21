@@ -9,15 +9,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -54,7 +50,6 @@ class EnvNamingTests(unittest.TestCase):
 
 class InterfaceWiringTests(unittest.TestCase):
     def test_canonical_alias_mcp_uses_interface_name(self):
-        # The tong's own name (github-creds) differs from the MCP server name.
         defn = def_of(GITHUB_TONG)
         self.assertEqual(tongs.canonical_alias("github-creds", defn), "github")
 
@@ -64,8 +59,6 @@ class InterfaceWiringTests(unittest.TestCase):
         self.assertEqual(tongs.canonical_alias("watcher", def_of(NONE_TONG)), "watcher")
 
     def test_tong_aliases_is_canonical_only_by_default(self):
-        # A tong that declares no extras keeps exactly the one DNS name it has
-        # today, so the flag it produces is unchanged.
         self.assertEqual(tongs.tong_aliases("github-creds", def_of(GITHUB_TONG)), ["github"])
         self.assertEqual(tongs.tong_aliases("pg", def_of(PORT_TONG)), ["pg"])
 
@@ -117,9 +110,9 @@ class InterfaceWiringTests(unittest.TestCase):
             "pg": {"source": tongs.WORKSPACE, "definition": def_of(PORT_TONG)},
         }
         selected = tongs.mcp_tongs(merged)
-        self.assertEqual(list(selected), ["github"])  # only the mcp tong, keyed by alias
+        self.assertEqual(list(selected), ["github"])
 
-    def test_mcp_alias_collision_keeps_first_and_drops_duplicate(self):
+    def test_mcp_alias_collision_keeps_first_by_sorted_tong_name(self):
         first = def_of(GITHUB_TONG)
         first["image"] = "first-wins"
         second = def_of(GITHUB_TONG)
@@ -129,7 +122,6 @@ class InterfaceWiringTests(unittest.TestCase):
             "b-creds": {"source": tongs.REPO, "definition": second},
         }
         selected = tongs.mcp_tongs(merged)
-        # Both resolve to alias "github"; the first by sorted tong name wins.
         self.assertEqual(list(selected), ["github"])
         self.assertEqual(selected["github"]["image"], "first-wins")
 
@@ -148,9 +140,7 @@ class InterfaceWiringTests(unittest.TestCase):
         )
 
     def test_toml_mcp_fragment_shape(self):
-        # No type/transport key: Grok and Codex both select the remote
-        # transport from the presence of `url` in the rendered
-        # [mcp_servers.<name>] table.
+        # Grok and Codex select the remote transport from the presence of `url`.
         fragment = _mcp_config(_merged("github-creds", GITHUB_TONG), "grok")
         self.assertEqual(
             fragment,
@@ -158,24 +148,18 @@ class InterfaceWiringTests(unittest.TestCase):
         )
 
     def test_the_toml_harnesses_get_the_same_config(self):
-        # Grok Build and Codex CLI read the same `mcp_servers` table, so the
-        # two harnesses are handed identical config for one tong set. The
-        # shape assertion anchors the comparison: an unregistered harness
-        # yields no config at all, and two of those are equal as well.
+        # The shape assertion keeps the equality from holding on two empty configs.
         merged = _merged("github-creds", GITHUB_TONG)
         shared = _mcp_config(merged, "grok")
         self.assertIn("mcp_servers", shared)
         self.assertEqual(_mcp_config(merged, "codex"), shared)
 
     def test_mcp_config_empty_when_no_mcp_tongs(self):
-        # port-only set -> no MCP fragment at all (omitted, not an empty block).
         mcp_only = _merged("github-creds", GITHUB_TONG)
         port_only = _merged("pg", PORT_TONG)
         for harness in ("opencode", "claude", "grok", "codex"):
             with self.subTest(harness=harness):
-                # The mcp set does produce config for this harness, so the two
-                # empty results are the absence of an mcp tong rather than the
-                # absence of the harness.
+                # The truthy check keeps the empty results from meaning an unknown harness.
                 self.assertTrue(_mcp_config(mcp_only, harness))
                 self.assertEqual(_mcp_config(port_only, harness), {})
                 self.assertEqual(_mcp_config({}, harness), {})
@@ -200,7 +184,6 @@ class InterfaceWiringTests(unittest.TestCase):
         self.assertEqual(plan["mcp"], {"mcpServers": {"github": {"type": "http", "url": "http://github:8080/mcp"}}})
 
     def test_plan_injection_inert_when_empty(self):
-        # The inert-when-empty invariant for this layer: nothing in, nothing out.
         for harness in ("opencode", "claude", "grok", "codex"):
             self.assertEqual(
                 tongs.plan_injection({}, harness),
@@ -212,14 +195,12 @@ class InterfaceWiringTests(unittest.TestCase):
         self.assertEqual(plan["mcp"], {})
 
     def test_plan_injection_never_emits_secret_references(self):
-        # The GitHub tong carries an unresolved ${secret:...} in its env, but
-        # interface wiring only ever surfaces host/port/path, never the tong's
-        # own env, so no secret reference reaches the anvil injection plan.
+        # GITHUB_TONG's env holds an unresolved ${secret:...}; wiring surfaces host/port/path.
         plan = tongs.plan_injection(_merged("github-creds", GITHUB_TONG), "claude")
         self.assertNotIn("${secret", json.dumps(plan))
         self.assertNotIn("GITHUB_TOKEN", json.dumps(plan))
 
-    def test_plan_injection_warns_and_keeps_first_on_env_collision(self):
+    def test_plan_injection_env_collision_keeps_first_by_sorted_tong_name(self):
         # Two port tongs whose names sanitize to the same env prefix.
         a, b = def_of(PORT_TONG), def_of(PORT_TONG)
         b["interface"]["port"] = 6543
@@ -228,7 +209,6 @@ class InterfaceWiringTests(unittest.TestCase):
             "pg.main": {"source": tongs.REPO, "definition": b},
         }
         plan = tongs.plan_injection(merged, "claude")
-        # First by sorted tong name ("pg-main") wins its port.
         self.assertEqual(plan["env"]["SWARMFORGE_TONG_PG_MAIN_PORT"], "5432")
 
     def test_mcp_url_rejects_non_http_transport(self):
@@ -251,7 +231,6 @@ class AliasCollisionTests(unittest.TestCase):
         self.assertEqual(tongs.alias_collisions(merged), {"dup": ["a", "b"]})
 
     def test_mcp_name_can_collide_with_network_facing_tong_name(self):
-        # canonical_alias is interface.name for mcp, else the tong name.
         merged = self._m(
             github={"interface": {"kind": "port", "port": 2}},
             creds={"interface": {"kind": "mcp", "name": "github", "port": 1}},
@@ -259,8 +238,6 @@ class AliasCollisionTests(unittest.TestCase):
         self.assertEqual(tongs.alias_collisions(merged), {"github": ["creds", "github"]})
 
     def test_detects_collision_between_two_extra_aliases(self):
-        # A contested name is a collision wherever it is declared, so extras are
-        # folded in alongside canonical aliases.
         merged = self._m(
             a={"interface": {"kind": "port", "port": 1, "aliases": ["api"]}},
             b={"interface": {"kind": "port", "port": 2, "aliases": ["api"]}},

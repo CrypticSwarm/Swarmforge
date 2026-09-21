@@ -13,9 +13,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The CLI's entry-point shim puts the repo root on the path; standing in for it
-# here keeps this file runnable on its own, not just under a discovery run that
-# already set it.
+# Standing in for the CLI's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -23,9 +21,7 @@ from swarmforge import gitguard
 from swarmforge import worktrees
 
 
-# git runs with the developer's global config otherwise, where init.defaultBranch
-# or a signing key would change what these repos come out looking like. The module
-# under test reads the process environment, so the tests install this there too.
+# Otherwise a developer's init.defaultBranch or signing key shapes these repos.
 GIT_ENV = dict(
     os.environ,
     GIT_CONFIG_GLOBAL="/dev/null",
@@ -100,6 +96,7 @@ class LayoutCase(unittest.TestCase):
         # realpath: git reports resolved paths, and the guard compares them.
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="worktrees-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        # worktrees.git() filters os.environ itself, so the neutering has to land there.
         environment = mock.patch.dict(os.environ, GIT_ENV)
         environment.start()
         self.addCleanup(environment.stop)
@@ -143,8 +140,7 @@ class LayoutCase(unittest.TestCase):
         self.assertFalse(self.is_bare(worktree))
         self.assertEqual(git(git_dir, "symbolic-ref", "HEAD"),
                          "refs/heads/%s" % default)
-        # core.bare is moved rather than copied: left in the shared config it
-        # would make the linked worktrees read as bare once the extension is on.
+        # core.bare moved, not copied: under the extension the shared config makes worktrees bare.
         config = os.path.join(git_dir, "config")
         self.assertIsNone(config_value(config, "core.bare"))
         self.assertEqual(config_value(config, "extensions.worktreeConfig"),
@@ -158,8 +154,7 @@ class GuessCloneDir(unittest.TestCase):
     def test_names_the_directory_git_would_clone_into(self):
         for url, expected in (
             ("git@github.com:o/r.git", "r"),
-            # scp-like, the repository right after the colon: only splitting
-            # on the colon too finds it.
+            # scp-like: only splitting on the colon too finds the repository.
             ("git@github.com:repo.git", "repo"),
             ("https://h/o/r.git ", "r"),
             ("https://h/o/r/", "r"),
@@ -196,8 +191,7 @@ class Clone(LayoutCase):
     def test_the_worktree_holds_the_only_local_branch(self):
         self.clone(self.url, self.dest)
         git_dir = os.path.join(self.dest, ".git")
-        # `git clone --bare` would have copied every remote branch in here,
-        # leaving the names the sibling worktrees want already taken.
+        # `git clone --bare` would copy every remote branch here, claiming the worktree names.
         self.assertEqual(self.refs(git_dir, "refs/heads"), ["refs/heads/main"])
         self.assertEqual(self.refs(git_dir, "refs/remotes/origin"), [
             "refs/remotes/origin/HEAD",
@@ -216,8 +210,7 @@ class Clone(LayoutCase):
 
     def test_fetching_from_the_worktree_works(self):
         path = self.clone(self.url, self.dest)
-        # The refspec `git clone --bare` omits: without it a fetch here would
-        # succeed and update nothing.
+        # The refspec `git clone --bare` omits: without it a fetch succeeds and updates nothing.
         git(self.url, "commit", "-q", "--allow-empty", "-m", "later")
         git(path, "fetch", "-q", "origin")
         self.assertEqual(
@@ -413,9 +406,7 @@ class InheritedGitEnvironment(LayoutCase):
                 os.environ,
                 {"GIT_ALTERNATE_OBJECT_DIRECTORIES": objects}):
             path = self.clone(url, dest)
-        # The fetch would otherwise find the origin's objects already readable
-        # and transfer nothing, leaving a clone that only works while the
-        # variable is set. `git` here runs without it.
+        # Otherwise the fetch transfers nothing and the clone works only while the var is set.
         self.assertEqual(git_status(path, "cat-file", "-e", "HEAD"), 0)
 
     def test_a_clone_ignores_an_inherited_namespace(self):
@@ -445,8 +436,7 @@ class Repair(LayoutCase):
         worktrees.init_bare(git_dir)
         worktrees.make_bare_by_worktree_config(git_dir)
         before = self.config_files(git_dir)
-        # `config --unset core.bare` exits 5 the second time round, with the
-        # key already gone; the run treats that as the work done.
+        # `config --unset core.bare` exits 5 once the key is gone; the run treats that as done.
         worktrees.make_bare_by_worktree_config(git_dir)
         self.assertEqual(self.config_files(git_dir), before)
 

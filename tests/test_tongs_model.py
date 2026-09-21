@@ -8,15 +8,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -44,9 +40,7 @@ class ReadinessTests(unittest.TestCase):
             tongs.parse_duration("soon")
 
     def test_parse_duration_non_positive_raises(self):
-        # A bare negative/zero number bypasses the (sign-less) duration regex, so
-        # guard positivity explicitly: a non-positive deadline gives the probe no
-        # time to succeed.
+        # A bare negative or zero slips past the sign-less duration regex.
         for bad in (-5, 0, "0s", "-1"):
             with self.assertRaises(ValueError):
                 tongs.parse_duration(bad)
@@ -65,8 +59,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(command, ["test", "-d", "/cache"])
 
     def test_readiness_portless_without_mode_is_none(self):
-        # validate_tong requires a mode for volume/none, but the resolver still
-        # falls back to "none" defensively for a kind with no port to probe.
+        # validate_tong already requires a mode here; the fallback is defensive.
         mode, _, _ = tongs.readiness_settings({"interface": {"kind": "none"}})
         self.assertEqual(mode, "none")
 

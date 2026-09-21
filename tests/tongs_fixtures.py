@@ -6,9 +6,7 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 

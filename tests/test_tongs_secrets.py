@@ -12,15 +12,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -44,10 +40,9 @@ class SecretRefTests(unittest.TestCase):
         refs = tongs.find_secret_refs(defn)
         self.assertIn(("op", "op://Work/github/token"), refs)
         self.assertIn(("pass", "db/pw"), refs)
-        self.assertEqual(len(refs), 2)  # the duplicate op ref collapses
+        self.assertEqual(len(refs), 2)
 
-    def test_multiple_refs_in_one_string(self):
-        # Two adjacent refs in a single value: both found and both substituted.
+    def test_multiple_refs_in_one_string_are_all_found_and_substituted(self):
         value = "${secret:op:a}::${secret:pass:b}"
         refs = tongs.find_secret_refs(value)
         self.assertEqual(refs, [("op", "a"), ("pass", "b")])
@@ -63,7 +58,7 @@ class SecretRefTests(unittest.TestCase):
         out = tongs.substitute_secrets(defn, lambda p, r: "<%s:%s>" % (p, r))
         self.assertEqual(out["env"]["A"], "tok=<op:a>")
         self.assertEqual(out["env"]["B"], "<pass:b>")
-        self.assertEqual(out["image"], "x")  # untouched
+        self.assertEqual(out["image"], "x")
         self.assertIn("${secret", defn["env"]["A"])  # original not mutated
 
 
@@ -149,8 +144,7 @@ class SecretProviderTests(unittest.TestCase):
                 },
             )
 
-    def test_loads_overrides_only_entry(self):
-        # `default` is optional: overrides alone is valid, with a `None` default.
+    def test_loads_overrides_only_entry_with_a_none_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "p.yaml")
             with open(path, "w") as f:
@@ -166,7 +160,6 @@ class SecretProviderTests(unittest.TestCase):
             )
 
     def test_unknown_provider_key_raises(self):
-        # A typo at the provider level (not `default`/`overrides`) fails loudly.
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "p.yaml")
             with open(path, "w") as f:
@@ -218,8 +211,6 @@ class SecretProviderTests(unittest.TestCase):
         )
 
     def test_secret_named_default_is_distinct_from_fallback(self):
-        # A secret literally named "default" lives under overrides and is served
-        # by its own command, never conflated with the sibling `default` fallback.
         providers = {
             "shared": {
                 "default": ["pass", "show", "{ref}"],
@@ -260,7 +251,6 @@ class SecretDeliveryTests(unittest.TestCase):
     def test_plan_tong_secrets_keeps_secret_values_out_of_plain_env(self):
         env = {"REGION": "us", "TOKEN": "${secret:op:op://Work/github/token}"}
         plan = tongs.plan_tong_secrets(env, lambda p, r: "RESOLVED-%s" % r)
-        # Plain env passes through; the resolved secret lands only under `secrets`.
         self.assertEqual(plan["env"], {"REGION": "us"})
         self.assertEqual(plan["secrets"], {"TOKEN": "RESOLVED-op://Work/github/token"})
         self.assertNotIn("RESOLVED-op://Work/github/token", json.dumps(plan["env"]))
@@ -276,9 +266,7 @@ class SecretDeliveryTests(unittest.TestCase):
         self.assertEqual(sorted(seen), [("op", "a"), ("pass", "b")])
 
     def test_render_secret_exports_quotes_values_safely(self):
-        # Each value is single-quoted with embedded quotes escaped, so an arbitrary
-        # value -- here one with a quote, a space, and a newline -- cannot break out
-        # of its assignment when the wrapper evals the script.
+        # Single-quoting with the quotes escaped is what keeps a value from breaking out.
         script = tongs.render_secret_exports({"B": "two\nlines", "A": "it's a $X"})
         # Sorted by name; A first.
         self.assertEqual(
@@ -287,8 +275,6 @@ class SecretDeliveryTests(unittest.TestCase):
         )
 
     def test_render_secret_exports_eval_round_trips_the_value(self):
-        # Sanity-check that evaling the rendered script in a real shell reproduces
-        # the exact bytes, proving the quoting survives metacharacters.
         value = "a'b\"c $d `e` \\f\n g"
         script = tongs.render_secret_exports({"V": value})
         out = subprocess.run(
@@ -314,12 +300,7 @@ class SecretDeliveryTests(unittest.TestCase):
         self.assertEqual(command[2:], ["swarmforge-tong", "node", "server.js"])
 
     def test_secret_inject_argv_does_not_exec_target_when_fifo_fails(self):
-        # The FIFO's directory does not exist, so `mkfifo` fails and the wrapper
-        # must exit rather than exec the target.
-        # Redirected on the module `secret_inject_argv` reads its global from:
-        # the package re-export is a second binding the function never consults,
-        # so pointing that one at the temp path would leave the real FIFO path
-        # baked into the script and the test asserting nothing.
+        # Redirect the module's own global; the package re-export is a second binding.
         old_target = tongs.secrets.SECRET_FIFO_TARGET
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -329,9 +310,7 @@ class SecretDeliveryTests(unittest.TestCase):
                 entrypoint, command = tongs.secret_inject_argv(
                     ["/bin/sh", "-c", "printf target-ran"]
                 )
-                # The redirect has to reach the script. Without this the test
-                # also passes on the real FIFO path merely being absent, which
-                # is the failure mode redirecting the re-export produces.
+                # Without this the test also passes on the real FIFO merely being absent.
                 self.assertIn(tmp, command[1])
                 completed = subprocess.run(
                     [entrypoint] + command,
@@ -388,16 +367,11 @@ class SecretDeliveryTests(unittest.TestCase):
             self.assertGreater(attempts, 0, "wrapper never created the FIFO")
 
     def test_secret_wrapper_and_deliver_command_round_trip(self):
-        # The real protocol end to end, no docker: the wrapper creates the FIFO
-        # and blocks; the deliver command guards on FIFO existence, copies its
-        # stdin in; the target then sees the secret in its environment and no
-        # FIFO left behind.
         old_target = tongs.secrets.SECRET_FIFO_TARGET
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 tongs.secrets.SECRET_FIFO_TARGET = os.path.join(tmp, "secret-env")
-                # Before the wrapper runs there is no FIFO: the deliver command
-                # must refuse with the retryable exit code, not create a file.
+                # With no FIFO yet, deliver must refuse retryably and create no file.
                 early = subprocess.run(
                     tongs.secret_deliver_command(), input=b"export TOKEN='never'\n",
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
@@ -417,10 +391,7 @@ class SecretDeliveryTests(unittest.TestCase):
         self.assertEqual(stdout, b"s3cr3t|")  # env delivered, FIFO removed
 
     def test_secret_round_trip_delivers_payload_larger_than_pipe_buffer(self):
-        # A payload bigger than the pipe capacity (~64 KiB) makes the deliver
-        # `cat` block mid-write until the wrapper drains it; every byte must
-        # still arrive. 100 KB stays under the kernel's 128 KiB cap on a single
-        # env string, which bounds any env-delivered secret.
+        # 100 KB: over the ~64 KiB pipe buffer, under the kernel's 128 KiB env-string cap.
         old_target = tongs.secrets.SECRET_FIFO_TARGET
         try:
             with tempfile.TemporaryDirectory() as tmp:

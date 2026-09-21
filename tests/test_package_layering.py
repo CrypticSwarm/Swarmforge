@@ -18,8 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 PACKAGE_ROOT = os.path.join(REPO_ROOT, "swarmforge")
 
-# Directory names that never hold python of ours wherever they turn up:
-# version control, tool caches, and vendored dependencies.
+# Directory names that never hold python of ours, wherever they turn up.
 NOT_OURS = {
     ".git",
     ".pytest_cache",
@@ -30,34 +29,24 @@ NOT_OURS = {
     "venv",
 }
 
-# Stores the Makefile bind-mounts into containers, which come back holding
-# whatever the container wrote. Matched by their place in the tree rather than
-# by name: `ollama` in particular is a word this repo uses for its own things,
-# and a package directory that happened to be called that should still be read.
+# Container state stores, matched by path so a package named `ollama` is still read.
 NOT_OURS_PATHS = {
     os.path.join(REPO_ROOT, "ollama"),
     os.path.join(REPO_ROOT, "anvil", "data"),
     os.path.join(REPO_ROOT, ".opencode-test-data"),
 }
 
-# The harness package and the launcher layers it sits under, as the prefixes
-# the one-way rule matches on. A module counts as inside one of these when it
-# is the package itself or anything below it.
+# The prefixes the one-way rule matches on: harness below, launchers above.
 HARNESS_ROOT = "swarmforge.harness"
 LAUNCHER_ROOTS = ("swarmforge.tongs", "swarmforge.anvil")
 
 # importlib's load-a-module-from-a-file-path helper.
 PATH_LOADER = "spec_from_file_location"
 
-# The entry-point shims are the only files allowed to resolve a path: putting
-# the checkout on sys.path is their whole job, and every module downstream of
-# them imports by name.
+# The entry-point shims are the only files allowed to resolve a path.
 SHIM_DIR = os.path.join(REPO_ROOT, "bin")
 
-# Files outside bin/ that may still load python from a file path. Empty, and
-# meant to stay that way: everything the repo ships is a module with a name to
-# import it by. An entry here is a standing exception, so the test below fails
-# on one that has gone stale rather than letting it sit.
+# Standing exceptions: files outside bin/ that may still load python by path.
 PATH_LOADING_ALLOWED = set()
 
 
@@ -174,8 +163,7 @@ def import_time_nodes(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
         if is_type_checking_block(node):
-            # Only the body is skipped: an `else` on such a guard holds the
-            # runtime half, and that does run.
+            # The `else` on such a guard is the runtime half, and it does run.
             stack.extend(node.orelse)
             continue
         stack.extend(ast.iter_child_nodes(node))
@@ -237,8 +225,7 @@ def import_graph():
     Only imports a statement spells out, and only ones landing inside the
     package: the stdlib is not part of the layering under test.
     """
-    # Only files named .py: a module is reached by a dotted name, and that
-    # name comes from the filename. An extensionless command is not one.
+    # Only .py: the dotted name a module is reached by comes from the filename.
     paths = {
         module_name(path): path
         for path in python_files(PACKAGE_ROOT)
@@ -246,8 +233,7 @@ def import_graph():
     }
     graph = {}
     for name, path in paths.items():
-        # No guard on the parse: every file here is one the repo owns, and one
-        # that will not parse is a broken module, not a file to skip over.
+        # Unguarded: a file here that will not parse is a broken module.
         with open(path, encoding="utf-8") as handle:
             tree = ast.parse(handle.read(), path)
         edges = imported_modules(tree, name, package_of(path), paths)
@@ -366,8 +352,7 @@ class ImportGraphIsAcyclic(unittest.TestCase):
         modules = set(import_graph())
         reached = reached_by("swarmforge.tongs.model", "swarmforge.yamlite", modules)
         self.assertIn("swarmforge.tongs", reached)
-        # ...but a module already inside the package does not: an `__init__`
-        # importing its own children is the arrangement, not a cycle.
+        # An `__init__` importing its own children is the arrangement, not a cycle.
         inside = reached_by(
             "swarmforge.tongs.model", "swarmforge.tongs.argv", modules)
         self.assertNotIn("swarmforge.tongs", inside)
@@ -472,8 +457,7 @@ class HarnessModulesStayBelowTheLaunchers(unittest.TestCase):
         }
         self.assertIn("deferred", lazy)
         self.assertNotIn("deferred", eager)
-        # And on the real files: the registry lookup the harness modules
-        # defer into their functions is visible to the lazy scan.
+        # And on the real files, where a harness module defers the registry lookup.
         paths = {
             module_name(path): path
             for path in python_files(PACKAGE_ROOT)

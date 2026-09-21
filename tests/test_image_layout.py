@@ -24,9 +24,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -40,7 +38,6 @@ MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
 DOCKERFILE = os.path.join(REPO_ROOT, "anvil", "Dockerfile")
 ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
 
-# Records the argv it was handed instead of building anything.
 DOCKER_STUB = """#!/bin/sh
 : > "$CAPTURE_FILE"
 for arg in "$@"; do printf '%s\\0' "$arg" >> "$CAPTURE_FILE"; done
@@ -161,9 +158,7 @@ class ImportRootAgreement(unittest.TestCase):
         unknown option: agent translation degrades to a warning and the config
         merge takes the container down with it.
         """
-        # Every pin, not just the first: a stage may redeclare the arg with
-        # its own default, and the stage that compiles python is not the
-        # stage the global default is written in.
+        # Every pin: a stage may redeclare the arg with a default of its own.
         pins = re.findall(r"^ARG PYTHON_VERSION=(\S+)", self.dockerfile, re.M)
         self.assertTrue(pins, "Dockerfile pins no PYTHON_VERSION")
         for pin in pins:
@@ -559,16 +554,9 @@ class ContainerImportLayout(unittest.TestCase):
         )
 
     def run_module(self, module, *args, env=None):
-        # -P mirrors the entrypoint, which uses it to keep the workspace off
-        # sys.path; here it also stops the staging dir from becoming a second
-        # way for the import to resolve. The image's python always has it; the
-        # host running these tests may predate it, and the staging dir holds
-        # no swarmforge/ for the working directory to resolve through anyway.
+        # -P mirrors the entrypoint, which uses it to keep the workspace off sys.path.
         harden = ["-P"] if sys.version_info >= (3, 11) else []
-        # Only the staged import root, and a working directory outside the
-        # checkout: nothing here may reach the repo's own swarmforge/. A
-        # module the entrypoint hands more of the container's environment gets
-        # it on top of that.
+        # Only the staged import root, and a cwd outside the checkout.
         environ = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": self.libdir}
         environ.update(env or {})
         return subprocess.run(

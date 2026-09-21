@@ -9,15 +9,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -26,8 +22,7 @@ from swarmforge import tongs
 from tongs_fixtures import GITHUB_TONG, def_of
 
 
-# A comment in every position a definition puts one: whole lines above a key and
-# above/between list items, and trailing a key and a value.
+# A comment in every position a definition puts one.
 COMMENTED_TONG = """\
 description: Exposes the project's build steps as MCP tools
 # `session`, not `shared`: each tool needs this session's workspace host path.
@@ -51,7 +46,6 @@ class YamlLoadTests(unittest.TestCase):
         defn = def_of(GITHUB_TONG)
         self.assertEqual(defn["lifecycle"], "session")
         self.assertEqual(defn["image"], "ghcr.io/crypticswarm/github-tong@sha256:abc123")
-        # The secret reference and its inner colons survive parsing intact.
         self.assertEqual(defn["env"]["GITHUB_TOKEN"], "${secret:op:op://Work/github/token}")
         self.assertEqual(defn["interface"], {"kind": "mcp", "transport": "http", "port": 8080, "name": "github"})
         self.assertEqual(defn["mounts"], ["workspace:ro"])
@@ -86,8 +80,7 @@ class YamlLoadTests(unittest.TestCase):
         self.assertEqual(sorted(secret), ["TOKEN"])
 
     def test_comments_leave_no_residue_in_values_handed_to_docker(self):
-        # The schema constrains none of these by shape, so a comment left in one
-        # reaches the container instead of being caught by validation.
+        # The schema constrains none of these by shape, so residue would reach the container.
         defn = def_of(
             "entrypoint:\n"
             "  - /bin/sh                # the secret wrapper needs a shell\n"
@@ -121,8 +114,7 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(loaded["ollama"]["lifecycle"], "shared")
 
     def test_commented_definition_is_discovered_not_skipped(self):
-        # A parse error here is only warned about and the tong vanishes, so the
-        # failure this guards against is silent.
+        # A parse error here is only warned about, so the tong vanishes silently.
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "build-tools.yaml"), "w") as f:
                 f.write(COMMENTED_TONG)
@@ -142,7 +134,7 @@ class DiscoveryTests(unittest.TestCase):
 
 class MergeTests(unittest.TestCase):
     def test_empty_discovery_is_inert(self):
-        # The foundation of the passthrough invariant: nothing discovered -> {}.
+        # Where the passthrough invariant starts: nothing discovered, nothing merged.
         self.assertEqual(tongs.merge_tongs([]), {})
         self.assertEqual(tongs.merge_tongs([(tongs.USER, {}), (tongs.WORKSPACE, {})]), {})
 
@@ -154,7 +146,6 @@ class MergeTests(unittest.TestCase):
         merged = tongs.merge_tongs(layers)
         self.assertEqual(merged["t"]["source"], tongs.ORG)
         self.assertEqual(merged["t"]["definition"], {"image": "new", "lifecycle": "shared"})
-        # Wholesale replacement: the lower layer's "extra" key does not survive.
         self.assertNotIn("extra", merged["t"]["definition"])
 
     def test_disable_removes_inherited_tong(self):
@@ -185,8 +176,7 @@ class MergeTests(unittest.TestCase):
         merged = tongs.merge_tongs(layers)
         self.assertTrue(tongs.is_workspace_sourced(merged["pg"]["source"]))
 
-    def test_middle_layer_disable_then_higher_redefine(self):
-        # A higher layer re-adding overrides a lower layer's disable (precedence).
+    def test_middle_layer_disable_is_overridden_by_a_higher_redefine(self):
         layers = [
             (tongs.USER, {"t": {"image": "a", "lifecycle": "session"}}),
             (tongs.ORG, {"t": {"disable": True}}),

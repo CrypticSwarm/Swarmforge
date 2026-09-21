@@ -32,15 +32,11 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -61,8 +57,7 @@ model: anthropic/claude-sonnet-4-6
 You are the reviewer agent.
 """
 
-# The asset layers, lowest precedence first. The workspace overlay ranks above
-# all three and arrives as a path rather than a mounted layer.
+# The asset layers, lowest precedence first; the workspace overlay ranks above all three.
 LAYERS = ("user", "org", "repo")
 
 

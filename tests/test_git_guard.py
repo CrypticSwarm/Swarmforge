@@ -12,17 +12,14 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The guard's entry-point shim puts the repo root on the path; standing in for
-# it here keeps this file runnable on its own, not just under a discovery run
-# that already set it.
+# Standing in for the guard's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from swarmforge import gitguard
 
 
-# git runs with the developer's global config otherwise, where a signing key or
-# a templateDir would change what these repos come out looking like.
+# A developer's signing key or templateDir would otherwise change these repos.
 GIT_ENV = dict(
     os.environ,
     GIT_CONFIG_GLOBAL="/dev/null",
@@ -68,14 +65,12 @@ class PlainCheckout(GuardCase):
             )
 
     def test_git_dir_is_anchored_by_a_mount_of_its_own(self):
-        # Without this the read-only mounts are sidestepped by renaming the
-        # git dir aside and copying it back; renaming a mount point fails.
+        # A git dir that is a mount point cannot be renamed aside.
         repo = self.repo()
         self.assertIn("%s/.git:/workspace/.git" % repo, self.mounts(repo))
 
     def test_every_target_gets_its_own_copy_of_the_guard(self):
-        # A read-only mount covers one path; the same host file reached through
-        # a second mount of the workspace is still writable without its own.
+        # A read-only mount covers one path, not the file under a second mount.
         repo = self.repo()
         mounts = self.mounts(repo, ("/workspace", "/repos/me/repo"))
         for target in ("/workspace", "/repos/me/repo"):
@@ -83,9 +78,7 @@ class PlainCheckout(GuardCase):
                 "%s/.git/config:%s/.git/config:ro" % (repo, target), mounts)
 
     def test_missing_commondir_is_created_rather_than_left_writable(self):
-        # git reads commondir in every repository, so a writable one relocates
-        # config and hooks and defeats the mounts above. `.` names the git dir
-        # holding it, which is where git looks by default.
+        # A writable commondir could relocate config and hooks; "." pins them.
         repo = self.repo()
         commondir = os.path.join(repo, ".git", "commondir")
         self.assertFalse(os.path.exists(commondir))
@@ -107,8 +100,7 @@ class PlainCheckout(GuardCase):
         self.assertIn("%s:/workspace/.git/hooks:ro" % hooks, mounts)
 
     def test_missing_config_is_created_rather_than_left_writable(self):
-        # A repo works fine with no config, so its absence is not a sign there
-        # is nothing to guard -- it is room for the container to write one.
+        # An absent config is room for the container to write one.
         repo = self.repo()
         config = os.path.join(repo, ".git", "config")
         os.remove(config)
@@ -119,9 +111,7 @@ class PlainCheckout(GuardCase):
         git(repo, "commit", "-q", "--allow-empty", "-m", "after")
 
     def test_the_pre_config_remote_files_are_read_only(self):
-        # git still reads `remotes/<name>` and `branches/<name>` when config
-        # names no such remote, so a planted one decides where `git fetch
-        # <name>` goes and what it runs to get there.
+        # A planted remotes/ or branches/ file hijacks fetch without config.
         repo = self.repo()
         mounts = self.mounts(repo)
         for name in ("remotes", "branches"):
@@ -130,8 +120,7 @@ class PlainCheckout(GuardCase):
             self.assertIn("%s:/workspace/.git/%s:ro" % (path, name), mounts)
 
     def test_a_path_docker_cannot_express_is_reported_not_mangled(self):
-        # Directories inside a git dir are the container's to name, and a `-v`
-        # value is colon-separated and read one per line.
+        # A docker `-v` value is colon-separated and read one per line.
         repo = self.repo()
         planted = os.path.join(repo, ".git", "modules", "a\nb")
         os.makedirs(planted)
@@ -149,8 +138,7 @@ class PlainCheckout(GuardCase):
         self.assertFalse(os.path.exists(os.path.join(planted, "hooks")))
 
     def test_a_symlinked_git_dir_pointer_is_reported(self):
-        # The resolved git dir is still guarded, but the symlink itself is not
-        # something a mount can hold in place.
+        # A mount cannot hold the symlink itself in place.
         repo = self.repo()
         moved = os.path.join(self.tmp, "elsewhere.git")
         shutil.move(os.path.join(repo, ".git"), moved)
@@ -184,9 +172,7 @@ class PlainCheckout(GuardCase):
 
 class SeparateGitDir(GuardCase):
     def test_a_git_dir_inside_the_workspace_is_guarded_under_each_target(self):
-        # `git init --separate-git-dir` puts the git dir somewhere else, which
-        # may still be inside the workspace -- and then the container reaches
-        # it through the workspace mount, not through its host path.
+        # The container reaches a separate git dir through the workspace mount.
         repo = os.path.join(self.tmp, "repo")
         os.makedirs(repo)
         git(repo, "init", "-q", "--separate-git-dir",
@@ -212,8 +198,7 @@ class Anchoring(GuardCase):
         mounts = self.mounts(workspace, self.TARGETS)
         self.assertTrue(mounts, "no mounts emitted for %s" % workspace)
         destinations = {spec.split(":")[1] for spec in mounts}
-        # Mount points that exist without the guard: the workspace mounts, and
-        # a git dir the guard binds at its own host path.
+        # Roots: the target mounts, plus a git dir bound at its own host path.
         roots = set(self.TARGETS)
         for spec in mounts:
             source, destination = spec.split(":")[:2]
@@ -301,8 +286,6 @@ class SubmoduleWorktrees(GuardCase):
             self.super_repo, ".git", "modules", "sub")
 
     def test_a_submodules_own_worktrees_are_guarded(self):
-        # A submodule is a repository too, so its worktrees need the same
-        # treatment as the superproject's.
         mounts = self.mounts(self.super_repo)
         self.assertIn(
             "%s/worktrees/sub-wt/commondir:"
@@ -344,8 +327,7 @@ class SubmoduleInsideAWorktree(GuardCase):
             )
 
     def test_its_git_dir_is_guarded_from_the_worktree(self):
-        # From this side the common git dir is bound at its own host path, so
-        # the submodule's git dir is reachable there instead.
+        # From this side the common git dir is bound at its own host path.
         mounts = self.mounts(self.worktree)
         self.assertIn(
             "%s/config:%s/config:ro" % (self.module_dir, self.module_dir),
@@ -359,8 +341,7 @@ class SubmoduleInsideAWorktree(GuardCase):
 
 class BareRepo(GuardCase):
     def test_guarded_paths_sit_directly_under_the_workspace_mount(self):
-        # A bare repo is its own git dir, and the workspace mount is already a
-        # mount point, so the read-only paths hang off the target itself.
+        # A bare repo is its own git dir, already mounted at the target.
         repo = self.repo("bare.git", bare=True)
         mounts = self.mounts(repo)
         self.assertIn("%s/config:/workspace/config:ro" % repo, mounts)
@@ -401,9 +382,7 @@ class LinkedWorktree(GuardCase):
             )
 
     def test_a_worktree_inside_the_workspace_has_its_pointer_guarded(self):
-        # `git worktree add wt` leaves a pointer at <workspace>/wt/.git, in a
-        # directory the user works in. Rewriting it sends the host's git to a
-        # git dir none of these mounts cover.
+        # The pointer sits in a directory the user works in.
         nested = os.path.join(self.repo_path, "inside")
         git(self.repo_path, "worktree", "add", "-q", "-b", "other", nested)
         mounts = self.mounts(self.repo_path)
@@ -433,8 +412,7 @@ class Submodules(GuardCase):
             self.super_repo, ".git", "modules", "libs", "nested")
 
     def test_submodule_git_dir_is_guarded(self):
-        # It has its own config and hooks, which the host runs whenever the
-        # user works in the submodule.
+        # It has its own config and hooks, which the host runs in the submodule.
         mounts = self.mounts(self.super_repo)
         for name in ("config", "hooks", "commondir"):
             self.assertIn(
@@ -444,8 +422,7 @@ class Submodules(GuardCase):
             )
 
     def test_submodule_checkout_pointer_is_read_only(self):
-        # Guarding the submodule's git dir is moot if the pointer naming it
-        # can be repointed somewhere unguarded.
+        # Guarding the git dir is moot if its pointer can be repointed.
         mounts = self.mounts(self.super_repo)
         self.assertIn(
             "%s/libs/nested/.git:/workspace/libs/nested/.git:ro"
@@ -460,10 +437,7 @@ class Submodules(GuardCase):
             % self.module_dir, mounts)
 
     def test_directories_on_the_way_down_are_mount_points_too(self):
-        # A plain directory containing a mount point can still be renamed --
-        # the mounts follow it and the vacated path comes back writable -- so
-        # every directory between the workspace and a guarded path is bound
-        # onto itself as well.
+        # A plain directory renamed aside leaves its path writable again.
         mounts = self.mounts(self.super_repo)
         for relative in (".git/modules", ".git/modules/libs",
                          ".git/modules/libs/nested", "libs", "libs/nested"):
@@ -473,9 +447,7 @@ class Submodules(GuardCase):
             )
 
     def test_a_planted_git_dir_cannot_pull_host_files_in_through_a_symlink(self):
-        # `.git/modules` is writable, so the container can fabricate what looks
-        # like a submodule git dir and point its config at a host file. Mounting
-        # that would hand the next session whatever it named.
+        # .git/modules is writable, so a faked git dir can name any host file.
         planted = os.path.join(self.super_repo, ".git", "modules", "planted")
         os.makedirs(planted)
         with open(os.path.join(planted, "HEAD"), "w") as handle:
@@ -486,9 +458,7 @@ class Submodules(GuardCase):
         os.symlink(secret, os.path.join(planted, "config"))
         os.symlink(self.tmp, os.path.join(planted, "hooks"))
         mounts = self.mounts(self.super_repo)
-        # The planted dir is inside the workspace and mounting parts of it back
-        # onto itself is harmless; what must not happen is a mount whose source
-        # is the symlink, which docker would resolve to the host file behind it.
+        # Self-binds are harmless; a symlink source resolves to the host file.
         self.assertEqual(
             [m for m in mounts if m.endswith("/planted/config:ro")
              or m.endswith("/planted/hooks:ro")],
@@ -498,8 +468,7 @@ class Submodules(GuardCase):
             self.assertEqual(handle.read(), "private")
 
     def test_a_symlinked_modules_directory_is_not_walked(self):
-        # Following it would guard -- and create files in -- git dirs anywhere
-        # on the host the container chose to name.
+        # Following it would create files in git dirs the container names.
         elsewhere = self.repo("elsewhere")
         shutil.rmtree(os.path.join(self.super_repo, ".git", "modules"))
         os.symlink(os.path.join(elsewhere, ".git", "modules"),
@@ -520,9 +489,7 @@ class WorktreeConfig(GuardCase):
         )
 
     def test_a_linked_worktrees_config_is_guarded_from_the_repos_setting(self):
-        # `$GIT_DIR/config.worktree` for a linked worktree lives in its own git
-        # dir, which has no `config` to read the extension from -- the
-        # repository's says whether git reads it.
+        # A linked worktree's git dir has no config to enable the extension.
         repo = self.repo()
         git(repo, "config", "extensions.worktreeConfig", "true")
         worktree = os.path.join(self.tmp, "wt")
@@ -534,15 +501,13 @@ class WorktreeConfig(GuardCase):
                       self.mounts(worktree))
 
     def test_every_value_git_calls_true_enables_the_guard(self):
-        # git reads a boolean as the bool words or an integer, so `2` is on --
-        # and a value the guard read as off would leave config.worktree
-        # writable while git still obeyed it.
+        # git reads a boolean as the bool words or a nonzero integer; reading
+        # a true value as off would leave config.worktree writable regardless.
         repo = self.repo()
         config = os.path.join(repo, ".git", "config")
         for value, enabled in (("true", True), ("yes", True), ("on", True),
                                ("1", True), ("2", True), ("-1", True),
-                               # git's integers carry C's spellings: hex, a
-                               # leading zero for octal, and a size suffix.
+                               # git's integers: C spellings plus a suffix.
                                ("0x10", True), ("007", True), ("1k", True),
                                ("-2K", True), ("1m", True),
                                ("false", False), ("no", False), ("off", False),
@@ -562,8 +527,7 @@ class WorktreeConfig(GuardCase):
             [m for m in self.mounts(repo) if "config.worktree" in m])
 
     def test_read_from_each_git_dir_rather_than_inherited(self):
-        # The extension is per-repository: a submodule someone has run
-        # `git sparse-checkout` in has it on while the superproject does not.
+        # The extension is per-repository: a submodule can have it on alone.
         inner = self.repo("inner")
         super_repo = self.repo("super")
         git(super_repo, "-c", "protocol.file.allow=always", "submodule",

@@ -13,20 +13,15 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-# Aliased because `anvil` is already these tests' word for the container
-# the launcher wraps.
+# `anvil` is already these tests' word for the container the launcher wraps.
 from swarmforge import anvil as launcher
 from swarmforge import tongs
 
@@ -52,8 +47,6 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
         self.assertEqual(self._reasons(SHARED_NONE), [])
 
     def test_startable_session_tong_has_no_reasons(self):
-        # A `session` tong reached over the network (or with no surface) is now
-        # startable -- it runs on a per-session network.
         self.assertEqual(
             self._reasons({
                 "lifecycle": "session", "image": "x",
@@ -62,17 +55,14 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
             [],
         )
 
-    def test_volume_refused(self):
-        # A `volume` interface (a shared named volume) has no anvil-side consumer
-        # yet, so it remains refused.
+    def test_volume_interface_is_refused(self):
+        # A shared named volume has no anvil-side consumer.
         self.assertTrue(self._reasons(
             {"lifecycle": "shared", "image": "x",
              "interface": {"kind": "volume", "volume": "v", "mountpoint": "/m"},
              "readiness": {"mode": "none"}}))
 
-    def test_mcp_tong_is_now_startable(self):
-        # An `mcp` tong is reached via generated MCP config, so it is no longer
-        # refused -- on either lifecycle.
+    def test_mcp_tong_startable_on_either_lifecycle(self):
         self.assertEqual(self._reasons(
             {"lifecycle": "shared", "image": "x",
              "interface": {"kind": "mcp", "name": "g", "port": 8080},
@@ -82,10 +72,7 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
              "interface": {"kind": "mcp", "name": "g", "port": 8080},
              "readiness": {"mode": "none"}}), [])
 
-    def test_secret_tong_is_now_startable(self):
-        # Secrets are resolved and delivered as env over a FIFO, so a tong that references
-        # one (and is otherwise reachable over the network or has no surface) is no
-        # longer refused -- on either lifecycle.
+    def test_secret_tong_startable_on_either_lifecycle(self):
         self.assertEqual(self._reasons(
             {"lifecycle": "shared", "image": "x", "env": {"T": "${secret:op:r}"},
              "interface": {"kind": "none"}, "readiness": {"mode": "none"}}), [])
@@ -94,8 +81,7 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
              "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"}}), [])
 
     def test_shared_workspace_mount_refused_but_docker_socket_allowed(self):
-        # A shared tong that mounts the workspace leaks it across sessions, so it
-        # is refused; the docker-socket mount (the broker pattern) is not.
+        # A shared workspace mount leaks the workspace across sessions.
         self.assertTrue(any(
             "workspace" in r for r in self._reasons({
                 "lifecycle": "shared", "image": "x", "mounts": ["workspace:ro"],
@@ -110,9 +96,7 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
             [],
         )
 
-    def test_shared_workspace_refusal_sees_a_custom_target(self):
-        # The leak is the same wherever the workspace lands inside the container,
-        # so the refusal keys on the magic word, not on the whole mount string.
+    def test_shared_workspace_refused_with_a_custom_mount_target(self):
         self.assertTrue(any(
             "workspace" in r for r in self._reasons({
                 "lifecycle": "shared", "image": "x", "mounts": ["workspace:/code:ro"],
@@ -121,9 +105,7 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
         ))
 
     def test_workspace_refusal_is_shared_scoped(self):
-        # The workspace-mount leak is a `shared`-reuse hazard, so a `session` tong
-        # that mounts the workspace is legitimate (it is torn down with the anvil)
-        # and must NOT be refused -- only a `shared` one is.
+        # A `session` tong is torn down with the anvil, so it cannot leak.
         self.assertEqual(
             self._reasons({
                 "lifecycle": "session", "image": "x", "mounts": ["workspace:ro"],
@@ -140,14 +122,14 @@ class FakeDocker:
     def __init__(self, states=None, ready=True, anvil_rc=0,
                  image_config=(["app"], [])):
         self.calls = []
-        self._states = states or {}      # container -> inspect_state dict
+        self._states = states or {}
         self._ready = ready
         self._anvil_rc = anvil_rc
         self._image_config = image_config
-        self.run_argvs = []              # detached `docker run` argvs
-        self.inspected_images = []       # images whose exec config was read
-        self.anvil_argv = None           # set when the anvil runs
-        self.anvil_extra_networks = None  # extra networks the anvil joined
+        self.run_argvs = []
+        self.inspected_images = []
+        self.anvil_argv = None
+        self.anvil_extra_networks = None
 
     def rm_force(self, container):
         self.calls.append(("rm_force", container))
@@ -222,7 +204,6 @@ class FakeChannels:
             raise self._deliver_error
 
 
-# Tiny launcher options for driving run_with_tongs directly.
 def _opts(workspace=None, anvil_image="anvil:img", harness="opencode"):
     return launcher.LauncherOptions(
         layer_dirs=[], workspace=workspace, approvals=None, providers=None,
@@ -230,7 +211,7 @@ def _opts(workspace=None, anvil_image="anvil:img", harness="opencode"):
     )
 
 
-# A counter clock so readiness loops never sleep on the wall clock in tests.
+# A counter clock, so readiness loops never sleep on the wall clock.
 class _Clock:
     def __init__(self, step=1.0):
         self.t = 0.0
@@ -248,7 +229,6 @@ SHARED_OLLAMA = {
     "readiness": {"mode": "tcp"},
 }
 
-# A background side-effect tong with no anvil-facing surface and no probe.
 SHARED_NONE = {
     "lifecycle": "shared",
     "image": "log-shipper",
@@ -256,8 +236,6 @@ SHARED_NONE = {
     "readiness": {"mode": "none"},
 }
 
-# A credential-holding MCP tong: an HTTP MCP server the anvil reaches at its
-# canonical alias (interface.name) on the session/base network.
 SHARED_MCP = {
     "lifecycle": "shared",
     "image": "github-tong",
@@ -265,8 +243,7 @@ SHARED_MCP = {
     "readiness": {"mode": "none"},
 }
 
-# An org-owned credential-holding MCP tong: the user's reported case. Two orgs
-# ship this same file with different credentials; each must run partitioned.
+# Two orgs ship this same file with different credentials.
 ORG_ASANA = {
     "lifecycle": "shared",
     "image": "asana-mcp:latest",
@@ -274,7 +251,6 @@ ORG_ASANA = {
     "readiness": {"mode": "none"},
 }
 
-# A per-session network service (a throwaway fixture DB) reached by host+port.
 SESSION_PORT = {
     "lifecycle": "session",
     "image": "fixture-pg",
@@ -282,15 +258,11 @@ SESSION_PORT = {
     "readiness": {"mode": "none"},
 }
 
-# A secret provider built on the test interpreter (so the suite needs no op/pass
-# installed): it echoes the {ref} it is handed, so ${secret:echo:VALUE} resolves
-# to "VALUE".
+# Built on the test interpreter, so no op/pass need be installed; it echoes the {ref}.
 ECHO_PROVIDERS = {
     "echo": [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", "{ref}"]
 }
 
-# A credential-holding shared tong: its token is a secret reference, delivered to
-# the running container as env over a FIFO rather than passed as a docker env var.
 SHARED_SECRET = {
     "lifecycle": "shared",
     "image": "github-tong",
@@ -309,7 +281,7 @@ class McpInjectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pre, post = launcher.orchestrate._mcp_injection({}, "opencode", tmp)
             self.assertEqual((pre, post), ([], []))
-            self.assertEqual(os.listdir(tmp), [])  # no file written
+            self.assertEqual(os.listdir(tmp), [])
 
     def test_opencode_mounts_and_sets_env(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -325,8 +297,7 @@ class McpInjectionTests(unittest.TestCase):
                 self.assertEqual(json.load(handle), self.FRAGMENT)
 
     def test_toml_harnesses_mount_and_set_env(self):
-        # Delivered through the entrypoint, like OpenCode's, so the harness
-        # argv stays untouched.
+        # Delivered through the entrypoint, so the harness argv stays untouched.
         fragment = {"mcp_servers": {"github": {"url": "http://github:8080/mcp"}}}
         for harness in ("grok", "codex"):
             with tempfile.TemporaryDirectory() as tmp:
@@ -362,8 +333,6 @@ class RunWithTongsTests(unittest.TestCase):
         )
 
     def test_shared_tong_starts_when_absent_and_runs_anvil(self):
-        # ollama-shape shared tong on the anvil's base network: it is started
-        # there under its canonical alias, then the anvil runs on that network.
         docker = FakeDocker()
         rc = self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
         self.assertEqual(rc, 0)
@@ -372,7 +341,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn("swarmforge-shared-ollama", started)
         self.assertEqual(started[started.index("--network") + 1], "opencode-net")
         self.assertIn("ollama", started)  # network-alias
-        # The anvil ran on the unchanged base network.
         self.assertEqual(
             docker.anvil_argv[docker.anvil_argv.index("--network") + 1], "opencode-net"
         )
@@ -382,11 +350,9 @@ class RunWithTongsTests(unittest.TestCase):
         states = {"swarmforge-shared-ollama": {"running": True, "label": tongs.config_hash(defn)}}
         docker = FakeDocker(states=states)
         self._run(docker, _merged("ollama", defn, source=tongs.REPO))
-        self.assertEqual(docker.run_argvs, [])  # reused, not restarted
+        self.assertEqual(docker.run_argvs, [])
 
     def test_unusable_mount_reported_as_a_config_error_naming_the_tong(self):
-        # A mount the argv builder refuses ends the launch as a named config error
-        # rather than a traceback, and nothing is started or removed.
         defn = dict(SHARED_OLLAMA, mounts=["docker-socket", "docker-socket"])
         docker = FakeDocker()
         with self.assertRaisesRegex(launcher.OrchestrationError, "tong 'ollama'.*overlaps"):
@@ -403,16 +369,13 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(len(docker.run_argvs), 1)
 
     def test_shared_tong_recreated_when_absent(self):
-        # No running container of that name => start fresh (rm_force clears any
-        # stopped leftover first).
+        # rm_force clears any stopped leftover before the fresh start.
         docker = FakeDocker()
         self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
         self.assertIn(("rm_force", "swarmforge-shared-ollama"), docker.calls)
         self.assertEqual(len(docker.run_argvs), 1)
 
-    def test_stopped_shared_tong_is_recreated(self):
-        # A container exists by name but is not running (a stale leftover) =>
-        # recreate even though its label happens to match.
+    def test_stopped_shared_tong_is_recreated_despite_a_matching_hash(self):
         states = {"swarmforge-shared-ollama":
                   {"running": False, "label": tongs.config_hash(SHARED_OLLAMA)}}
         docker = FakeDocker(states=states)
@@ -421,8 +384,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(len(docker.run_argvs), 1)
 
     def test_multiple_shared_tongs_started_and_injected(self):
-        # Two shared tongs in one launch: both are started and both contribute
-        # their reachability to the anvil.
         pg = {
             "lifecycle": "shared", "image": "pg",
             "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"},
@@ -461,8 +422,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn("SWARMFORGE_TONG_PG_PORT=5432", argv)
 
     def test_none_tong_leaves_anvil_argv_unchanged(self):
-        # A `none` shared tong has no anvil-facing surface, so nothing is injected
-        # and the anvil command is exactly what the macro built.
         docker = FakeDocker()
         self._run(docker, _merged("shipper", SHARED_NONE, source=tongs.REPO))
         self.assertEqual(docker.anvil_argv, ANVIL_ARGV)
@@ -476,8 +435,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.fail("no MCP-config mount found in anvil argv")
 
     def test_opencode_mcp_tong_mounts_config_and_sets_env(self):
-        # An OpenCode session reaches an `mcp` tong via the entrypoint merge: the
-        # generated config is bind-mounted read-only and pointed at by the env var.
         docker = FakeDocker()
         self._run(docker, _merged("github-creds", SHARED_MCP, source=tongs.REPO),
                   harness="opencode")
@@ -486,12 +443,11 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn(
             "%s=%s" % (launcher.MCP_FILE_ENV, launcher.MCP_CONFIG_CONTAINER_PATH), argv
         )
-        self._mcp_mount_host_path(argv)  # the read-only mount is present
-        self.assertNotIn("--mcp-config", argv)  # OpenCode does not use the flag
+        self._mcp_mount_host_path(argv)
+        self.assertNotIn("--mcp-config", argv)
 
     def test_claude_mcp_tong_mounts_config_and_appends_flag(self):
-        # A Claude session reads the generated config directly via --mcp-config,
-        # appended after the image so it reaches the harness binary.
+        # The flag lands after the image so it reaches the harness binary.
         docker = FakeDocker()
         self._run(docker, _merged("github-creds", SHARED_MCP, source=tongs.REPO),
                   harness="claude")
@@ -499,7 +455,7 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(argv[-2:], ["--mcp-config", launcher.MCP_CONFIG_CONTAINER_PATH])
         self.assertNotIn("%s=%s" % (launcher.MCP_FILE_ENV, launcher.MCP_CONFIG_CONTAINER_PATH),
                          argv)
-        self._mcp_mount_host_path(argv)  # the read-only mount is present
+        self._mcp_mount_host_path(argv)
 
     def test_mcp_tong_with_unknown_harness_raises_before_docker(self):
         for harness in (None, "opencdoe"):
@@ -513,8 +469,6 @@ class RunWithTongsTests(unittest.TestCase):
                 self.assertIsNone(docker.anvil_argv)
 
     def test_mcp_config_tempfile_cleaned_up_after_run(self):
-        # The generated config lives in a host temp dir bind-mounted into the
-        # anvil; once the anvil exits the temp dir is removed.
         docker = FakeDocker()
         self._run(docker, _merged("github-creds", SHARED_MCP, source=tongs.REPO),
                   harness="opencode")
@@ -530,7 +484,7 @@ class RunWithTongsTests(unittest.TestCase):
         }
         with self.assertRaises(launcher.OrchestrationError):
             self._run(docker, _merged("pg", defn, source=tongs.REPO))
-        self.assertIsNone(docker.anvil_argv)  # anvil never ran
+        self.assertIsNone(docker.anvil_argv)
 
     def test_anvil_exit_code_is_returned(self):
         docker = FakeDocker(anvil_rc=42)
@@ -538,8 +492,7 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(rc, 42)
 
     def test_no_anvil_image_degrades_tcp_to_running_check(self):
-        # Without an anvil image a TCP probe cannot dial the tong's port, so it
-        # falls back to "is the container running" using inspect_state.
+        # Without an anvil image there is no container to dial the port from.
         states = {"swarmforge-shared-ollama": {"running": True, "label": tongs.config_hash(SHARED_OLLAMA)}}
         docker = FakeDocker(states=states)
         rc = launcher.run_with_tongs(
@@ -560,9 +513,6 @@ class RunWithTongsTests(unittest.TestCase):
         )
 
     def test_secret_delivered_as_env_via_channel_never_in_argv(self):
-        # A resolved secret is handed to the tong over the delivery channel (an
-        # `export` script), never as a docker `-e` value; the run argv carries
-        # only the entrypoint wrapper and the FIFO's tmpfs, not the secret.
         docker = FakeDocker(image_config=(["node"], ["server.js"]))
         channels = FakeChannels()
         rc = self._run_secret(
@@ -571,15 +521,13 @@ class RunWithTongsTests(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         started = docker.run_argvs[0]
-        # Entrypoint is wrapped and a tmpfs backs the in-container FIFO.
         self.assertEqual(started[started.index("--entrypoint") + 1], "/bin/sh")
         self.assertEqual(started[started.index("--tmpfs") + 1],
                          "/run/swarmforge:rw,nosuid,nodev,noexec,mode=1777")
-        # The image's real argv is what the wrapper execs (after the image token).
+        # The wrapper execs the image's real argv, after the image token.
         self.assertEqual(started[started.index("github-tong") + 1:],
                          ["-c", started[started.index("-c") + 1],
                           "swarmforge-tong", "node", "server.js"])
-        # The secret is nowhere in the argv -- it only went through the channel.
         self.assertNotIn("s3cr3t", " ".join(started))
         self.assertNotIn("GITHUB_TOKEN=s3cr3t", started)
         self.assertEqual(channels.payloads, ["export GITHUB_TOKEN='s3cr3t'\n"])
@@ -592,18 +540,14 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(docker.inspected_images, ["github-tong"])
 
     def test_unresolvable_secret_stops_launch_before_anvil(self):
-        # No provider for the referenced scheme => resolution fails before the tong
-        # even starts, and the anvil never runs.
         docker = FakeDocker()
         with self.assertRaises(launcher.SecretResolutionError):
             self._run_secret(docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), {})
-        self.assertEqual(docker.run_argvs, [])  # never reached the start
+        self.assertEqual(docker.run_argvs, [])
         self.assertIsNone(docker.anvil_argv)
 
     def test_delivery_failure_removes_half_configured_container(self):
-        # If delivery over the channel fails after the container started, the
-        # container is removed before raising, so a `shared` tong is not left
-        # stamped with its config-hash label (and reused) while missing its secret.
+        # Left behind, its config-hash label marks a secret-less container reusable.
         docker = FakeDocker()
         channels = FakeChannels(deliver_error=launcher.DockerError("boom"))
         with self.assertRaises(launcher.DockerError):
@@ -611,14 +555,11 @@ class RunWithTongsTests(unittest.TestCase):
                 docker, _merged("gh", SHARED_SECRET, source=tongs.REPO), ECHO_PROVIDERS,
                 channels=channels,
             )
-        # rm_force fires twice: clearing any leftover before start, then removing
-        # the half-configured container after the failed delivery.
+        # Twice: the leftover clear before start, then the failed delivery.
         self.assertEqual(docker.calls.count(("rm_force", "swarmforge-shared-gh")), 2)
         self.assertIsNone(docker.anvil_argv)
 
     def test_unusable_mount_target_reported_and_starts_nothing(self):
-        # The secret-bearing path: a refused mount is reported as the config error
-        # it is, and having started nothing it removes nothing.
         defn = dict(SHARED_SECRET, mounts=["workspace:/run"])
         docker = FakeDocker()
         channels = FakeChannels()
@@ -629,13 +570,11 @@ class RunWithTongsTests(unittest.TestCase):
             )
         self.assertEqual(docker.run_argvs, [])
         self.assertNotIn(("rm_force", "swarmforge-shared-gh"), docker.calls)
-        self.assertEqual(channels.payloads, [])  # nothing started, nothing delivered
+        self.assertEqual(channels.payloads, [])
         self.assertIsNone(docker.anvil_argv)
 
     def test_interrupt_during_delivery_removes_half_configured_container(self):
-        # Ctrl-C while delivering must still remove the container, or a `shared`
-        # tong (stamped with its config-hash label and not tracked for session
-        # teardown) would be reused next session with a missing secret.
+        # Ctrl-C too: a `shared` tong is not tracked for session teardown.
         docker = FakeDocker()
         channels = FakeChannels(deliver_error=KeyboardInterrupt())
         with self.assertRaises(KeyboardInterrupt):
@@ -647,9 +586,7 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIsNone(docker.anvil_argv)
 
     def test_reused_shared_tong_never_resolves_or_delivers_secrets(self):
-        # A running shared tong whose hash matches is reused untouched -- deciding
-        # to reuse must never invoke a secret-provider CLI (which could prompt for
-        # an unlock every session) or open a channel.
+        # Invoking the provider CLI could prompt for an unlock every session.
         states = {"swarmforge-shared-gh":
                   {"running": True, "label": tongs.config_hash(SHARED_SECRET)}}
         docker = FakeDocker(states=states)
@@ -660,9 +597,9 @@ class RunWithTongsTests(unittest.TestCase):
             channels=channels,
         )
         self.assertEqual(rc, 0)
-        self.assertEqual(docker.run_argvs, [])   # reused, not restarted
-        self.assertEqual(channels.payloads, [])  # no resolution, no delivery
-        self.assertEqual(docker.inspected_images, [])  # no image inspect either
+        self.assertEqual(docker.run_argvs, [])
+        self.assertEqual(channels.payloads, [])
+        self.assertEqual(docker.inspected_images, [])
 
     def test_session_secret_tong_delivered_over_channel(self):
         defn = {
@@ -680,8 +617,7 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(channels.payloads, ["export TOKEN='abc'\n"])
 
     def test_channel_factory_gets_the_started_container(self):
-        # The channel is opened against the container the launcher just started,
-        # since delivery is a `docker exec` into that container.
+        # Delivery is a `docker exec` into that container.
         docker = FakeDocker()
         channels = FakeChannels()
         self._run_secret(
@@ -693,8 +629,6 @@ class RunWithTongsTests(unittest.TestCase):
     # --- Session lifecycle + per-session networks ---------------------------
 
     def test_shared_only_keeps_base_network_and_plain_run(self):
-        # No `session` tong => no per-session network is created and the anvil runs
-        # on the base network through the plain (single-network) foreground path.
         docker = FakeDocker()
         self._run(docker, _merged("ollama", SHARED_OLLAMA, source=tongs.REPO))
         kinds = [c[0] for c in docker.calls]
@@ -713,19 +647,15 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         net = tongs.session_network_name("claude-myproject")
         self.assertIn(("ensure_network", net), docker.calls)
-        # The session tong is started on the per-session network under its alias.
         self.assertEqual(len(docker.run_argvs), 1)
         started = docker.run_argvs[0]
         self.assertIn("claude-myproject-tong-pg", started)
         self.assertEqual(started[started.index("--network") + 1], net)
         self.assertEqual(started[started.index("--network-alias") + 1], "pg")
-        # The anvil joined the session network (primary) and the base network
-        # (extra) via the create -> connect -> start path, and got the port env.
         self.assertEqual(docker.anvil_argv[docker.anvil_argv.index("--network") + 1], net)
         self.assertEqual(docker.anvil_extra_networks, ["opencode-net"])
         self.assertIn("SWARMFORGE_TONG_PG_HOST=pg", docker.anvil_argv)
-        # Teardown removes the session tong and the anvil, then the network -- the
-        # network rm must come after its endpoints are gone or docker refuses it.
+        # docker refuses a network rm while its endpoints are still attached.
         self.assertIn(("rm_force", "claude-myproject-tong-pg"), docker.calls)
         self.assertIn(("rm_force", "claude-myproject"), docker.calls)
         self.assertIn(("network_rm", net), docker.calls)
@@ -739,9 +669,7 @@ class RunWithTongsTests(unittest.TestCase):
         )
 
     def test_declared_aliases_reach_the_session_and_shared_tongs(self):
-        # Each tong answers on the per-session network under every DNS name it
-        # declares: a session tong registers them at start, a shared tong when it
-        # is connected to the session network.
+        # A session tong registers its aliases at start, a shared tong at connect.
         docker = FakeDocker()
         session = dict(SESSION_PORT)
         session["interface"] = dict(SESSION_PORT["interface"],
@@ -767,9 +695,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn("SWARMFORGE_TONG_PG_HOST=pg", docker.anvil_argv)
 
     def test_shared_tong_connected_to_session_network_and_left_running(self):
-        # A `shared` tong alongside a `session` tong is ensured on the base network,
-        # then connected to the per-session network for the anvil to reach; on
-        # teardown it is disconnected but never removed.
         docker = FakeDocker()
         merged = {
             "pg": {"source": tongs.REPO, "definition": SESSION_PORT},
@@ -783,14 +708,12 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn(
             ("network_disconnect", net, "swarmforge-shared-ollama"), docker.calls
         )
-        # The connect is idempotent against a reused network: a best-effort
-        # disconnect precedes it (a no-op when the tong is not already attached).
+        # A best-effort disconnect precedes the connect, for a reused network.
         self.assertLess(
             docker.calls.index(("network_disconnect", net, "swarmforge-shared-ollama")),
             docker.calls.index(("network_connect", net, "swarmforge-shared-ollama", ("ollama",))),
         )
-        # The shared tong is rm_force'd only once -- when (re)started to clear a
-        # leftover -- never as part of teardown, so it is left running.
+        # The one rm_force is the start-time leftover clear, not a teardown step.
         self.assertEqual(
             docker.calls.count(("rm_force", "swarmforge-shared-ollama")), 1
         )
@@ -806,8 +729,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn(("tcp_probe", net, "pg", 5432, "anvil:img"), docker.calls)
 
     def test_session_teardown_runs_on_keyboard_interrupt(self):
-        # Ctrl-C mid-session must still tear down the session tong and network so an
-        # interrupted run leaks neither.
         docker = FakeDocker()
 
         def interrupt(argv, extra_networks, container):
@@ -849,8 +770,6 @@ class RunWithTongsTests(unittest.TestCase):
         )
 
     def test_org_shared_tong_isolated_on_per_org_network(self):
-        # An org-owned shared tong starts on its own per-org network (never the
-        # shared base network), and the anvil joins that network as an extra.
         docker = FakeDocker()
         merged = {"asana": {"source": tongs.ORG, "definition": ORG_ASANA}}
         self._run_org(docker, merged, self._ACME)
@@ -862,16 +781,14 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn(container, started)
         self.assertEqual(started[started.index("--network") + 1], net)
         self.assertNotEqual(started[started.index("--network") + 1], "opencode-net")
-        # The anvil keeps opencode-net as its primary (for the model backend) and
-        # joins the org network as an extra via the multi-network path.
+        # opencode-net stays primary, for the model backend.
         self.assertEqual(docker.anvil_extra_networks, [net])
         self.assertEqual(
             docker.anvil_argv[docker.anvil_argv.index("--network") + 1], "opencode-net"
         )
 
     def test_org_shared_tong_readiness_probes_on_org_network(self):
-        # A scoped shared tong with a tcp probe is checked on its org network --
-        # the only network it lives on -- not on the anvil's base network.
+        # The org network is the only one a scoped shared tong lives on.
         docker = FakeDocker()
         defn = {
             "lifecycle": "shared", "image": "asana-mcp:latest",
@@ -884,10 +801,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn(("tcp_probe", net, "asana-mcp", 3000, "anvil:img"), docker.calls)
 
     def test_two_orgs_partition_into_distinct_containers_and_networks(self):
-        # The crux: the same tong file in two orgs yields distinct containers and
-        # distinct networks (so neither tears the other down, and neither is
-        # reachable from the other), while the agent-facing MCP server name
-        # (interface.name) stays identical in both.
         merged = {"asana": {"source": tongs.ORG, "definition": ORG_ASANA}}
         d1 = FakeDocker()
         self._run_org(d1, merged, self._ACME)
@@ -904,9 +817,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(s2[s2.index("--network-alias") + 1], "asana-mcp")
 
     def test_non_org_shared_tong_stays_global_even_with_org_layer(self):
-        # A repo-sourced shared tong keeps the base network and unscoped name even
-        # when the launch also carries an org layer dir -- only org-owned shared
-        # tongs are partitioned.
         docker = FakeDocker()
         merged = {"ollama": {"source": tongs.REPO, "definition": SHARED_OLLAMA}}
         self._run_org(docker, merged, self._ACME)
@@ -917,10 +827,7 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIsNone(docker.anvil_extra_networks)
 
     def test_org_shared_network_pruned_best_effort_and_tong_left_running(self):
-        # On teardown the org network is pruned best-effort (docker refuses while
-        # the long-lived tong is attached, so it persists), and the shared tong is
-        # force-removed only once -- at start, to clear a leftover -- never as a
-        # teardown step.
+        # The prune is best-effort: docker refuses while the tong is attached.
         docker = FakeDocker()
         merged = {"asana": {"source": tongs.ORG, "definition": ORG_ASANA}}
         self._run_org(docker, merged, self._ACME)
@@ -968,8 +875,7 @@ class WorkspaceGitDirSpecTests(unittest.TestCase):
             self.assertEqual(launcher.orchestrate._workspace_git_dir_specs(defn, "/ws"), specs)
 
     def test_read_only_workspace_forces_every_spec_read_only(self):
-        # build_mounts emits the git-dir binds writable (the anvil's workspace is
-        # writable); under a workspace:ro definition they must not open a write path.
+        # build_mounts emits writable binds; a `ro` workspace must get no write path.
         defn = {"mounts": ["workspace:ro"]}
         with mock.patch.object(
             launcher.orchestrate.gitguard, "build_mounts",
@@ -993,8 +899,7 @@ class WorkspaceGitDirSpecTests(unittest.TestCase):
             )
 
 
-# git runs with the developer's global config otherwise, where a signing key or
-# a templateDir would change what these repos come out looking like.
+# Otherwise a developer's global signing key or templateDir shapes these repos.
 _GIT_ENV = dict(
     os.environ,
     GIT_CONFIG_GLOBAL="/dev/null",

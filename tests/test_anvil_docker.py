@@ -10,14 +10,11 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Aliased because `anvil` is already these tests' word for the container
-# the launcher wraps.
+# `anvil` is already these tests' word for the container the launcher wraps.
 from swarmforge import anvil as launcher
 
 
@@ -103,10 +100,8 @@ class DockerCLITests(unittest.TestCase):
             popen.return_value.wait.return_value = 7
             rc = cli.run_foreground_multi(argv, ["base-net"], "anvil")
         self.assertEqual(rc, 7)
-        # Created on its primary (session) network...
         self.assertEqual(rec.argvs[0][:2], ["docker", "create"])
         self.assertEqual(rec.argvs[0][rec.argvs[0].index("--network") + 1], "sess")
-        # ...connected to the extra network, then started attached.
         self.assertIn(["docker", "network", "connect", "base-net", "anvil"], rec.argvs)
         popen.assert_called_once_with(
             ["docker", "start", "--attach", "--interactive", "anvil"]

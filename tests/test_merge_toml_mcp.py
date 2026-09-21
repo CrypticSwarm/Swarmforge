@@ -21,9 +21,7 @@ import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The image puts the swarmforge package on PYTHONPATH; standing in for that
-# here keeps this file runnable on its own, not just under a discovery run
-# that already set it.
+# Standing in for the PYTHONPATH the image sets keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -111,9 +109,7 @@ class MergeTomlMcpTests(unittest.TestCase):
             self.assertEqual(os.listdir(tmp), [])
 
     def test_user_defined_server_wins_over_generated_one(self):
-        # A same-named table in the user's own config would be a TOML
-        # duplicate-table error if the generated entry were appended; the
-        # user's definition is kept and the collision reported.
+        # Appending a same-named table would be a TOML duplicate-table error.
         with tempfile.TemporaryDirectory() as tmp:
             config = os.path.join(tmp, "config.toml")
             with open(config, "w", encoding="utf-8") as handle:
@@ -138,8 +134,7 @@ class MergeTomlMcpTests(unittest.TestCase):
             )
 
     def test_invalid_user_config_still_gets_block(self):
-        # The harness will reject the broken config on its own; the merge only
-        # loses the duplicate-name check and says so.
+        # The harness rejects the broken config itself; the merge just loses the duplicate check.
         with tempfile.TemporaryDirectory() as tmp:
             config = os.path.join(tmp, "config.toml")
             with open(config, "w", encoding="utf-8") as handle:

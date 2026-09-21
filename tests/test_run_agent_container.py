@@ -24,10 +24,7 @@ MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
 
 DOCKER_STUB = "#!/bin/sh\nexit 0\n"
 
-# Stands in for PYTHON in the recipe, which invokes it as
-# `$(PYTHON) bin/run-anvil <launcher flags> -- docker run ...`. The recipe also
-# runs the git guard through PYTHON; that one is the code under test, so it is
-# passed through to a real interpreter rather than recorded.
+# Stands in for PYTHON, except for the git guard the recipe also runs: that is code under test.
 CAPTURE_STUB = """#!/bin/sh
 case "$1" in
   */bin/git-guard) exec "$PYTHON_REAL" "$@" ;;
@@ -43,8 +40,7 @@ def _write_exec(path, text):
     os.chmod(path, 0o755)
 
 
-# A developer's global git config (a signing key, a templateDir, a hooksPath)
-# would otherwise decide what these throwaway repos come out looking like.
+# Otherwise a developer's signing key, templateDir, or hooksPath shapes these repos.
 GIT_ENV = dict(
     os.environ,
     GIT_CONFIG_GLOBAL="/dev/null",
@@ -67,8 +63,7 @@ class MakeRecipeCase(unittest.TestCase):
     """Runs a make target and exposes the docker argv it assembled."""
 
     def setUp(self):
-        # realpath: make resolves CURDIR and git resolves the worktree root, so
-        # a symlinked TMPDIR (the default on macOS) would not match otherwise.
+        # realpath: make resolves CURDIR and git the worktree root, so a symlinked TMPDIR misses.
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-make-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.home = os.path.join(self.tmp, "home")
@@ -100,8 +95,7 @@ class MakeRecipeCase(unittest.TestCase):
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_SYSTEM": "/dev/null",
         }
-        # A deliberately minimal env: SWARMFORGE_* vars inherited from an outer
-        # session would shadow the target-specific defaults under test.
+        # Minimal env: inherited SWARMFORGE_* vars would shadow the target defaults under test.
         completed = subprocess.run(
             ["make", "-C", project_dir, "-f", MAKEFILE, target,
              "PYTHON=" + self.capture],
@@ -160,9 +154,7 @@ class GitDirMounts(MakeRecipeCase):
             )
 
     def test_repo_slug_path_gets_its_own_readonly_paths(self):
-        # run_claude mounts the workspace a second time at /repos/<slug>; a
-        # read-only mount on one says nothing about the other, so the guard is
-        # told about every target the recipe mounts.
+        # run_claude mounts the workspace twice; a read-only mount on one leaves the other open.
         repo = self.make_repo()
         mounts = self.mounts(self.docker_argv("run_claude", repo))
         slug_path = "/repos/proj"
@@ -205,8 +197,7 @@ class WorktreeGitDirMounts(MakeRecipeCase):
             "%s/hooks:%s/hooks:ro" % (self.common, self.common), mounts)
 
     def test_gitdir_pointer_file_is_readonly(self):
-        # In a linked worktree `.git` is a file naming the git dir; read-only
-        # keeps the container from repointing it at one nothing here covers.
+        # In a linked worktree `.git` is a file; read-only stops the container repointing it.
         self.assertTrue(os.path.isfile(os.path.join(self.worktree, ".git")))
         mounts = self.mounts(self.docker_argv("run_opencode", self.worktree))
         self.assertIn("%s/.git:/workspace/.git:ro" % self.worktree, mounts)
@@ -257,8 +248,7 @@ class MaskedAssetDirs(MakeRecipeCase):
         self.assertIn("/home/anvil/.grok/commands", masked)
 
     def test_codex_masks_the_dotagents_skills_dir_it_reads(self):
-        # Codex's user skills location is the harness-neutral one, so the
-        # dir masked here is not under a codex-named path.
+        # Codex reads the harness-neutral user skills location, not a codex-named one.
         masked = self.masked(self.docker_argv("run_codex", self.make_repo()))
         self.assertIn("/home/anvil/.agents/skills", masked)
 

@@ -22,9 +22,7 @@ import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The image puts the swarmforge package on PYTHONPATH; standing in for that
-# here keeps this file runnable on its own, not just under a discovery run
-# that already set it.
+# Standing in for the PYTHONPATH the image sets keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 

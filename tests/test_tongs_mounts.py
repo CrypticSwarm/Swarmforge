@@ -7,9 +7,7 @@ import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -31,15 +29,12 @@ class MountGrammarTests(unittest.TestCase):
             tongs.parse_mount("docker-socket:ro"), ("docker-socket", None, "ro")
         )
 
-    def test_parse_mount_rejects_an_unrecognized_word(self):
-        # The default word set is the point of the opt-in mount vocabulary: a raw
-        # host path is not a magic word, whatever it carries.
+    def test_parse_mount_rejects_a_raw_host_path(self):
         with self.assertRaisesRegex(ValueError, "unknown mount"):
             tongs.parse_mount("/etc/passwd:/etc/passwd")
 
     def test_parse_mount_word_set_can_be_narrowed(self):
-        # A real magic word refused by a narrowed set is a policy refusal, so the
-        # message must not read like a spelling mistake.
+        # A known word refused by a narrowed set is a policy refusal, not a misspelling.
         narrowed = (tongs.WORKSPACE_MOUNT,)
         self.assertEqual(
             tongs.parse_mount("workspace:/code", words=narrowed), ("workspace", "/code", None)
@@ -48,8 +43,7 @@ class MountGrammarTests(unittest.TestCase):
             tongs.parse_mount("docker-socket", words=narrowed)
 
     def test_mount_destination_refuses_a_word_with_no_default(self):
-        # Guards the next magic word: without its own default it must not silently
-        # inherit the socket's destination.
+        # A word without its own default must not inherit the socket's destination.
         with self.assertRaisesRegex(ValueError, "no destination"):
             tongs.mount_destination("cache", None)
 
@@ -104,8 +98,6 @@ class MountGrammarTests(unittest.TestCase):
             self.assertIn("overlaps /run/x", error("workspace:" + target, "workspace", target))
 
     def test_mount_target_error_judges_the_default_destination_too(self):
-        # A mount that names no target still lands somewhere, so a reserved path
-        # under /workspace is caught even though the definition declares no target.
         self.assertIn(
             "overlaps /workspace/x",
             tongs.mount_target_error(
@@ -149,8 +141,7 @@ class MountSpecTests(unittest.TestCase):
         self.assertIn("only the 'workspace' mount takes a target path", str(caught.exception))
 
     def test_mount_specs_normalize_the_target(self):
-        # docker cleans a bind destination, so the launcher hands it the spelling
-        # its own overlap checks judged -- `//code` is not an empty first field.
+        # docker cleans a bind destination, so it is handed the spelling the overlap checks judged.
         self.assertEqual(
             tongs.tong_mount_specs({"mounts": ["workspace://code"]}, "/ws"), ["/ws:/code"]
         )
@@ -159,8 +150,7 @@ class MountSpecTests(unittest.TestCase):
             ["/ws:/code:ro"],
         )
 
-    def test_mount_specs_target_overlapping_the_socket_raises(self):
-        # Checked against the socket path actually in use, not just the default.
+    def test_mount_specs_target_overlapping_the_socket_in_use_raises(self):
         with self.assertRaises(ValueError) as caught:
             tongs.tong_mount_specs(
                 {"mounts": ["workspace:/opt/sock", "docker-socket"]},

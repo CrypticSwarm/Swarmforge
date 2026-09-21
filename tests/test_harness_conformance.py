@@ -34,15 +34,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# The recorded argv is a sibling module rather than a package member, which a
-# discovery run resolves through its start directory and a direct
-# `unittest tests.<module>` run does not.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -58,10 +54,7 @@ from swarmforge.harness.spec import (
 from harness_fixtures import read_file, redirected, staged, write_file
 from make_argv_fixtures import RUN_ARGV
 
-# The layer variables every run target hands the container, whatever the
-# harness: the three config layers, the three harness-neutral asset layers,
-# the two portable .agents layers, the destination and reset decision, and the
-# repo's own skills and commands.
+# The layer variables every run target hands the container, whatever the harness.
 LAYER_VARS = (
     "SWARMFORGE_CONFIG_USER_DIR",
     "SWARMFORGE_CONFIG_ORG_DIR",
@@ -77,8 +70,7 @@ LAYER_VARS = (
     "SWARMFORGE_COMMAND_DIR",
 )
 
-# Mount targets every run target carries: the checkout, the host's own config
-# dir for this harness, and the repo's portable assets.
+# Mount targets every run target carries, whatever the harness.
 SHARED_MOUNTS = ("/workspace",)
 SHARED_READONLY_MOUNTS = (
     "/tmp/swarmforge-config/user",
@@ -86,29 +78,23 @@ SHARED_READONLY_MOUNTS = (
     "/home/anvil/.swarmforge/command",
 )
 
-# The home the container gives the anvil user, and the import root the image
-# copies the package into.
+# The home the container gives the anvil user, and the image's import root.
 ANVIL_HOME = "/home/anvil"
 PACKAGE_ROOT = "/usr/local/lib/swarmforge"
 
-# The environment the entrypoint's launch hands the pre-exec driver. The two
-# PYTHON* variables belong to that launch and must not reach the harness; the
-# rest is the run's own and reaches it untouched, the SWARMFORGE_ variable
-# among them -- it names a path the root phase read and the harness has no
-# use for, which is what makes it the one a driver would be tempted to drop.
+# The environment the entrypoint's launch hands the pre-exec driver.
 CONTAINER_ENV = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "HOME": "/root",
     "TERM": "xterm-256color",
-    "SWARMFORGE_TONG_MCP_FILE": "/tmp/swarmforge-tong-mcp.json",
+    "SWARMFORGE_TONG_MCP_FILE": "/tmp/swarmforge-tong-mcp.json",  # reaches the harness untouched
     "PYTHONPATH": PACKAGE_ROOT,
     "PYTHONCOERCECLOCALE": "0",
 }
 
 SESSION_ARGS = ["--flag", "arg one"]
 
-# Stands in the wrapper directory claude's hook leads PATH with when a wrapper
-# is installed there. Nothing runs it; it only has to be executable.
+# Stands in the wrapper directory claude's hook leads PATH with; nothing runs it.
 GIT_WRAPPER = '#!/bin/sh\nexec git "$@"\n'
 
 AGENT_MD = """---
@@ -325,12 +311,10 @@ class ContainerRun(unittest.TestCase):
         os.makedirs(self.home)
         os.makedirs(self.workspace)
 
-        # layered.txt is contested by all three config layers; between.txt only
-        # by the lower two, so the merge order is pinned pairwise rather than
-        # only at the top.
         for layer in ("repo", "user", "org"):
             write_file(
                 os.path.join(self.tmp, "config-" + layer, "layered.txt"), layer)
+        # between.txt is contested by the lower two only, pinning the order pairwise.
         for layer in ("repo", "user"):
             write_file(
                 os.path.join(self.tmp, "config-" + layer, "between.txt"), layer)
@@ -587,18 +571,13 @@ class ExecPassthrough(unittest.TestCase):
         self.home = os.path.join(self.tmp, "home")
         os.makedirs(self.home)
         self.wrapper = staged(self.tmp, "wrapper_dir")
-        # A built settings file and an installed git wrapper stand ready, so a
-        # hook that splices flags for the one or leads PATH with the other
-        # does so in these runs rather than skipping the branch.
         self.settings = write_file(staged(self.tmp, "settings_file"), "{}\n")
         os.chmod(
             write_file(os.path.join(self.wrapper, "git"), GIT_WRAPPER), 0o755)
         self.recorded = []
-        # The driver defaults the interpreter's ignored dispositions before
-        # the exec, and the recording execve returns instead of replacing the
-        # process -- so this process keeps running with them defaulted, and
-        # the first EPIPE write would kill the suite. Put them back after
-        # every test.
+        # The recording execve returns instead of replacing the process, so the
+        # dispositions the driver defaults outlive it and the first EPIPE write
+        # would kill the suite.
         for sig in execute.IGNORED_SIGNALS:
             self.addCleanup(signal.signal, sig, signal.getsignal(sig))
 
