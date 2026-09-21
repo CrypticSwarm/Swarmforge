@@ -7,9 +7,9 @@ they return argv lists and run no docker -- so the exact flags can be unit-teste
 `swarmforge.anvil` owns the side-effectful execution.
 """
 
-import hashlib
 import os
-import re
+
+from swarmforge.names import canonical_path, path_token, sanitize_token
 
 from .mcp import _is_network_facing, _ordered_aliases
 from .model import LABEL_CONFIG_HASH, LABEL_TONG_NAME, WORKSPACE_HOST_ENV
@@ -20,10 +20,6 @@ from .secrets import SECRET_FIFO_TMPFS, declared_run_override
 SHARED_CONTAINER_PREFIX = "swarmforge-shared"
 
 SHARED_NETWORK_PREFIX = "swarmforge-shared-net"
-
-
-def _sanitize_container_token(name):
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-_.")
 
 
 def org_scope_token(org_tongs_dir):
@@ -38,19 +34,16 @@ def org_scope_token(org_tongs_dir):
 
     Derived from the absolute org-tongs directory path, so every launch pointed
     at the same org (e.g. different repos under one org) shares a token while
-    different orgs differ. A readable hint from the org root (the parent of
-    `.swarmforge/`) is prefixed for `docker ps`; the hash is what guarantees
-    uniqueness. Returns None when no org layer path is given, leaving a launch
+    different orgs differ. The readable hint comes from the org root (the parent
+    of `.swarmforge/`), not the tongs directory, whose basename is `tongs` for
+    every org. Returns None when no org layer path is given, leaving a launch
     with no org tongs on today's global, unscoped naming.
     """
     if not org_tongs_dir:
         return None
-    canonical = os.path.normpath(os.path.abspath(org_tongs_dir))
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8]
-    hint = _sanitize_container_token(
-        os.path.basename(os.path.dirname(os.path.dirname(canonical)))
-    )
-    return "%s-%s" % (hint, digest) if hint else digest
+    canonical = canonical_path(org_tongs_dir)
+    org_root = os.path.dirname(os.path.dirname(canonical))
+    return path_token(canonical, hint_from=org_root)
 
 
 def shared_container_name(name, scope=None):
@@ -62,7 +55,7 @@ def shared_container_name(name, scope=None):
     identically-named shared tongs owned by different scopes -- so two orgs
     shipping the same tong do not collide on one daemon-global container name.
     """
-    token = _sanitize_container_token(name)
+    token = sanitize_token(name)
     parts = [SHARED_CONTAINER_PREFIX]
     if scope:
         parts.append(scope)
@@ -85,12 +78,12 @@ def shared_network_name(scope):
 def session_container_name(session_id, name):
     """Per-session container name for a `session` tong.
 
-    Carries the session handle (the anvil container name, already
-    project/worktree-suffixed) so concurrent sessions never collide on a
-    container name, while the tong's canonical alias -- not this name -- is what
-    the anvil dials.
+    Carries the session handle (the anvil container name, which identifies one
+    project directory -- see `swarmforge.names`) so concurrent sessions never
+    collide on a container name, while the tong's canonical alias -- not this
+    name -- is what the anvil dials.
     """
-    token = _sanitize_container_token(name)
+    token = sanitize_token(name)
     return "%s-tong-%s" % (session_id, token) if token else "%s-tong" % session_id
 
 

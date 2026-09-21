@@ -25,8 +25,8 @@ MCP_DEFAULT_PATH = "/mcp"
 def canonical_alias(name, defn):
     """The tong's stable network alias / DNS name the anvil dials.
 
-    Container names carry per-session/worktree suffixes for uniqueness, but the
-    alias is always this bare name, so the generated config is identical across
+    Container names carry a per-session suffix for uniqueness, but the alias is
+    always this bare name, so the generated config is identical across
     worktrees. For an `mcp` tong the alias is `interface.name` (the canonical MCP
     server name the agent sees); for every other kind it is the tong's own name.
     """
