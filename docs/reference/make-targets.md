@@ -12,16 +12,16 @@ make -C /path/to/Swarmforge run_claude PROJECT_DIR=$(pwd)
 
 ## The harness families
 
-Sixteen targets, four per harness:
+Twenty targets, five per harness:
 
-| Harness | Build | Update | Run | Stop |
-| --- | --- | --- | --- | --- |
-| [Claude Code](../harnesses/claude-code.md) | `build_claude` | `update_claude` | `run_claude` | `stop_claude` |
-| [Codex CLI](../harnesses/codex.md) | `build_codex` | `update_codex` | `run_codex` | `stop_codex` |
-| [Grok Build CLI](../harnesses/grok.md) | `build_grok` | `update_grok` | `run_grok` | `stop_grok` |
-| [OpenCode](../harnesses/opencode.md) | `build_opencode` | `update_opencode` | `run_opencode` | `stop_opencode` |
+| Harness | Build | Update | Run | Stop | Name |
+| --- | --- | --- | --- | --- | --- |
+| [Claude Code](../harnesses/claude-code.md) | `build_claude` | `update_claude` | `run_claude` | `stop_claude` | `name_claude` |
+| [Codex CLI](../harnesses/codex.md) | `build_codex` | `update_codex` | `run_codex` | `stop_codex` | `name_codex` |
+| [Grok Build CLI](../harnesses/grok.md) | `build_grok` | `update_grok` | `run_grok` | `stop_grok` | `name_grok` |
+| [OpenCode](../harnesses/opencode.md) | `build_opencode` | `update_opencode` | `run_opencode` | `stop_opencode` | `name_opencode` |
 
-A `harness_rules` macro generates all sixteen from the knobs each [`harness.mk`](../development/architecture.md) declares, so the table below uses `<harness>` for the name and `<PREFIX>_` for that fragment's variable prefix (`CLAUDE_`, `OPENCODE_`, …).
+A `harness_rules` macro generates all twenty from the knobs each [`harness.mk`](../development/architecture.md) declares, so the table below uses `<harness>` for the name and `<PREFIX>_` for that fragment's variable prefix (`CLAUDE_`, `OPENCODE_`, …).
 
 | Target | What it does | Accepts |
 | --- | --- | --- |
@@ -29,6 +29,7 @@ A `harness_rules` macro generates all sixteen from the knobs each [`harness.mk`]
 | `update_<harness>` | Re-runs `build_<harness>` from the harness install step onward, leaving the shared stages below it cached. | the same, except `SWARMFORGE_HARNESS_INSTALL_BUST`, which it sets |
 | `run_<harness>` | Creates the host directories that harness needs, then hands the `docker run` command line to the [launcher](../tongs/README.md). Replaces a container of the same name, and runs with `--rm`. | [the session variables](environment.md#running-a-session), [that harness's storage knobs](environment.md#per-harness-storage-and-arguments), [the asset roots](environment.md#asset-layers), [the config layer variables](environment.md#config-layers) |
 | `stop_<harness>` | `docker rm -f` on that harness's container, silent if there is none. | `<PREFIX>_CTR` |
+| `name_<harness>` | Prints that harness's container name for this `PROJECT_DIR` and does nothing else, so `make -s` output can be handed straight to `docker`. | `<PREFIX>_CTR` |
 | `build_harnesses` | Builds all four images. | as `build_<harness>` |
 | `clean` | Stops every harness container, stops Ollama, and removes the network. | `NETWORK` |
 
@@ -38,7 +39,13 @@ A session's container is named `<harness>-<directory>-<digest>` — `claude-mast
 
 Everything the launcher derives afterwards carries that name: the per-session docker network is `swarmforge-session-<container>`, and each `session` [tong](../tongs/README.md)'s container is `<container>-tong-<tong>`. That last one docker registers as a DNS label, which may not exceed 63 characters, so the readable half of the name is cut to 24. That holds the container name to 42 and leaves 21 for `-tong-<tong>`, so a branch name of any length fits and a tong named in 15 characters or fewer does too. The digest is what identifies the directory; the cut costs only readability.
 
-Set `<PREFIX>_CTR` to name the container yourself; `run_<harness>` and `stop_<harness>` both read it, so the two stay in agreement.
+Rather than reconstructing it, ask for it with the same `PROJECT_DIR` the session was started with:
+
+```bash
+docker exec -it "$(make -s -C /path/to/Swarmforge name_claude PROJECT_DIR=$(pwd))" bash
+```
+
+Set `<PREFIX>_CTR` to name the container yourself; `run_<harness>`, `stop_<harness>`, and `name_<harness>` all read it, so the three stay in agreement.
 
 ## Images without a harness
 

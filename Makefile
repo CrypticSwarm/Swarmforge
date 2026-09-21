@@ -189,14 +189,14 @@ define run_agent_container
 	set +x
 endef
 
-# Generates one harness's build/update/run/stop targets. $(1) is the harness
+# Generates one harness's build/update/run/stop/name targets. $(1) is the harness
 # name (target names, --build-arg AGENT); $(2) is its harness.mk variable
 # prefix (CLAUDE, OPENCODE, ...). Fragment knobs are referenced by name and
 # expand when a recipe runs, so overrides behave as on a rule written out in
 # full. $(2)_MKDIRS is the one knob spliced verbatim at eval time, so its
 # entries must carry $$-escaped references.
 define harness_rules
-.PHONY: build_$(1) update_$(1) run_$(1) stop_$(1)
+.PHONY: build_$(1) update_$(1) run_$(1) stop_$(1) name_$(1)
 
 build_$(1):
 	docker build --target harness-runtime --build-arg AGENT=$(1)$(if $($(2)_EXTRA_BUILD_ARGS), $$($(2)_EXTRA_BUILD_ARGS)) --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) -f "$$(SWARMFORGE_DIR)/anvil/Dockerfile" -t $$($(2)_IMG) "$$(SWARMFORGE_DIR)"
@@ -216,6 +216,10 @@ run_$(1): opencode_network
 
 stop_$(1):
 	@docker rm -f $$($(2)_CTR) >/dev/null 2>&1 || true
+
+# The name carries a path digest; this prints the one run_$(1) uses, and nothing else, so it composes.
+name_$(1):
+	@echo "$$($(2)_CTR)"
 
 # No image depends on another, so `make -j build_harnesses` builds them in parallel.
 build_harnesses: build_$(1)

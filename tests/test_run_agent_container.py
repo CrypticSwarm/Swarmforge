@@ -113,6 +113,22 @@ class MakeRecipeCase(unittest.TestCase):
         with open(self.capture_path) as handle:
             return handle.read().split("\0")[:-1]
 
+    def make_output(self, target, project_dir):
+        """The stdout of a target that only prints, with no docker to stub."""
+        completed = subprocess.run(
+            ["make", "-s", "-C", project_dir, "-f", MAKEFILE, target],
+            env={
+                "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
+                "HOME": self.home,
+            },
+            capture_output=True, text=True,
+        )
+        self.assertEqual(
+            completed.returncode, 0,
+            "make failed:\n%s\n%s" % (completed.stdout, completed.stderr),
+        )
+        return completed.stdout.strip()
+
     def docker_argv(self, target, project_dir):
         """The argv after the launcher's `--`, i.e. the anvil's `docker run`."""
         recorded = self.launcher_argv(target, project_dir)
@@ -351,6 +367,11 @@ class GeneratedNamesIdentifyOneDirectory(MakeRecipeCase):
         self.assertEqual(
             self.container_name("run_claude", project),
             self.container_name("run_claude", project))
+
+    def test_the_name_target_prints_the_name_the_run_target_used(self):
+        project = self.make_repo("repo1/master")
+        started = self.container_name("run_claude", project)
+        self.assertEqual(self.make_output("name_claude", project), started)
 
     def test_every_harness_names_its_own_container_for_the_directory(self):
         # Read off the recording, so a harness added later is held to this for free.

@@ -3,7 +3,7 @@
 A harness is one directory, `swarmforge/harness/<name>/`, holding everything Swarmforge knows about it:
 
 - `__init__.py` — the spec module: a `HarnessSpec` and the hook functions it points at.
-- `harness.mk` — the fragment the Makefile includes to generate `build_<name>`, `update_<name>`, `run_<name>`, and `stop_<name>`, and to add that build to `build_harnesses`.
+- `harness.mk` — the fragment the Makefile includes to generate `build_<name>`, `update_<name>`, `run_<name>`, `stop_<name>`, and `name_<name>`, and to add that build to `build_harnesses`.
 - `install.sh` — run by the image build, leaving the harness binary under `/usr/local/bin/`.
 - `image.sh` — optional, run next, installing any build-time assets the harness ships (Claude's `statusline.sh` and `claude-settings.json`).
 
