@@ -63,8 +63,7 @@ choose_target_rc() {
     printf '%s' "${dedup[0]}"
 }
 
-# A failed link is not a failed install: every path here returns 0, so the rc
-# alias is appended either way.
+# Every path returns 0: a failed link must not fail the install.
 link_command() {
     local script_dir="$1"
     local source="$script_dir/bin/swarmforge"
@@ -76,8 +75,7 @@ link_command() {
         return 0
     fi
 
-    # -e follows the link, so a symlink pointing at an older checkout or at
-    # nothing falls through and is replaced; a real file is left alone.
+    # Only a real file is left alone; any symlink, dangling or not, is replaced below.
     if [[ -e "$link" && ! -L "$link" ]]; then
         echo "Not replacing $link: it is not a symlink" >&2
         return 0
@@ -96,8 +94,6 @@ link_command() {
 }
 
 main() {
-    # Both halves of the install write under $HOME, and choose_target_rc builds
-    # its candidates from it.
     if [[ -z "${HOME:-}" ]]; then
         echo "HOME is unset; nothing to install" >&2
         exit 1

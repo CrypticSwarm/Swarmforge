@@ -9,14 +9,12 @@ OLLAMA_CTX   ?= 32768
 
 BROKER_IMG  ?= swarmforge-docker-broker:latest
 
-# Stable per-repo mount path knobs, shared by every persistent-home harness.
 SWARMFORGE_REPO_SLUG ?=
 SWARMFORGE_REMOTE_NAME ?= origin
 GITCONFIG_FILE ?= $(HOME)/.gitconfig
 ENV_FILE ?= $(PROJECT_DIR)/.swarmforge/env
 
-# Set this to a changing value to refresh the agent install layer. A build
-# target names the one agent it installs, so this busts only that image.
+# Change the value to bust the install layer of the image being built.
 SWARMFORGE_HARNESS_INSTALL_BUST ?= 0
 
 MODEL        ?=
@@ -26,57 +24,38 @@ TEST_SKILL   ?=
 TEST_DATA_DIR ?= $(DATA_DIR)
 TEST_ENABLE_JUDGE ?=
 TEST_TIMEOUT_S ?= 600
-# Allows overriding base debian image tag
 DEBIAN_TAG   ?= trixie-slim
-# Default timezone passed at runtime (override with TIMEZONE=Region/City)
 TIMEZONE     ?= Etc/UTC
 
-# Ensure inner UID and GID are mapped correctly to avoid permission issues
+# Passed into the container so what it writes stays owned by the invoking user.
 UID          := $(shell id -u)
 GID          := $(shell id -g)
 
 SWARMFORGE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 PROJECT_DIR  := $(CURDIR)
 PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
-# Container path the working repo is mounted at. The entrypoint, the config
-# layer env, and the docs all name it, so it is not meant to be overridden --
-# it is a variable so the workspace mount and the git-dir guard that overlays
-# paths inside it cannot drift apart.
+# Not for overriding -- the entrypoint and docs name it; a variable only so the git-dir guard tracks it.
 WORKSPACE_MOUNT := /workspace
 # The entrypoint hardcodes this same path, so no overrides.
 ANVIL_HOME := /home/anvil
 SHARED_SKILLS_DIR ?= $(SWARMFORGE_DIR)/skills
 SHARED_COMMAND_DIR ?= $(SWARMFORGE_DIR)/commands
 SWARMFORGE_ORG_CONFIG_ROOT ?=
-# Harness-neutral Swarmforge asset layers. User and org layers are .swarmforge
-# roots (unified agents live in <dir>/agents); the repo layer points directly
-# at this repo's top-level agents/ so the rest of the repo is never mounted.
+# Harness-neutral asset layers; unified agents live under <layer>/agents.
 SWARMFORGE_USER_ASSETS_DIR ?= $(HOME)/.swarmforge
 SWARMFORGE_ORG_ASSETS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.swarmforge,)
+# The repo layers name their one subdirectory so the rest of the checkout is never exposed.
 SWARMFORGE_REPO_AGENTS_DIR ?= $(SWARMFORGE_DIR)/agents
-# Repo-layer tong definitions, pointed at directly (like SWARMFORGE_REPO_AGENTS_DIR)
-# so the rest of the checkout is never read. The tongs/ dir ships only the
-# reference broker's source under a subdirectory, not a top-level *.yaml, so
-# discovery (which reads top-level *.yaml only) finds nothing here until a
-# definition is added; the wildcard guard below still skips the layer entirely if
-# the dir is ever absent.
 SWARMFORGE_REPO_TONGS_DIR ?= $(SWARMFORGE_DIR)/tongs
 
-# Portable skills/commands overlay layers. These follow the harness-neutral
-# .agents/{skills,commands} convention (a sibling of .swarmforge under the same
-# user $HOME / org SWARMFORGE_ORG_CONFIG_ROOT roots). Named DOTAGENTS to keep
-# them distinct from the unified-agent asset pipeline above (whose agents live
-# in .swarmforge/agents and use SWARMFORGE_ASSETS_*). The repo layer keeps its
-# own special shared skills/ and commands/ (SHARED_SKILLS_DIR/SHARED_COMMAND_DIR).
+# The portable .agents/{skills,commands} overlay, distinct from the .swarmforge asset layers above.
 SWARMFORGE_USER_DOTAGENTS_DIR ?= $(HOME)/.agents
 SWARMFORGE_ORG_DOTAGENTS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.agents,)
 
-# Host python used to run the anvil launcher (bin/run-anvil) and the unit tests.
+# The host's python: the launcher and the unit suite run outside any image.
 PYTHON ?= python3
 
-# Ruff is the one tool outside the stdlib this repo asks a contributor to have,
-# and only for `make lint` -- nothing under swarmforge/ imports it and no image
-# installs it. CI pins a version; locally whatever is on PATH will do.
+# The one tool outside the stdlib this repo asks for, and only for `make lint`.
 RUFF ?= ruff
 
 SWARMFORGE_LAYER_MOUNTS = \
@@ -105,10 +84,7 @@ SWARMFORGE_LAYER_ENV = \
 	-e SWARMFORGE_SKILLS_DIR=$(ANVIL_HOME)/.swarmforge/skills \
 	-e SWARMFORGE_COMMAND_DIR=$(ANVIL_HOME)/.swarmforge/command
 
-# Host directories for the tong definition layers, passed to the launcher only
-# when present (same wildcard guard as the asset mounts above). The launcher
-# reads these on the host; they are not mounted into the anvil. The workspace
-# layer depends on the resolved workspace dir and is appended at run time.
+# Read on the host, never mounted into the anvil; the workspace layer is appended at run time.
 TONGS_LAYER_ARGS = \
 	$(if $(and $(strip $(SWARMFORGE_USER_ASSETS_DIR)),$(wildcard $(SWARMFORGE_USER_ASSETS_DIR)/tongs)),--user-tongs "$(SWARMFORGE_USER_ASSETS_DIR)/tongs",) \
 	$(if $(and $(strip $(SWARMFORGE_ORG_ASSETS_DIR)),$(wildcard $(SWARMFORGE_ORG_ASSETS_DIR)/tongs)),--org-tongs "$(SWARMFORGE_ORG_ASSETS_DIR)/tongs",) \
@@ -117,13 +93,7 @@ TONGS_LAYER_ARGS = \
 .PHONY: opencode_network build_harnesses build_broker run_ollama logs_ollama stop_ollama gpu_stat clean \
 	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills lint
 
-# The workspace is mounted read-write, but the paths inside its git dir that
-# the *host's* git later obeys -- `config`, `hooks/`, and the pointers naming
-# where those two live -- are not the agent's to write. bin/git-guard
-# works out which git dirs are reachable from the workspace and prints the
-# read-only mounts that cover them, one docker `-v` value per line, for each
-# container path the workspace is mounted at. Its module docstring has the
-# reasoning.
+# bin/git-guard prints the git-dir mounts per --target, one docker -v per line; its docstring has the why.
 define run_agent_container
 	@docker rm -f "$(1)" >/dev/null 2>&1 || true
 	@set -euo pipefail; \
@@ -213,17 +183,12 @@ define run_agent_container
 	set +x
 endef
 
-# Generates one harness's build/update/run/stop targets from the knobs its
-# harness.mk fragment declares. $(1) is the harness name as it appears in
-# target names and --build-arg AGENT; $(2) is the fragment's variable
-# prefix (CLAUDE, OPENCODE, ...). Fragment knobs are referenced by name in
-# the generated recipes and expand when a recipe runs, so command-line and
-# environment overrides behave exactly as they would on a rule written out
-# in full. The one knob spliced verbatim at eval time is $(2)_MKDIRS,
-# whose entries therefore carry $$-escaped references; each becomes a
-# quoted operand of the single mkdir the run recipe opens with, and a
-# harness that declares none runs no mkdir. .PHONY, build_harnesses, and
-# clean accumulate across evals, one contribution per harness.
+# Generates one harness's build/update/run/stop targets. $(1) is the harness
+# name (target names, --build-arg AGENT); $(2) is its harness.mk variable
+# prefix (CLAUDE, OPENCODE, ...). Fragment knobs are referenced by name and
+# expand when a recipe runs, so overrides behave as on a rule written out in
+# full. $(2)_MKDIRS is the one knob spliced verbatim at eval time, so its
+# entries must carry $$-escaped references.
 define harness_rules
 .PHONY: build_$(1) update_$(1) run_$(1) stop_$(1)
 
@@ -246,8 +211,7 @@ run_$(1): opencode_network
 stop_$(1):
 	@docker rm -f $$($(2)_CTR) >/dev/null 2>&1 || true
 
-# One build per harness. The prerequisites carry the work and no image
-# depends on another, so `make -j build_harnesses` builds them in parallel.
+# No image depends on another, so `make -j build_harnesses` builds them in parallel.
 build_harnesses: build_$(1)
 
 clean: stop_$(1)
@@ -257,19 +221,15 @@ opencode_network:
 	@docker network inspect $(NETWORK) >/dev/null 2>&1 || docker network create $(NETWORK) >/dev/null
 	@echo "Network ready: $(NETWORK)"
 
-# Per-harness fragments declare that harness's knobs and eval harness_rules to
-# generate its targets. They are read after the shared variables and macros they
-# reference, and after opencode_network so it stays the default goal. An
-# empty glob would silently drop every harness target, so it is an error
-# instead.
+# Included after the macros the fragments use, and after opencode_network so it stays the default goal.
 HARNESS_FRAGMENTS := $(wildcard $(SWARMFORGE_DIR)/swarmforge/harness/*/harness.mk)
+# An empty glob would silently drop every harness target.
 ifeq ($(strip $(HARNESS_FRAGMENTS)),)
 $(error No harness fragments found under $(SWARMFORGE_DIR)/swarmforge/harness)
 endif
 include $(HARNESS_FRAGMENTS)
 
-# Build the reference docker-task broker image. It is not used until a broker tong
-# definition is enabled in a layer (see tongs/docker-broker/docker-broker.tong.yaml).
+# The reference broker image, unused until a broker tong definition is enabled in a layer.
 build_broker:
 	docker build -t $(BROKER_IMG) "$(SWARMFORGE_DIR)/tongs/docker-broker"
 
@@ -318,23 +278,15 @@ run_qwen_3-5-35b:
 run_gemma4_26b:
 	docker exec -it ollama ollama run gemma4:26b
 
-# The unit suite. Needs nothing but a host python -- no network, no image,
-# no model. PYTHONPATH makes the swarmforge package importable regardless of
-# where make was invoked from; the container-side modules under test import it
-# the same way the image does.
+# PYTHONPATH makes swarmforge importable regardless of where make was invoked from.
 test:
 	PYTHONPATH="$(SWARMFORGE_DIR)" $(PYTHON) -m unittest discover -s "$(SWARMFORGE_DIR)/tests" -p 'test_*.py'
 
-# Lint every python file in the repo. Rules and exemptions live in
-# pyproject.toml; `check` never edits a file, so this is safe to run over a
-# dirty tree and never reflows code the change did not touch.
+# `check` never edits a file, so this is safe over a dirty tree.
 lint:
 	$(RUFF) check "$(SWARMFORGE_DIR)"
 
-# Skill evaluation: runs scenario prompts from skills/<name>/tests/*.json
-# against a real model inside the opencode image and checks what came
-# back, so it needs a model and a running network. OPENCODE_IMG and
-# DATA_DIR are declared in swarmforge/harness/opencode/harness.mk.
+# Drives a real model in the opencode image; OPENCODE_IMG comes from its harness.mk fragment.
 test-skills: opencode_network
 	@if [ -z "$(strip $(MODEL))" ]; then \
 		printf '%s\n' "MODEL is required (example: make test-skills MODEL=ollama/llama3.1)"; \

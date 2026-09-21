@@ -12,8 +12,7 @@ disk.
 import os
 import sys
 
-# realpath, not abspath: a shim reached through a symlink on PATH must still
-# resolve to the checkout it lives in.
+# realpath, not abspath: a shim symlinked onto PATH must resolve to its own checkout.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

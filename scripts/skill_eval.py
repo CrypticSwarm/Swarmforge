@@ -81,8 +81,7 @@ def _prepare_config_dir(repo_root: Path) -> str:
     config_dir = Path(tempfile.mkdtemp(prefix="swarmforge-test-config-"))
     atexit.register(shutil.rmtree, config_dir, ignore_errors=True)
     for entry in (repo_root / "opencode").iterdir():
-        # Skip stray skills/command dirs (e.g. leftover container mountpoints)
-        # so they can't shadow the canonical top-level assets linked below.
+        # The explicit symlinks below own these names; a stray dir must not shadow them.
         if entry.name in ("skills", "command"):
             continue
         (config_dir / entry.name).symlink_to(entry)
@@ -287,8 +286,7 @@ def _parse_json_events(raw: str) -> RunMetrics:
         if metrics.output_tokens is not None:
             output_tokens = max(output_tokens or 0, metrics.output_tokens)
 
-    # Prefer NDJSON; fall back to parsing a single JSON blob.
-    saw_any = False
+    saw_ndjson_event = False
     for line in raw.splitlines():
         line = line.strip()
         if not line:
@@ -298,9 +296,9 @@ def _parse_json_events(raw: str) -> RunMetrics:
         except json.JSONDecodeError:
             continue
         merge(_extract_metrics(event))
-        saw_any = True
+        saw_ndjson_event = True
 
-    if not saw_any:
+    if not saw_ndjson_event:
         try:
             event = json.loads(raw)
         except json.JSONDecodeError:
@@ -450,7 +448,7 @@ def main() -> int:
 
     eval_model = args.eval_model or args.model
 
-    # Keep OpenCode state isolated inside the container or caller-controlled HOME.
+    # Stays empty: isolation comes from the container or the caller's HOME, not from env set here.
     extra_env: dict[str, str] = {}
 
     failures: list[str] = []
@@ -508,7 +506,6 @@ def main() -> int:
             print(c.red(f"FAIL {label}"), c.dim(f"({dt:.1f}s)"))
             continue
 
-        # Assertions (formatted output)
         for pattern in test.expect_must_match:
             if not _regex_search(pattern, output):
                 failures.append(f"{label}: missing pattern: {pattern}")
@@ -517,7 +514,6 @@ def main() -> int:
             if _regex_search(pattern, output):
                 failures.append(f"{label}: forbidden pattern matched: {pattern}")
 
-        # Assertions (tool calls)
         if test.expect_must_tool or test.expect_must_not_tool:
             tool_names = run_metrics.tool_names
 
@@ -529,7 +525,6 @@ def main() -> int:
                 if tool in tool_names:
                     failures.append(f"{label}: forbidden tool call: {tool} (saw: {tool_names})")
 
-        # Optional LLM-as-judge check
         if args.enable_judge and test.use_judge:
             skill_path = repo_root / "skills" / test.skill / "SKILL.md"
             try:
@@ -558,13 +553,11 @@ def main() -> int:
 
         dt = time.time() - t0
 
-        # Cost reporting (best-effort)
         if args.report_cost and run_metrics.cost_usd is not None:
             per_test_cost[label] = run_metrics.cost_usd
             total_cost += run_metrics.cost_usd
 
-        # Determine pass/fail for this test by checking if any new failures were added.
-        # This is slightly blunt, but avoids coupling to internal assertion structure.
+        # Blunt on purpose: nothing here couples to the assertion structure above.
         test_failed = any(f.startswith(f"{label}:") for f in failures)
 
         cost_str = _fmt_cost(run_metrics.cost_usd if args.report_cost else None)
