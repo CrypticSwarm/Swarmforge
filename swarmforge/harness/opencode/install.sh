@@ -1,6 +1,5 @@
 #!/bin/sh
-# Runs as root during the image build, from anvil/Dockerfile's agent-runtime
-# stage. Leaves the opencode binary at /usr/local/bin/opencode.
+# Runs as root in anvil/Dockerfile's agent-runtime stage.
 set -eux
 echo "Installing OpenCode (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"
 if [ -n "${SWARMFORGE_HARNESS_VERSION}" ]; then

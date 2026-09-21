@@ -1,7 +1,6 @@
 #!/bin/sh
-# Runs as root during the image build, from anvil/Dockerfile's agent-runtime
-# stage. Leaves the claude binary at /usr/local/bin/claude, and discards the
-# installer's own home so no login state is baked into the image.
+# Runs as root in anvil/Dockerfile's agent-runtime stage; the installer's own
+# home is discarded so no login state is baked into the image.
 set -eux
 echo "Installing Claude Code (cache bust: ${SWARMFORGE_HARNESS_INSTALL_BUST})"
 curl -fsSL https://claude.ai/install.sh | bash

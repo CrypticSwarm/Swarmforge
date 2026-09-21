@@ -1,6 +1,4 @@
-# Grok Build's make interface: the user knobs, run env/mounts, and layer
-# defaults for the targets harness_rules generates (build_grok,
-# update_grok, run_grok, stop_grok).
+# Grok Build's make interface for the targets harness_rules generates.
 GROK_IMG    ?= grok-build:local
 GROK_CTR    ?= grok-$(PROJECT_NAME)
 GROK_DATA_DIR ?= $(HOME)/.local/share/grok
@@ -11,9 +9,8 @@ GROK_RUN_ENV = \
 	-e SWARMFORGE_AGENT_BIN=grok \
 	$(SWARMFORGE_LAYER_ENV)
 
-# Grok reads its skills from ~/.grok/skills natively. Masking that dir and
-# ~/.grok/commands with tmpfs keeps them container-private, so per-repo assets
-# never accumulate in the persistent home. exec: skill packages ship scripts.
+# tmpfs masks grok's native asset dirs so per-repo assets never accumulate in
+# the persistent home; exec, because skill packages ship scripts.
 GROK_RUN_MOUNTS = \
 	-v "$(GROK_HOME_DIR)":$(ANVIL_HOME) \
 	--tmpfs $(ANVIL_HOME)/.grok/skills:exec \

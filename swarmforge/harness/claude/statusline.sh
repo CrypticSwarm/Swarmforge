@@ -1,7 +1,5 @@
 #!/bin/bash
-# Claude Code statusLine script
-# Shows: model, dir, % of context window used, aggregate session tokens/cost
-# (summed from the transcript), and current-turn context usage.
+# Claude Code statusLine: model, dir, turns, context %, tokens, and cost.
 
 node -e '
 const fs = require("fs");
@@ -10,8 +8,7 @@ let raw = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", d => raw += d);
 
-// Never let a malformed payload or a missing "end" event hang or crash the
-// status line — always print something and exit.
+// Never hang or crash the status line: always print something and exit.
 const fallback = setTimeout(() => {
   try { process.stdout.write("Claude\n"); } catch (e) {}
   process.exit(0);
@@ -40,26 +37,12 @@ function render(raw) {
   const usedPct = cw.used_percentage;
   const cost = d.cost && d.cost.total_cost_usd;
 
-  // Aggregate tokens actually processed across the whole session: sum every
-  // unique assistant message usage from the transcript. Streamed messages
-  // repeat the same message.id with identical usage, so dedupe by id.
-  // cache_read/creation is included because each API call is billed for it,
-  // same as the cost.total_cost_usd figure — this is total tokens processed,
-  // not unique content tokens (which would be far smaller, since context is
-  // re-sent and re-read from cache every turn). Subagent/sidechain turns
-  // share the same transcript file and are intentionally included here,
-  // matching what cost.total_cost_usd bills.
-  // Turn numbers, two flavors:
-  // - allTurns: main-thread API calls (unique assistant messages). Every
-  //   tool_result sent back to the API triggers another full call that
-  //   reprocesses the whole growing conversation, so each assistant message
-  //   is its own turn, not just each human-authored prompt.
-  // - userTurns: human-authored prompts only (a "user" entry whose content
-  //   is not purely tool_result blocks — tool_result replies are also sent
-  //   as user-role messages but are not something a person typed).
-  // Sidechain (subagent) calls reprocess their own separate, smaller context
-  // rather than the main conversation, so both counts exclude them, even
-  // though their tokens still count toward the session aggregate below.
+  // Tokens the session processed, not unique content tokens: dedupe by
+  // message.id, which streaming repeats, and count cache reads and creations
+  // because every call is billed for them. Sidechain turns count toward that
+  // aggregate but not toward the turn ratio, whose denominator is one
+  // full-context API call per main-thread assistant message and whose
+  // numerator skips user entries that are only tool_result blocks.
   let aggIn = null, aggOut = null, allTurns = null, userTurns = null;
   if (d.transcript_path) {
     try {

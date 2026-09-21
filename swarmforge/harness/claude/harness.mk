@@ -1,6 +1,4 @@
-# Claude Code's make interface: the user knobs, run env/mounts, and layer
-# defaults for the targets harness_rules generates (build_claude,
-# update_claude, run_claude, stop_claude).
+# Claude Code's make interface for the targets harness_rules generates.
 CLAUDE_IMG  ?= claude-code:local
 CLAUDE_CTR  ?= claude-$(PROJECT_NAME)
 CLAUDE_DATA_DIR ?= $(HOME)/.local/share/claude
@@ -11,9 +9,8 @@ CLAUDE_RUN_ENV = \
 	-e SWARMFORGE_AGENT_BIN=claude \
 	$(SWARMFORGE_LAYER_ENV)
 
-# Claude's config dir is container-local (the spec pins it), so nothing
-# under .claude here is loaded as config. plugins/ remounts read-only: a
-# session must not rewrite what the next container executes.
+# Nothing under .claude is loaded as config: the pinned dir is container-local.
+# plugins/ remounts read-only so a session cannot rewrite the next one's code.
 CLAUDE_RUN_MOUNTS = \
 	-v "$(CLAUDE_HOME_DIR)":$(ANVIL_HOME) \
 	-v "$(CLAUDE_HOME_DIR)/.claude/plugins":$(ANVIL_HOME)/.claude/plugins:ro \

@@ -5,8 +5,7 @@ from swarmforge.harness.spec import HarnessSpec, Waiver
 
 
 def _override_keys():
-    # Imported at call time: the registry package imports this module while
-    # building the harness table, so the table does not exist yet at import.
+    # Imported at call time: the registry imports this module to build the table.
     from swarmforge import harness
 
     return harness.agent_override_keys()
