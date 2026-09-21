@@ -11,9 +11,7 @@ import re
 import sys
 
 
-# The four definition layers, lowest to highest precedence. The workspace is the
-# only untrusted layer (any repo you happened to clone); the rest are installed
-# deliberately, which is why only workspace-sourced tongs gate on approval.
+# Lowest to highest precedence; the workspace (the checkout you launched in) is untrusted.
 USER, ORG, REPO, WORKSPACE = "user", "org", "repo", "workspace"
 LAYERS = (USER, ORG, REPO, WORKSPACE)
 TRUSTED_LAYERS = frozenset({USER, ORG, REPO})
@@ -23,26 +21,15 @@ INTERFACE_KINDS = frozenset({"mcp", "port", "volume", "none"})
 READINESS_MODES = frozenset({"tcp", "healthcheck", "none"})
 TRANSPORTS = frozenset({"http"})  # http only in v1 (stdio defeats the purpose)
 
-# Docker labels stamped onto tong containers. The config-hash label answers
-# "did the definition change since this container started?"
 LABEL_TONG_NAME = "swarmforge.tong.name"
 LABEL_CONFIG_HASH = "swarmforge.tong.config-hash"
 
-# Environment injected into the anvil for `port`/`volume` interfaces. The bare
-# tong name is sanitized into an env-safe token: github-creds -> GITHUB_CREDS.
 ENV_PREFIX = "SWARMFORGE_TONG"
 
-# Magic mount word that grants docker-socket access. The broker tong is the
-# privileged holder; centralized here so the approval gate's privilege summary
-# and the broker agree on one spelling.
+# The mount word granting docker control; here so every module spells it one way.
 SOCKET_MOUNT = "docker-socket"
 
-# A broker tong holds the docker socket and spawns its own worker containers. A
-# container cannot re-share the bind mounts it received, so a broker that wants
-# to mount the session workspace into a worker needs the workspace's *host* path
-# (the path the daemon understands), not the in-container mount point. The
-# launcher injects it here for socket-holding tongs; non-broker tongs never see
-# it, so the passthrough behavior for ordinary tongs is unchanged.
+# A container cannot re-share a bind mount, so a broker needs the workspace's host path.
 WORKSPACE_HOST_ENV = "SWARMFORGE_WORKSPACE_HOST_PATH"
 
 
@@ -50,19 +37,10 @@ def warn(message):
     print("tongs: %s" % message, file=sys.stderr)
 
 
-# `True` is an `int` in Python, so a bare isinstance check would accept `port:
-# true`. Every integer test in the package goes through here instead.
+# `True` is an `int`, so a bare isinstance check would accept `port: true`.
 def _is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
-
-# --- Readiness ----------------------------------------------------------------
-# A tong's `readiness:` declaration says how the launcher decides the tong is up
-# before it gates the anvil on it. `tcp` is the implicit default for the
-# network-facing kinds (mcp/port); `volume`/`none` must declare a mode (validation
-# enforces this). These helpers resolve the declaration to plain values; the
-# probing itself (docker exec / a throwaway probe container / inspecting the
-# image healthcheck) is the launcher's side-effectful job.
 
 DEFAULT_READINESS_TIMEOUT_S = 30.0
 _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h)?$")
@@ -88,9 +66,6 @@ def parse_duration(value, default=None):
             raise ValueError("invalid duration %r" % (value,))
         seconds = float(match.group(1)) * _DURATION_UNITS[match.group(2)]
     if seconds <= 0:
-        # A non-positive readiness deadline is never useful -- it gives the
-        # probe no time to succeed -- so reject it here rather than letting the
-        # launch fail mysteriously when nothing ever reports ready.
         raise ValueError("duration must be positive, got %r" % (value,))
     return seconds
 

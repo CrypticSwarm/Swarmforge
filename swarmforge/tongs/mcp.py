@@ -8,9 +8,6 @@ from swarmforge.harness.spec import provided
 from .model import ENV_PREFIX, warn
 
 
-# --- Environment-variable naming ----------------------------------------------
-
-
 def tong_env_prefix(name):
     """Canonical env-var prefix for a tong: github-creds -> SWARMFORGE_TONG_GITHUB_CREDS."""
     token = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").upper()
@@ -22,18 +19,6 @@ def tong_env_var(name, suffix):
     return "%s_%s" % (tong_env_prefix(name), suffix.upper())
 
 
-# --- Interface wiring ---------------------------------------------------------
-# Each tong declares an explicit `interface:` that drives what the anvil needs to
-# reach it. These pure functions dispatch on `interface.kind` and return that
-# contribution -- environment variables, volume mounts, and per-harness MCP
-# server config -- as plain data. The launcher applies the result (env flags,
-# the opencode.json merge, a Claude --mcp-config file) when it actually starts
-# tongs; everything here is side-effect free so it can be unit-tested directly.
-
-# HTTP MCP servers are reached over a streamable-HTTP endpoint. The schema pins
-# the alias and port but not the path, so default to the conventional `/mcp`
-# endpoint, overridable per tong via `interface.path` for servers that mount
-# elsewhere.
 MCP_DEFAULT_PATH = "/mcp"
 
 
@@ -96,10 +81,7 @@ def mcp_url(defn, alias):
     interface = defn.get("interface") or {}
     transport = interface.get("transport", "http")
     if transport != "http":
-        # v1 emits HTTP MCP only, and validation rejects other transports
-        # upstream; reaching here means a new transport was admitted without
-        # teaching this emitter its URL scheme. Fail loudly rather than hand the
-        # anvil a wrong URL.
+        # Unreachable while validation pins TRANSPORTS; a new one needs a scheme here.
         raise ValueError("unsupported MCP transport %r for alias %r" % (transport, alias))
     path = interface.get("path", MCP_DEFAULT_PATH)
     if not path.startswith("/"):
@@ -200,10 +182,7 @@ def plan_injection(merged, harness):
     for name in sorted(merged):
         defn = merged[name]["definition"]
         for key, value in anvil_env(name, defn).items():
-            # Env-var names are sanitized from tong names (github-creds and
-            # github_creds collapse to the same prefix), so distinct tongs can
-            # clash. Keep the first by sorted name and warn, mirroring the MCP
-            # alias collision guard, rather than silently clobbering.
+            # Sanitizing collapses github-creds and github_creds onto one prefix.
             if key in env and env[key] != value:
                 warn("tong '%s' reuses anvil env var '%s'; ignoring the duplicate" % (name, key))
                 continue

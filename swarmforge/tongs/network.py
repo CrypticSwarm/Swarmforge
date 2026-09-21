@@ -6,18 +6,7 @@ from .mcp import tong_aliases
 from .model import LIFECYCLES, warn
 
 
-# Each anvil session gets its own docker network so concurrent anvils cannot
-# reach each other's session-scoped tongs by container name. `session` tongs run
-# only on it; a tong's canonical DNS name is a `--network-alias`, never its
-# (session/worktree-suffixed) container name, so the generated config is
-# identical across worktrees. A `shared` tong is one persistent container
-# attached to each session network via `network connect --alias` and detached on
-# teardown, so sessions can reach it without being able to reach each other.
-#
-# These functions only *plan* the wiring as plain data; the launcher creates the
-# network, attaches tongs, and tears them down. With no `session` tongs the plan
-# keeps the existing single network (and the `NETWORK=` escape hatch) untouched,
-# so a zero-tong launch is byte-identical to today's direct `docker run`.
+# A per-session network keeps concurrent anvils off each other's `session` tongs.
 
 SESSION_NET_PREFIX = "swarmforge-session"
 
@@ -75,13 +64,8 @@ def plan_network(merged, base_network, session_id):
         }
 
     net = session_network_name(session_id)
-    # All network-facing tongs share the one per-session network, so two tongs
-    # claiming the same alias would collide there -- DNS would resolve
-    # nondeterministically. Keep the first claim by sorted tong name and drop the
-    # rest with a warning, mirroring the MCP-config and env-var collision guards.
-    # Dedup is per alias, not per tong, so a tong that loses one contested name
-    # still registers under the rest. One pass over both lifecycles keeps the
-    # winner deterministic regardless of whether the loser is `session` or `shared`.
+    # Two tongs sharing an alias would resolve nondeterministically on one network.
+    # One pass over both lifecycles keeps the winner the first by sorted name.
     session_aliases = []
     shared_connect = []
     seen = {}
