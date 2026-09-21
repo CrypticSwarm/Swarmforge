@@ -32,6 +32,14 @@ A `harness_rules` macro generates all sixteen from the knobs each [`harness.mk`]
 | `build_harnesses` | Builds all four images. | as `build_<harness>` |
 | `clean` | Stops every harness container, stops Ollama, and removes the network. | `NETWORK` |
 
+## Container names
+
+A session's container is named `<harness>-<directory>-<digest>` — `claude-master-3f9a1c72` — where the digest is the first eight hex digits of the SHA-256 of `PROJECT_DIR` resolved to an absolute path with its symlinks followed. The basename alone would not identify a session: the [worktree layout](../cli.md) puts each branch in a sibling directory, so `repo1/master` and `repo2/master` share one, and `run_<harness>` removes a container of the name it is about to use before it starts. The name is a function of the directory and nothing else, so the same `PROJECT_DIR` always reproduces it — and so do two spellings of one directory.
+
+Everything the launcher derives afterwards carries that name: the per-session docker network is `swarmforge-session-<container>`, and each `session` [tong](../tongs/README.md)'s container is `<container>-tong-<tong>`. That last one docker registers as a DNS label, which may not exceed 63 characters, so the readable half of the name is cut to 24. That holds the container name to 42 and leaves 21 for `-tong-<tong>`, so a branch name of any length fits and a tong named in 15 characters or fewer does too. The digest is what identifies the directory; the cut costs only readability.
+
+Set `<PREFIX>_CTR` to name the container yourself; `run_<harness>` and `stop_<harness>` both read it, so the two stay in agreement.
+
 ## Images without a harness
 
 | Target | What it does |

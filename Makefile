@@ -31,9 +31,18 @@ TIMEZONE     ?= Etc/UTC
 UID          := $(shell id -u)
 GID          := $(shell id -g)
 
+# The host's python: the launcher and the unit suite run outside any image.
+PYTHON ?= python3
+
 SWARMFORGE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 PROJECT_DIR  := $(CURDIR)
-PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
+# `override`: a name for one directory while the recipe mounts another is the collision itself.
+# Exported, not spliced: a `$` or a backtick in the path is syntax on a $(shell) command line.
+override export SWARMFORGE_PROJECT_DIR := $(PROJECT_DIR)
+PROJECT_NAME := $(shell $(PYTHON) "$(SWARMFORGE_DIR)/bin/project-name")
+ifeq ($(strip $(PROJECT_NAME)),)
+$(error Could not name a container for $(PROJECT_DIR); see the error above from $(SWARMFORGE_DIR)/bin/project-name)
+endif
 # Not for overriding -- the entrypoint and docs name it; a variable only so the git-dir guard tracks it.
 WORKSPACE_MOUNT := /workspace
 # The entrypoint hardcodes this same path, so no overrides.
@@ -51,9 +60,6 @@ SWARMFORGE_REPO_TONGS_DIR ?= $(SWARMFORGE_DIR)/tongs
 # The portable .agents/{skills,commands} overlay, distinct from the .swarmforge asset layers above.
 SWARMFORGE_USER_DOTAGENTS_DIR ?= $(HOME)/.agents
 SWARMFORGE_ORG_DOTAGENTS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.agents,)
-
-# The host's python: the launcher and the unit suite run outside any image.
-PYTHON ?= python3
 
 # The one tool outside the stdlib this repo asks for, and only for `make lint`.
 RUFF ?= ruff
