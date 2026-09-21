@@ -4,7 +4,6 @@ import sys
 
 from .main import main
 
-# Guarded, so importing this module (a collector walking the package, say) does
-# not run the CLI and raise SystemExit at its import.
+# Guarded so importing this module does not run the CLI and exit.
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

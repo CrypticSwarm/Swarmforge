@@ -31,9 +31,7 @@ from .args import nonempty
 from .main import COMMANDS, build_parser, main
 
 __all__ = [
-    # args
     "nonempty",
-    # main
     "COMMANDS",
     "build_parser",
     "main",

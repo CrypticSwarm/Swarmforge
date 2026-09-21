@@ -50,9 +50,7 @@ from swarmforge.agents.emit import render, split_frontmatter, warn
 from swarmforge.harness.spec import provided
 from swarmforge.yamlite import parse_map, parse_scalar
 
-# This module's public surface: the CLI's own entry points, the emitter table
-# they dispatch through, and the frontmatter helpers they run on, importable
-# from the CLI's module name.
+# The emit and yamlite helpers are re-exported so callers import them from here.
 __all__ = [
     "EMITTERS",
     "load_agents",
@@ -131,8 +129,7 @@ def main(argv):
     if len(argv) < 3:
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    # A bare CLI run has no home, so nothing a finalize hook would publish
-    # into one is written.
+    # A bare CLI run has no home, so a finalize hook publishes nothing into one.
     return run(argv[0], argv[1], argv[2:])
 
 
