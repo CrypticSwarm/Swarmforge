@@ -20,9 +20,6 @@ from swarmforge import tongs
 from .errors import OrchestrationError
 
 
-# --- Secret resolution --------------------------------------------------------
-
-
 class SecretResolutionError(Exception):
     """A secret reference could not be resolved; the launch must not proceed."""
 
@@ -75,17 +72,7 @@ def make_secret_resolver(providers):
     return resolve
 
 
-# --- Secret delivery channel --------------------------------------------------
-# Resolved secrets reach a tong over a FIFO its own wrapper creates on an
-# in-container tmpfs, not as `-e`/argv/disk (a host FIFO would not survive
-# Docker Desktop's VM boundary; see "Secret delivery" in swarmforge.tongs.secrets).
-# The launcher streams the `export NAME=value` script through `docker exec -i`,
-# and the tong's `/bin/sh` wrapper blocks reading the FIFO, so the values are in
-# the process environment before the real entrypoint starts. The channel is
-# created behind a factory so `run_with_tongs` can be tested with a fake that
-# records the payload instead of invoking docker.
-
-
+# The FIFO is in-container; a host-side one dies at Docker Desktop's VM boundary.
 class SecretChannel:
     """Streams a tong's secret env into its in-container FIFO via docker exec."""
 

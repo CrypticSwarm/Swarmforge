@@ -21,17 +21,8 @@ import sys
 import tempfile
 import time
 
-# The pure core this launcher orchestrates: layer discovery and name-based
-# merge.
 from swarmforge import tongs
-
-# The git-dir guard the Makefile already runs for the anvil's workspace mount.
-# The launcher reuses it for tongs that mount the workspace, so a tong sees the
-# same git-dir mounts (and the same read-only guards) the anvil does.
 from swarmforge import gitguard
-
-# The per-harness registry: MCP fragment shape and delivery are read off each
-# harness's spec.
 from swarmforge import harness as harnesses
 from swarmforge.harness.spec import provided
 
@@ -178,8 +169,6 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
         raise OrchestrationError("tong '%s': %s" % (name, exc))
 
     if not secrets:
-        # A definition that got past validation should never fail argv assembly,
-        # but if it does it is still a config problem, not a crash.
         try:
             argv = tongs.tong_run_argv(
                 name, defn,
@@ -201,9 +190,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     entrypoint, command = tongs.secret_inject_argv(target)
     payload = tongs.render_secret_exports(secrets)
 
-    # Assembled before the teardown guard below: a refused definition starts
-    # nothing, so it must remove nothing (for a `shared` tong, that would be
-    # another session's running container).
+    # Assembled before the rm_force below: a refused definition must remove nothing.
     try:
         argv = tongs.tong_run_argv(
             name, defn,
@@ -262,10 +249,6 @@ def _injection_pre_image_args(injection):
     return args
 
 
-# Where the generated MCP config is mounted in the anvil. A harness whose spec
-# delivers by env var is pointed at that path through the variable below, which
-# the container's config driver reads; one that delivers by flag is pointed at
-# it on its own command line instead.
 MCP_CONFIG_CONTAINER_PATH = "/tmp/swarmforge-tong-mcp.json"
 MCP_FILE_ENV = "SWARMFORGE_TONG_MCP_FILE"
 
@@ -341,19 +324,12 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
         merged[name]["definition"].get("lifecycle") == "session" for name in merged
     )
     if has_session and not session_id:
-        # The per-session network and container names key off the anvil --name.
-        # The Makefile always passes it, so its absence is a launch-shape bug --
-        # stop rather than build an unnamed session network. (Checked before
-        # plan_network, which needs the handle to derive the network name.)
+        # Checked before plan_network, which derives the network name from the handle.
         raise OrchestrationError(
             "session tongs require the anvil '--name' as a session handle"
         )
 
-    # An org-layer `shared` tong is partitioned onto its own isolated network,
-    # which the anvil joins by name -- so a scoped launch needs the anvil --name
-    # for the same reason a session launch does. Derive the org scope token from
-    # the org layer's directory (None when no org layer was passed, leaving every
-    # shared tong on today's global, unscoped naming).
+    # No org layer means no token, and every shared tong keeps its global unscoped name.
     org_token = tongs.org_scope_token(dict(opts.layer_dirs).get(tongs.ORG))
     has_org_shared = bool(org_token) and any(
         merged[name]["definition"].get("lifecycle") != "session"
@@ -367,17 +343,14 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
         )
 
     plan = tongs.plan_network(merged, base_network, session_id)
-    # `volume` tongs are refused upstream, so the injection is reachability for
-    # the network-facing kinds only: `port` env vars and, for `mcp` tongs, the
-    # per-harness MCP config emitted for `opts.harness`.
     injection = tongs.plan_injection(merged, opts.harness)
 
     created_network = None
     started_sessions = []
     connected_shared = []
-    joined_shared_networks = []  # isolated per-scope networks the anvil must join
-    anvil_multi = False          # the anvil was created via the multi-network path
-    mcp_dir = None  # host temp dir holding the generated MCP config, if any
+    joined_shared_networks = []
+    anvil_multi = False
+    mcp_dir = None
     try:
         if plan["create"]:
             docker.ensure_network(plan["create"])
@@ -398,9 +371,6 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                 started_sessions.append(container)
                 probe_network = plan["network"]
             else:
-                # An org-sourced shared tong is partitioned onto an isolated
-                # per-org network and a scoped container name; every other shared
-                # tong stays on the shared base network, unscoped, as before.
                 scope = org_token if merged[name]["source"] == tongs.ORG else None
                 container = tongs.shared_container_name(name, scope=scope)
                 if scope:
@@ -420,33 +390,18 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                 )
             ready_checks.append((name, defn, alias, container, probe_network))
 
-        # Attach each network-facing `shared` tong to the per-session network under
-        # every DNS name it answers to, so the anvil reaches it there without the
-        # long-lived tong having to live on the session network permanently. (The
-        # session-tong start loop above iterates the whole merged set, not
-        # plan["session_aliases"], because a `none` session tong with no alias must
-        # still be started; only the network-facing `shared` tongs in
-        # plan["shared_connect"] are connected here.)
+        # Network-facing shared tongs only; a `none` tong has no alias to connect under.
         for name, aliases in plan["shared_connect"]:
             if org_token and merged[name]["source"] == tongs.ORG:
-                # An org-scoped shared tong is isolated on its own network, which
-                # the anvil joins directly -- it is deliberately never attached to
-                # the per-session network, so the session reaches it only through
-                # that org network and never via the shared base/session fabric.
+                # Reached only over its own org network, never the session fabric.
                 continue
             container = tongs.shared_container_name(name)
-            # ensure_network may have reused a network left by a hard-killed prior
-            # session whose teardown never ran, with this shared tong still attached;
-            # a stale endpoint would make connect fail. Clear it first -- best-effort,
-            # a no-op when the tong is not attached -- so the connect is idempotent.
+            # A stale endpoint from a hard-killed session would fail the connect.
             docker.network_disconnect(plan["network"], container)
             docker.network_connect(plan["network"], container, aliases=aliases)
             connected_shared.append((plan["network"], container))
 
-        # Probe readiness on the network the anvil will reach each tong over: the
-        # session/base network for ordinary tongs, but the isolated org network
-        # for a scoped shared tong (it lives only there, never on the session
-        # fabric), so each is checked at the alias the anvil actually dials.
+        # A scoped shared tong lives only on its org network, so probe where the anvil dials.
         for name, defn, alias, container, probe_network in ready_checks:
             if not wait_ready(
                 docker, container, defn, alias, probe_network,
@@ -454,11 +409,6 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             ):
                 raise OrchestrationError("tong '%s' did not become ready in time" % name)
 
-        # `port`/`volume` reachability splices in before the image; the MCP
-        # config adds a read-only mount before the image, paired with either the
-        # env var the container's config driver reads or a harness arg after
-        # the image, whichever the harness spec's delivery names. With no `mcp`
-        # tongs the fragment is empty and nothing is written or appended.
         pre_image_args = _injection_pre_image_args(injection)
         post_image_args = []
         if injection["mcp"]:
@@ -470,41 +420,27 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             anvil_cmd, network=plan["network"],
             pre_image_args=pre_image_args, post_image_args=post_image_args,
         )
-        # The anvil joins the base network (the `NETWORK=` escape hatch) when a
-        # per-session network is its primary, plus every isolated org network its
-        # scoped shared tongs live on.
+        # plan["extra_networks"] is the base network, when the anvil was given one.
         extra_networks = list(plan["extra_networks"]) + joined_shared_networks
         if extra_networks:
-            # The anvil joins more than one network, which docker run cannot do at
-            # creation, so create -> connect the extras -> start it attached.
-            # (session_id is guaranteed here: a session network or an org network
-            # both require the anvil --name, checked above.)
+            # session_id is guaranteed: a session or org network both require --name.
             anvil_multi = True
             return docker.run_foreground_multi(injected, extra_networks, session_id)
         return docker.run_foreground(injected)
     finally:
-        # Tear down per-session state, leaving the long-lived `shared` tongs
-        # running. Order matters: remove the `session` tongs and the anvil, then
-        # disconnect the `shared` tongs, before removing the network -- docker
-        # refuses to delete a network while endpoints remain.
+        # Order matters: docker refuses to remove a network while endpoints remain.
         for container in started_sessions:
             docker.rm_force(container)
-        # A multi-network anvil is an explicitly-created container (left for us so
-        # a failed connect/start is not orphaned); the plain single-network run
-        # uses `--rm` and self-removes, so it is only force-removed here.
+        # rm_force covers a create path that failed before its own --rm could fire.
         if anvil_multi:
             docker.rm_force(session_id)
         for network, container in connected_shared:
             docker.network_disconnect(network, container)
         if created_network:
             docker.network_rm(created_network)
-        # Best-effort prune of each isolated org network: docker refuses while the
-        # long-lived shared tong is still attached, so the network persists with
-        # its tong and is reclaimed only once nothing is on it.
+        # Best-effort: docker refuses while the long-lived shared tong is still attached.
         for network in joined_shared_networks:
             docker.network_rm(network)
-        # The generated MCP config was bind-mounted into the anvil, which has now
-        # exited; remove the host temp file holding it.
         if mcp_dir:
             shutil.rmtree(mcp_dir, ignore_errors=True)
 

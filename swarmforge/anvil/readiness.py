@@ -43,7 +43,6 @@ def wait_ready(docker, container, defn, alias, network, *, anvil_image,
                 state = docker.inspect_state(container)
                 return bool(state and state["running"])
             return docker.tcp_probe(network, alias, port, anvil_image)
-        # healthcheck
         if command:
             return docker.exec_ok(container, command)
         return docker.health_status(container) == "healthy"
