@@ -1,6 +1,6 @@
 # Swarmforge
 
-**Swarmforge: The foundation for forging robust systems and dependable tools**
+![Swarmforge: The foundation for forging robust systems and dependable tools](docs/images/swarmforge-banner.jpg)
 
 Swarmforge is a builder-focused environment for designing, refining, and reusing processes and the tools they produce.
 It emphasizes robustness, constraint-driven design, and interoperability over ad-hoc interaction or one-off execution.

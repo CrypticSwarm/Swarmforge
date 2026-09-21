@@ -11,7 +11,7 @@
 - `swarmforge/` is the Python for both sides of the container boundary: the host launcher (`anvil`, `tongs`, `gitguard`, `cli`, `worktrees`), and the container lifecycle drivers the entrypoint runs with `python3 -m` (`swarmforge.harness.init` as root, then `swarmforge.harness.execute` as the anvil user), where the config merging, the agent translation, and the asset install happen. It is stdlib-only: the image installs no third-party Python and the launcher runs on the host's `python3`.
 - `bin/` holds the launcher entry points (`run-anvil`, `tongs`, `git-guard`, `swarmforge`). Each is a shim that puts the checkout on `sys.path` and calls its module's `main()` — the only files that resolve a path, so nothing under `swarmforge/` needs to know where it sits on disk.
 - `opencode/` holds the OpenCode-native repo config layer (`opencode.json`, plus untracked plugin state); harness-neutral assets live at the top level in `skills/`, `commands/`, and `agents/`.
-- `docs/` holds the prose, one file per subject, indexed by `docs/README.md`; `README.md` keeps the pitch, the install and run steps, and a map of that tree. Every page is reachable from the index and every relative link resolves, which `tests/test_docs_links.py` holds to.
+- `docs/` holds the prose, one file per subject, indexed by `docs/README.md`; embedded images live in `docs/images/`; `README.md` keeps the pitch, the install and run steps, and a map of that tree. Every page is reachable from the index and every relative link resolves, which `tests/test_docs_links.py` holds to.
 - `ollama/` stores persistent Ollama state. Do not add large model blobs to git—only configuration or lightweight defaults belong here.
 
 ## Coding Conventions
