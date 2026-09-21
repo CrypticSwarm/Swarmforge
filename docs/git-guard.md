@@ -13,7 +13,16 @@ The guard warns and prints the fix, which moves `core.bare` into `config.worktre
 Only git dirs that exist when the session starts are covered — a repo the agent clones or `git init`s inside the workspace, or an unrelated checkout vendored there, is not.
 A `.git` written into an existing subdirectory shadows the guarded repo for anything run from inside that directory: `git status` at the root neither reports it nor executes it, and a git-aware shell prompt or editor entering the directory is enough to run what its config says. `safe.directory`, git's gate for this, keys on ownership, and the container runs as your own uid.
 
+When the workspace is a linked worktree, one mount goes the other way.
+The worktree's git dir records the checkout it belongs to in `gitdir`, by the path that checkout has on the host — and the container gets the git dirs at their host paths but never a checkout there.
+Git still finds the worktree root by walking up from the working directory, so `git rev-parse --show-toplevel` is unaffected; what goes wrong is everything that reads the record.
+`git worktree list` names that worktree by its host path and calls it `prunable`, and a harness that resolves its project root from the record — folder trust, in particular, is usually keyed on it — answers with a directory the container does not have.
+A read-only mount over the record spells the checkout the way the session reaches it, `/workspace` or `/repos/<slug>`, so those answers match the directory the agent starts in.
+The host's record is neither written nor moved: `git worktree list` and `git worktree prune` read it on the host, where a container path reads as a worktree that has gone away.
+Only the workspace's own record is restated; the repository's other linked worktrees still read `prunable` inside the container, and a `git worktree prune` there — including one an automatic `gc` reaches — unlinks their registration files on the host until the read-only mounts stop it partway.
+
 The rest of the git dir stays writable, so committing, branching, fetching, and `git worktree add` work as usual.
 Commands that write config do not, by design: `git config --local`, `git remote add`, `git submodule update --init`, and `git sparse-checkout` fail with `could not write config file ...: Device or resource busy`, and hook installers like `pre-commit install` or husky fail on the read-only `.git/hooks`.
+`git worktree repair` and `git worktree move` fail the same way on the read-only registration above, which `status`, `commit` and `worktree list` never write.
 Branch tracking is the sharp edge: `git push -u` and `git switch <remote-branch>` exit 0 and still report "set up to track", but the tracking config is silently not recorded — git treats that write failing as non-fatal. Use `git push origin HEAD:<branch>` and `git switch -c <name> --no-track origin/<branch>`, and set a repo up on the host when it needs to stick.
 This narrows the git-specific surface; it does not make the workspace a trust boundary. Hooks that config already points *outside* the git dir (`core.hooksPath = .githooks`, husky) and attribute-driven filter commands live in the workspace, as do `package.json` scripts and `Makefile`s — anything you run on the host from a directory an agent could write is still yours to trust.
