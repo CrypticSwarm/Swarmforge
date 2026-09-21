@@ -107,27 +107,20 @@ import os
 import subprocess
 import sys
 
-# Files made read-only in a git dir that holds a repository's config and hooks:
-# the workspace's own git dir, a submodule's, a linked worktree's shared common
-# dir. The value is what to write when the file is absent -- an empty `config`
-# is inert, and a repo works fine without one, so its absence is a hole to fill
-# rather than a sign there is nothing to guard.
+# Made read-only in every git dir that holds a repository's config and hooks.
+# The value is written when the file is absent: an empty `config` is inert, and
+# a missing one is a hole to fill rather than a sign there is nothing to guard.
 REPOSITORY_FILES = {"config": "", "commondir": ".\n"}
 
-# `hooks/` is where git runs scripts from. `remotes/` and `branches/` are the
-# pre-config way to define a remote, still read when config defines no remote
-# of that name, so a planted file there decides where a `git fetch <name>`
-# goes -- and what it runs, for a URL naming a transport that executes one.
+# `hooks/` holds scripts git runs; `remotes/` and `branches/` define a remote
+# when config names none, so a file there redirects a `git fetch <name>`.
 REPOSITORY_DIRS = ("hooks", "remotes", "branches")
 
-# A per-worktree git dir under `worktrees/` has no config or hooks of its own --
-# both come from the common dir -- but it carries the `commondir` pointer that
-# says which common dir that is. Never written: unlike a repository's, its
-# contents are a real relative path.
+# A worktree git dir has no config or hooks of its own, only the `commondir`
+# naming the common dir that holds them. Never created: a real relative path.
 WORKTREE_FILES = {"commondir": None}
 
-# Guarded in both kinds of git dir, but only where `extensions.worktreeConfig`
-# is on, since that is the only case git reads it. An empty one is inert.
+# Guarded only where `extensions.worktreeConfig` is on; an empty one is inert.
 WORKTREE_CONFIG = {"config.worktree": ""}
 
 
@@ -211,8 +204,7 @@ def read_config(git_dir):
         if not record:
             continue
         key, newline, value = record.partition("\n")
-        # A key written with no `=` at all has no value part, which git reads
-        # as true; one written with an empty value reads as false.
+        # A key written with no `=` has no value part, which git reads as true.
         values[key] = value if newline else None
     return values
 
@@ -255,8 +247,7 @@ def is_true(config, key):
     return number is not None and number != 0
 
 
-# The repair, as arguments to `git -C <git dir>`. The order is the one
-# git requires: `config --worktree` refuses to write until the extension is on.
+# Extension first: `--worktree` is `--local` without it, undoing step 2.
 BARE_REPAIR_STEPS = (
     ["config", "extensions.worktreeConfig", "true"],
     ["config", "--unset", "core.bare"],
@@ -474,9 +465,7 @@ def build_mounts(workspace, targets, warn=None):
     if common is None:
         return []
 
-    # A git dir outside the workspace is mounted at its own path, so that is
-    # the mount everything inside it hangs off; inside the workspace, the
-    # workspace mount is.
+    # A git dir outside the workspace is mounted at its own path.
     outside = None if common == workspace or is_inside(common, workspace) \
         else common
     if outside:
@@ -496,8 +485,7 @@ def build_mounts(workspace, targets, warn=None):
     def root_of(host):
         return workspace if is_inside(host, workspace) else outside
 
-    # Ordered so a directory precedes what hangs off it, which is how the
-    # launcher's `set -x` output then reads.
+    # A directory precedes what hangs off it; the first spec per container wins.
     plan = []
 
     def guard(host, read_only):
@@ -505,20 +493,15 @@ def build_mounts(workspace, targets, warn=None):
             plan.append((ancestor, False))
         plan.append((host, read_only))
 
-    # Guarding a git dir is moot if the pointer file naming it can be repointed
-    # at an unguarded one.
+    # Guarding a git dir is moot if its pointer can be repointed elsewhere.
     workspace_git = os.path.join(workspace, ".git")
     if os.path.islink(workspace_git):
         warn("%s is a symlink; the container can repoint it at a git dir none "
              "of these mounts cover" % workspace_git)
     pointers = [workspace_git]
 
-    # A submodule is a repository in its own right: its git dir has the config
-    # and hooks the host runs when the user works in it, and submodules and
-    # worktrees of its own. A queue rather than a walk, because a repository is
-    # reached two ways -- under a repository's `modules/`, and under a linked
-    # worktree's, which is where git puts a submodule initialized in that
-    # worktree rather than under the repository it belongs to.
+    # Each submodule is a repository in its own right. A queue, not a walk:
+    # one sits under a repository's `modules/` or a linked worktree's.
     pending = [common]
     seen = set()
     while pending:
@@ -536,9 +519,7 @@ def build_mounts(workspace, targets, warn=None):
         for path in guarded_paths(repository, REPOSITORY_FILES,
                                   REPOSITORY_DIRS, worktree_config, warn):
             guard(path, True)
-        # Set on a submodule's git dir, and on the git dir of a repo whose
-        # checkout is somewhere else; either way it names the checkout whose
-        # `.git` points back here.
+        # A submodule's or separate-git-dir checkout, whose `.git` points here.
         checkout = submodule_checkout(repository, config)
         if checkout:
             pointers.append(os.path.join(checkout, ".git"))
@@ -547,8 +528,7 @@ def build_mounts(workspace, targets, warn=None):
             if not mountable(worktree, warn):
                 continue
             guard(worktree, False)
-            # The extension is the repository's, and a worktree git dir has no
-            # config of its own to read it from.
+            # The extension is the repository's, not the worktree's.
             for path in guarded_paths(worktree, WORKTREE_FILES, (),
                                       worktree_config, warn):
                 guard(path, True)

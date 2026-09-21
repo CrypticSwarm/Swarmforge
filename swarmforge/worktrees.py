@@ -46,9 +46,7 @@ class LayoutError(ValueError):
     """The destination cannot hold the layout; str(exc) names the path."""
 
 
-# Variables that name the repository git works on. `-C` does not override them,
-# so a build run from a hook or a `git rebase --exec` would write into the
-# caller's repository.
+# `-C` does not override these: a hook's build would land in the caller's repo.
 REPO_ENVIRONMENT = (
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -73,8 +71,7 @@ def git(cwd, *args, capture=False):
     environment = {key: value for key, value in os.environ.items()
                    if key not in REPO_ENVIRONMENT}
     try:
-        # The raw fd, not `sys.stderr`, which a caller may have replaced with a
-        # stream that has no fileno.
+        # Raw fd 2: a caller's `sys.stderr` may be a stream with no fileno.
         completed = subprocess.run(
             argv, text=True, env=environment,
             stdout=subprocess.PIPE if capture else 2)

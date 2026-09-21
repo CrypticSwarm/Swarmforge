@@ -99,8 +99,7 @@ def parse_map(lines, index, indent):
         if rest:
             out[key] = parse_scalar(rest)
             continue
-        # The first line carrying structure decides whether the block below is a
-        # list or a map, and at what indent; a comment must decide neither.
+        # The first line carrying structure decides list-or-map and indent.
         peek = index
         while peek < len(lines) and is_comment_or_blank(lines[peek]):
             peek += 1
