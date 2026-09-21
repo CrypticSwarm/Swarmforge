@@ -133,7 +133,6 @@ test("env is emitted sorted and param env overrides static env", () => {
     params: [{ name: "p", type: "enum", values: ["override"], env_var: "B" }],
   });
   const argv = buildWorkerArgv(cmd, { p: "override" }, undefined);
-  // -e A=1 comes before -e B=override, and B is the param's value, not "static".
   assert.deepEqual(argv, ["run", "--rm", "-e", "A=1", "-e", "B=override", "img@sha256:abc"]);
 });
 

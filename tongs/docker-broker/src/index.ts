@@ -1,6 +1,4 @@
-// HTTP entrypoint for the broker. Loads the baked command config and serves the
-// MCP app (see app.ts). The config path, port, and workspace host path all come
-// from the environment so the same image serves any baked or mounted config.
+// Env-configured so one image serves any baked or mounted config.
 
 import { loadConfig } from "./config.js";
 import { createApp } from "./app.js";

@@ -1,10 +1,7 @@
-// Turning a validated command + caller-supplied parameters into a concrete
-// `docker run` invocation. This is the broker's security boundary, so it trusts
-// nothing: images are fixed by config, mounts resolve only the `workspace` magic
-// word against the host path the launcher injected, and parameters can only
-// append config-defined tokens or insert an enum value re-checked against its
-// allowed set. Workers are always spawned with an argv array -- never a shell --
-// so no parameter value can be interpreted as a flag, path, or shell metacharacter.
+// The broker's security boundary: every `docker run` argument comes from the
+// validated config or the launcher-injected workspace path, and workers are
+// spawned with an argv array -- never a shell -- so no parameter value can
+// become a flag, path, or shell metacharacter.
 
 import { spawn } from "node:child_process";
 import type { CommandDef } from "./config.js";
@@ -21,8 +18,7 @@ export type Spawn = (command: string, args: string[]) => Promise<RunResult>;
 
 export const MAX_WORKER_OUTPUT_BYTES = 1024 * 1024;
 
-// Resolve a validated `workspace[:<target>][:<mode>]` spec to a docker `-v` value
-// against the host workspace path.
+// Takes an already-validated `workspace[:<target>][:<mode>]` spec.
 export function resolveWorkspaceMount(spec: string, workspaceHost: string): string {
   const parts = spec.split(":");
   let target = "/workspace";
@@ -35,9 +31,7 @@ export function resolveWorkspaceMount(spec: string, workspaceHost: string): stri
   return mode ? `${workspaceHost}:${target}:${mode}` : `${workspaceHost}:${target}`;
 }
 
-// Map caller inputs onto the additive effects the config permits: tokens appended
-// to the worker command and fixed environment overrides. Inputs are applied in
-// declaration order so the resulting argv is deterministic.
+// Only the effects the config permits, applied in declaration order so argv is deterministic.
 export function applyParams(
   command: CommandDef,
   inputs: Record<string, unknown>,
@@ -63,8 +57,7 @@ export function applyParams(
       if (param.required) throw new BrokerError(`missing required parameter '${param.name}'`);
       continue;
     }
-    // Re-check against the allowed set even though the MCP schema already enforces
-    // it: this function must be safe on its own, never trusting the caller.
+    // Re-checked although the MCP schema enforces it too: never trust the caller.
     if (!param.values.includes(selected)) {
       throw new BrokerError(`'${selected}' is not an allowed value for parameter '${param.name}'`);
     }
@@ -74,9 +67,7 @@ export function applyParams(
   return { append, env };
 }
 
-// Build the argv passed to `docker` (i.e. starting at `run`). Pure and total for a
-// validated command; throws only when a workspace mount is requested but the host
-// path was not injected.
+// The argv passed to `docker`, starting at `run`.
 export function buildWorkerArgv(
   command: CommandDef,
   inputs: Record<string, unknown>,
@@ -146,8 +137,6 @@ function capOutput(value: string): string {
   return Buffer.from(value).subarray(0, MAX_WORKER_OUTPUT_BYTES).toString();
 }
 
-// Run one worker to completion, capturing its output. The container is `--rm`, so
-// nothing is left behind once it exits.
 export function runWorker(
   command: CommandDef,
   inputs: Record<string, unknown>,

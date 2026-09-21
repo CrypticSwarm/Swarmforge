@@ -1,15 +1,7 @@
-// End-to-end: drive the real broker over HTTP MCP and let it spawn real worker
-// containers, then assert the workers actually touched the mounted workspace.
-//
-// Unlike the unit tests (which inject a mock Spawn), this exercises the whole
-// path -- MCP client -> HTTP app -> buildServer -> runWorker -> `docker run` -> a
-// container writing into the bind-mounted workspace -> the file on disk. It runs
-// the harness directly on the host (not docker-in-docker) so the workspace host
-// path is just a local temp dir the daemon can bind-mount without translation.
-//
-// Skipped when docker is unavailable so `npm run test:e2e` degrades gracefully
-// off CI. The worker runs as root, so the files it leaves are root-owned but
-// world-readable -- fine to stat and read back here.
+// Real docker, no mock Spawn: MCP client -> HTTP app -> `docker run` -> a file on
+// disk. Runs on the host rather than docker-in-docker, so the workspace host path
+// is a local temp dir the daemon can bind-mount without translation. The worker
+// runs as root, leaving root-owned but world-readable files to read back here.
 
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
@@ -82,8 +74,6 @@ describe("broker end-to-end round trip", { skip: dockerUnavailableReason() }, ()
     if (workspace) rmSync(workspace, { recursive: true, force: true });
   });
 
-  // Each endpoint: call the verb over MCP, confirm the broker reports success,
-  // and confirm the worker container actually wrote its file into the workspace.
   for (const { verb, file, marker } of [
     { verb: "write_a", file: "a.txt", marker: "A" },
     { verb: "write_b", file: "b.txt", marker: "B" },

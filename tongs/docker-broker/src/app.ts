@@ -1,7 +1,4 @@
-// The broker's HTTP surface, split from the process entrypoint so it can be
-// started against an arbitrary config/workspace/port in tests. Serves a stateless
-// Streamable-HTTP MCP endpoint at /mcp (a fresh server per request, as the SDK's
-// stateless example does) plus a /healthz liveness endpoint.
+// Stateless Streamable-HTTP MCP: a fresh server and transport per request.
 
 import express, { type Express, type Request, type Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
