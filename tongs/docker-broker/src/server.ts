@@ -1,8 +1,4 @@
-// Maps a validated broker config onto an MCP server: one tool per command, whose
-// input schema is derived from the command's declared parameters. A boolean param
-// becomes an optional boolean; an enum param becomes a (required or optional)
-// string constrained to its allowed values, so the harness can only ever send a
-// value the config already sanctioned.
+// One MCP tool per command; an enum param's schema admits only its declared values.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";

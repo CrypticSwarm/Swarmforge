@@ -1,12 +1,5 @@
-# Reference broker command set. This is illustrative: replace the images and
-# commands with the narrow, task-shaped verbs your project actually needs, and
-# pin image digests for anything you depend on.
-#
-# Every image a command may run must appear in `allowed_images` -- that list is
-# the broker's entire allowlist. There is no verb that runs an arbitrary image or
-# mounts an arbitrary host path: a worker may only mount the session `workspace`,
-# and parameters can only toggle a fixed effect (boolean) or pick a value from a
-# fixed set (enum).
+# Illustrative: replace these with the narrow, task-shaped verbs your project
+# needs and pin image digests. `allowed_images` is the broker's entire allowlist.
 name: docker-broker
 description: >-
   Reference Swarmforge broker. Spawns short-lived worker containers on demand so

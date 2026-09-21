@@ -1,14 +1,6 @@
-// Declarative broker configuration: the set of narrow docker-task verbs this
-// broker exposes. The shape deliberately mirrors a Swarmforge tong definition --
-// each command describes the *worker* container to spawn (image, mounts, command,
-// env, resources, networks) -- with an MCP surface (name, description, typed
-// params) layered on top. There is no "run an arbitrary container" verb: the set
-// of images named across the commands, gated by `allowed_images`, is the entire
-// allowlist.
-//
-// Loading is fail-closed. Any structural problem throws ConfigError and the broker
-// refuses to start, so a misconfigured allowlist or an injectable parameter can
-// never reach the docker socket.
+// There is no "run an arbitrary container" verb: the images named across the
+// commands, gated by `allowed_images`, are the entire allowlist. Loading is
+// fail-closed, so a misconfigured allowlist or parameter never reaches the socket.
 
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
@@ -16,9 +8,8 @@ import yaml from "js-yaml";
 export class ConfigError extends Error {}
 
 export type Effect = {
-  // Tokens appended (as whole argv words, never shell-split) to the worker command.
+  // Appended to the worker command as whole argv words, never shell-split.
   appendCommand: string[];
-  // Fixed environment overrides applied to the worker.
   env: Record<string, string>;
 };
 
@@ -27,8 +18,7 @@ export type BooleanParam = {
   type: "boolean";
   description: string;
   default: boolean;
-  // Applied verbatim when the caller passes `true`. Drawn entirely from config;
-  // the caller chooses only whether to apply it.
+  // Config-defined; the caller chooses only whether to apply it.
   whenTrue: Effect;
 };
 
@@ -39,8 +29,7 @@ export type EnumParam = {
   values: string[];
   required: boolean;
   default?: string;
-  // Where the chosen value (always one of `values`) goes: appended as a single
-  // command token, or set as the value of a fixed env var.
+  // Where the chosen value goes; it is always one of `values`.
   target: { kind: "append" } | { kind: "env"; var: string };
 };
 
@@ -56,8 +45,7 @@ export type CommandDef = {
   name: string;
   description: string;
   image: string;
-  // Magic-word mount specs (only `workspace[:<target>][:<mode>]`); never raw host
-  // paths and never the docker socket.
+  // Magic words only -- `workspace[:<target>][:<mode>]` -- never a raw host path.
   mounts: string[];
   workdir?: string;
   entrypoint?: string;
@@ -115,12 +103,10 @@ function asStringMap(value: unknown, where: string): Record<string, string> {
   return out;
 }
 
-// `workspace`, `workspace:ro`, `workspace:/code`, `workspace:/code:ro` -- the
-// only legal mount. A worker never receives `docker-socket` (that would re-hand
-// out the broker's own privilege) or a raw host path.
 function validateMount(raw: unknown, where: string): string {
   const spec = asString(raw, where);
   const parts = spec.split(":");
+  // Handing a worker the socket would re-hand out the broker's own privilege.
   if (parts[0] === "docker-socket") {
     throw new ConfigError(`${where}: a worker may not mount the docker socket`);
   }
@@ -138,7 +124,6 @@ function validateMount(raw: unknown, where: string): string {
     if (!looksLikePath && !looksLikeMode) {
       throw new ConfigError(`${where}: '${field}' is neither a target path nor an access mode`);
     }
-    // A mode may only appear last.
     if (looksLikeMode && i !== parts.length - 1) {
       throw new ConfigError(`${where}: access mode '${field}' must be the final field`);
     }
@@ -188,7 +173,6 @@ function validateParam(value: unknown, where: string): Param {
   if (type === "boolean") {
     const dflt = value.default === undefined ? false : value.default;
     if (typeof dflt !== "boolean") throw new ConfigError(`${where}.default must be a boolean`);
-    // An omitted when_true would advertise a parameter that does nothing when set.
     if (value.when_true === undefined) {
       throw new ConfigError(`${where}.when_true is required (a boolean param must declare its effect)`);
     }
