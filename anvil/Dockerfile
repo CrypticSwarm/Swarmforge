@@ -90,11 +90,7 @@ RUN set -eux; \
 
 WORKDIR /workspace
 
-# Built from the repository root (docker build -f anvil/Dockerfile <repo>) so
-# the shared swarmforge package can be copied in. Everything the entrypoint
-# runs on the python side lives in that package and is invoked with `python3
-# -m`, so /usr/local/lib/swarmforge is the import root and the package lands
-# one level below it.
+# Built from the repo root (-f anvil/Dockerfile) so swarmforge/ is in the context.
 COPY anvil/entrypoint.sh /usr/local/bin/anvil-entrypoint.sh
 COPY swarmforge/ /usr/local/lib/swarmforge/swarmforge/
 RUN chmod +x /usr/local/bin/anvil-entrypoint.sh
@@ -104,18 +100,10 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/anvil-entrypoint.sh"]
 FROM runtime-base AS agent-runtime
 
 ARG AGENT=opencode
-# Version pin for the harness install, empty for the installer's latest.
-# Each install script decides what the pin means for its installer; the
-# user-facing knob keeps its per-harness name in the harness.mk fragment
-# that maps it onto this build arg.
+# Empty means the installer's latest; each harness's install.sh decides what a pin means.
 ARG SWARMFORGE_HARNESS_VERSION=
 ARG SWARMFORGE_HARNESS_INSTALL_BUST=0
-# The package is already in the image from the runtime-base stage, and each
-# harness ships the script that installs its binary inside its own package
-# directory. An AGENT with no such script is not one this image can build, so
-# the missing file fails the build rather than producing a binary-less image.
-# AGENT reaches a path here, so it is held to a bare name first: dispatching on
-# the registry costs the enumeration that used to reject everything else.
+# AGENT reaches a path here, so it is held to a bare name first.
 RUN set -eux; \
     case "${AGENT}" in \
       ''|*[!a-z0-9_-]*) \
@@ -134,8 +122,7 @@ ENV SWARMFORGE_AGENT_BIN=${AGENT}
 FROM agent-runtime AS harness-runtime
 
 ARG AGENT=opencode
-# A harness's build-time asset install is its optional image.sh, run out of
-# the copied package. A harness that ships none adds nothing to the image.
+# The harness's optional image.sh; AGENT reaches a path, so it is held to a bare name first.
 RUN set -eux; \
     case "${AGENT}" in \
       ''|*[!a-z0-9_-]*) \

@@ -12,10 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run unit tests
         run: make test
-      # The harness install and image scripts only ever run inside `docker
-      # build`, which CI does not do, so a syntax error in one would first be
-      # seen by whoever next built an image. Each script is parsed by the
-      # shell its shebang names; the tree holds both.
+      # These run only inside `docker build`, so nothing else here would catch a syntax error.
       - name: Check shell syntax
         run: |
           for script in install.sh anvil/entrypoint.sh swarmforge/harness/*/*.sh; do
@@ -29,8 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Pinned: an unpinned linter turns a green branch red on someone else's
-      # release. Raising the pin is a deliberate change with its own diff.
+      # Pinned: an unpinned linter turns a green branch red on someone else's release.
       - name: Install ruff
         run: pipx install ruff==0.16.1
       - name: Lint
