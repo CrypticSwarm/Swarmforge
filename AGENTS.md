@@ -15,6 +15,7 @@
 - `ollama/` stores persistent Ollama state. Do not add large model blobs to git—only configuration or lightweight defaults belong here.
 
 ## Coding Conventions
+- A comment is at most one short line, in every language here. Delete what restates the code, narrates history, or labels an obvious block — history belongs in the commit message. Where a comment explains *what* something is, give it a name instead: a named local, a private helper, a named constant. Write more than one line only for a constraint the code cannot carry — an ordering requirement, an external-system quirk, a security property — and make it obvious why that comment earned the space. Docstrings hold the module and function contracts and are not bound by this.
 - Default to Bash or POSIX shell for scripts and include `set -euo pipefail` (or equivalent) when modifying shell entrypoints.
 - Prefer `make` variables and targets over ad-hoc scripts so contributors can compose workflows via the existing Makefile.
 - Keep Dockerfiles Debian-based (see `DEBIAN_TAG`) and avoid pinning GPU driver versions inside the image; rely on host NVIDIA tooling instead.
