@@ -147,11 +147,9 @@ from .secretchan import (
 )
 
 __all__ = [
-    # approval
     "ApprovalDenied",
     "gate_workspace_tongs",
     "render_privilege_summary",
-    # cli
     "LAYER_FLAGS",
     "USAGE",
     "LauncherOptions",
@@ -161,21 +159,16 @@ __all__ = [
     "discover_tongs",
     "main",
     "parse_args",
-    # docker
     "DockerCLI",
     "DockerError",
-    # errors
     "OrchestrationError",
-    # orchestrate
     "MCP_CONFIG_CONTAINER_PATH",
     "MCP_FILE_ENV",
     "ensure_mcp_harness_supported",
     "exec_anvil",
     "run_with_tongs",
     "unsupported_tong_reasons",
-    # readiness
     "wait_ready",
-    # secretchan
     "SecretChannel",
     "SecretResolutionError",
     "make_secret_resolver",

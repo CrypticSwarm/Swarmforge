@@ -32,9 +32,6 @@ USAGE = (
     "[--anvil-image IMAGE] [--no-prompt] -- <anvil command>"
 )
 
-# Each flag names the host directory for one definition layer. The merge always
-# orders layers canonically (LAYERS, lowest to highest precedence) regardless of
-# the order the flags are passed.
 LAYER_FLAGS = {
     "--user-tongs": tongs.USER,
     "--org-tongs": tongs.ORG,
@@ -42,14 +39,7 @@ LAYER_FLAGS = {
     "--workspace-tongs": tongs.WORKSPACE,
 }
 
-# Parsed launcher options. `workspace` is the workspace root used to key approval
-# of workspace-sourced tongs and to resolve the `workspace` mount word; `approvals`
-# is the approvals store path and `providers` the secret-provider table path (both
-# default-resolved in main); `harness` names the anvil harness (`opencode` /
-# `claude`) so the MCP config for `mcp` tongs is emitted in that harness's shape;
-# `anvil_image` is the image the readiness prober runs to dial a tong's
-# network-internal port; `no_prompt` makes the approval gate fail closed for
-# scripted runs.
+# `anvil_image` is what the readiness prober runs; `no_prompt` fails the gate closed.
 LauncherOptions = collections.namedtuple(
     "LauncherOptions",
     ["layer_dirs", "workspace", "approvals", "providers", "harness", "anvil_image",
@@ -177,9 +167,7 @@ def main(argv):
 
     merged = discover_tongs(opts.layer_dirs)
 
-    # Gate workspace-sourced tongs before anything else runs. With none present
-    # (the common case) this is a no-op and the launch is unchanged; otherwise an
-    # unapproved or declined workspace tong stops the launch before the anvil.
+    # Gated first: an unapproved or declined workspace tong stops the launch.
     try:
         gate_workspace_tongs(
             merged,
@@ -191,15 +179,11 @@ def main(argv):
         tongs.warn(str(exc))
         return 1
 
-    # Passthrough invariant: with no tong definitions discovered, exec the anvil
-    # argv verbatim -- byte-identical to the direct docker run, and the process
-    # is replaced so the controlling tty, signals, and --rm cleanup are untouched.
+    # Passthrough invariant: no tongs, so the anvil argv is exec'd byte-for-byte.
     if not merged:
         return exec_anvil(anvil_cmd)
 
-    # From here a tong actually starts, so validate before touching docker: an
-    # invalid definition should stop the launch with a clear message, not fail
-    # mid-orchestration with a docker error.
+    # Validate before touching docker: a bad definition must not fail mid-orchestration.
     errors = []
     for name in sorted(merged):
         errors.extend(tongs.validate_tong(name, merged[name]["definition"]))
@@ -208,20 +192,13 @@ def main(argv):
             tongs.warn(error)
         return 1
 
-    # Refuse anything this launcher cannot start (see unsupported_tong_reasons:
-    # a volume interface, or a shared tong mounting the workspace) rather than
-    # starting it half-wired.
     unsupported = unsupported_tong_reasons(merged)
     if unsupported:
         for reason in unsupported:
             tongs.warn(reason)
         return 1
 
-    # An `mcp` tong's canonical alias is its `interface.name`, not its filename,
-    # so two tongs can claim the same network alias -- which would make DNS (and
-    # so readiness, env, and MCP wiring) nondeterministic. Refuse the set rather
-    # than starting both. (`port`/`none` tongs alias to their unique filenames, so
-    # they never collide on their own.)
+    # A shared alias makes DNS -- and so readiness, env, and MCP wiring -- nondeterministic.
     collisions = tongs.alias_collisions(merged)
     if collisions:
         for alias, names in sorted(collisions.items()):
@@ -231,27 +208,19 @@ def main(argv):
             )
         return 1
 
-    # An `mcp` tong needs a per-harness config fragment. Starting it for an
-    # unknown or omitted harness would leave the anvil unable to discover it.
     try:
         ensure_mcp_harness_supported(merged, opts.harness)
     except OrchestrationError as exc:
         tongs.warn(str(exc))
         return 1
 
-    # Load the secret-provider table the resolver shells out to. A malformed file
-    # stops the launch with a clear message rather than silently dropping a
-    # provider; a missing file is fine until a tong actually references a secret.
+    # A malformed table stops the launch; a missing one is fine until a secret is used.
     try:
         providers = tongs.load_secret_providers(opts.providers or default_providers_path())
     except ValueError as exc:
         tongs.warn(str(exc))
         return 1
 
-    # run_with_tongs runs the anvil in the foreground and returns its exit code,
-    # leaving the (long-lived) shared tongs running. A tong that never becomes
-    # ready, or a secret reference that cannot be resolved, stops the launch
-    # rather than running the anvil against a half-up environment.
     try:
         return run_with_tongs(
             merged, anvil_cmd, opts, docker=DockerCLI(), providers=providers
@@ -260,6 +229,5 @@ def main(argv):
         tongs.warn(str(exc))
         return 1
     except KeyboardInterrupt:
-        # The anvil was interrupted (Ctrl-C); the shared tongs stay running by
-        # design. Report the conventional 128+SIGINT status.
+        # 128 + SIGINT; the shared tongs stay running by design.
         return 130
