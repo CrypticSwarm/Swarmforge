@@ -33,15 +33,11 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -54,8 +50,7 @@ from harness_fixtures import fake_spec, read_file, redirected, staged, write_fil
 
 ENTRYPOINT = os.path.join(REPO_ROOT, "anvil", "entrypoint.sh")
 
-# Derived, not spelled out: a harness this suite does not name is a harness
-# it does not cover, and registering one is meant to be the whole step.
+# Derived from the registry so registering a harness is the whole step to cover it.
 HARNESSES = tuple(harness.names())
 
 

@@ -10,9 +10,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here means an importer that reached this module without it still
-# resolves the package these fixtures read.
+# Standing in for the launcher's entry-point shim keeps this importable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -80,9 +78,7 @@ def fake_spec(**overrides):
     return HarnessSpec(**fields)
 
 
-# Where `redirected` puts each path a harness pins, named relative to the
-# staging tree: the merged config destination, the directory the anvil uid is
-# handed its trees under, and the three paths claude names as module constants.
+# Where `redirected` puts each path a harness pins, named relative to the staging tree.
 STAGED = {
     "config_dest": "dest",
     "handover": "handover",
@@ -123,8 +119,7 @@ def redirected(name, tmp):
     replacements = {}
     if provided(spec.config_dest):
         replacements["config_dest"] = staged(tmp, "config_dest")
-    # A destination that names a directory outright rather than through a
-    # placeholder is one the config redirection above cannot reach.
+    # A destination named outright, without a placeholder, is one config_dest cannot reach.
     for field in ("skills_dest", "commands_dest", "agents_dest"):
         template = getattr(spec, field)
         if (provided(template)
@@ -142,10 +137,7 @@ def redirected(name, tmp):
         if replacements:
             stack.enter_context(mock.patch.object(
                 module, "SPEC", dataclasses.replace(spec, **replacements)))
-        # Claude names its built settings file, the image's defaults, and the
-        # git wrapper directory as module constants rather than spec fields,
-        # so the generic replacement above cannot reach them; all three point
-        # into paths a host running Swarmforge itself really has.
+        # Module constants rather than spec fields: unpatched, these three name real host paths.
         stack.enter_context(mock.patch.object(
             claude, "SETTINGS_FILE", staged(tmp, "settings_file")))
         stack.enter_context(mock.patch.object(

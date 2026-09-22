@@ -32,15 +32,11 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -53,8 +49,7 @@ from harness_fixtures import read_file, redirected, staged, tree, write_file
 # The asset layers, lowest precedence first.
 LAYERS = ("user", "org", "shared", "workspace")
 
-# Derived, not spelled out: a harness this suite does not name is a harness
-# it does not cover, and registering one is meant to be the whole step.
+# Derived, so registering a harness is the whole step to being covered here.
 HARNESSES = tuple(harness.names())
 
 # What the translator writes in place of the portable argument placeholder.
@@ -597,9 +592,7 @@ class PhaseOrder(AssetCase):
     def drive(self, stack):
         """Run the driver for claude with every pinned path moved."""
         stack.enter_context(redirected("claude", self.tmp))
-        # cwd is always named: this checkout is itself a linked worktree,
-        # so a run falling back to the test process's own directory would
-        # read real worktree metadata.
+        # cwd is always named: falling back to this checkout would read a real worktree.
         return init.run(
             "claude", self.home, str(os.getuid()), str(os.getgid()),
             self.env(), self.workspace, cwd=self.workspace)

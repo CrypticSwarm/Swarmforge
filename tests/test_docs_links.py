@@ -25,14 +25,12 @@ DOCS_ROOT = os.path.join(REPO_ROOT, "docs")
 INDEX = os.path.join(DOCS_ROOT, "README.md")
 ROOT_README = os.path.join(REPO_ROOT, "README.md")
 
-# An inline markdown link. Targets holding whitespace or a nested paren are
-# not matched, and are not written here either.
+# An inline markdown link; the pattern skips targets holding whitespace or a nested paren.
 LINK = re.compile(r"\[[^\]]*\]\(([^()\s]+)\)")
 FENCE = re.compile(r"^\s{0,3}(```|~~~)")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*$")
 
-# Anything with one of these in front of it addresses somewhere other than
-# this repository, so there is no file to look for.
+# A URI scheme in front means the target is not a file in this repo.
 EXTERNAL = re.compile(r"^[a-z][a-z0-9+.-]*:")
 
 

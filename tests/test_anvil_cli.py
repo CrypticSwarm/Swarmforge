@@ -12,28 +12,22 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-# Aliased because `anvil` is already these tests' word for the container
-# the launcher wraps.
+# `anvil` is already these tests' word for the container the launcher wraps.
 from swarmforge import anvil as launcher
 from swarmforge import tongs
 
 from anvil_fixtures import ANVIL_ARGV
 
 
-# The Makefile launches the anvil through this shim, so the subprocess tests
-# below drive the same entry point the live launch path uses.
+# The subprocess tests below drive the shim the Makefile launches.
 LAUNCHER_BIN = os.path.join(REPO_ROOT, "bin", "run-anvil")
 
 
@@ -49,8 +43,6 @@ class ParseArgsTests(unittest.TestCase):
         opts, _ = launcher.parse_args(
             ["--workspace-tongs", "/w", "--user-tongs", "/u", "--", "x"]
         )
-        # USER precedes WORKSPACE in canonical precedence even though the
-        # workspace flag came first.
         self.assertEqual(opts.layer_dirs, [(tongs.USER, "/u"), (tongs.WORKSPACE, "/w")])
 
     def test_no_layer_flags_is_valid(self):
@@ -124,8 +116,6 @@ class ParseArgsTests(unittest.TestCase):
             launcher.parse_args(["--bogus", "/r", "--", "x"])
 
     def test_command_tokens_are_preserved_even_if_they_look_like_flags(self):
-        # Everything after '--' is the command; a later '--' or a tong-looking
-        # flag inside it is data, not parsed.
         _, cmd = launcher.parse_args(["--", "docker", "run", "--user-tongs", "--"])
         self.assertEqual(cmd, ["docker", "run", "--user-tongs", "--"])
 
@@ -134,8 +124,7 @@ class DiscoverTongsTests(unittest.TestCase):
     def test_no_layers_is_empty(self):
         self.assertEqual(launcher.discover_tongs([]), {})
 
-    def test_missing_dirs_are_empty(self):
-        # The inert-when-empty basis: absent layer dirs discover nothing.
+    def test_absent_layer_dirs_discover_nothing(self):
         layer_dirs = [(tongs.REPO, "/nonexistent/tongs"), (tongs.WORKSPACE, "/also/missing")]
         self.assertEqual(launcher.discover_tongs(layer_dirs), {})
 
@@ -149,15 +138,12 @@ class DiscoverTongsTests(unittest.TestCase):
 
 class MainErrorTests(unittest.TestCase):
     def test_bad_args_return_two_without_exec(self):
-        # main() reports usage and returns 2 for malformed argv; it must not
-        # reach exec_anvil (which would replace the test process).
+        # Reaching exec_anvil would replace the test process.
         self.assertEqual(launcher.main(["--repo-tongs", "/r"]), 2)
         self.assertEqual(launcher.main([]), 2)
 
     def test_unexecutable_anvil_returns_127(self):
-        # A missing anvil binary yields the shell's uninvocable-command status
-        # instead of an uncaught OSError. exec_anvil returns here because the
-        # exec fails, so the test process is not replaced.
+        # 127 is the shell's uninvocable status, and a failed exec returns here.
         self.assertEqual(launcher.exec_anvil(["/no/such/binary-xyz"]), 127)
 
 
@@ -181,7 +167,6 @@ class PassthroughInvariantTests(unittest.TestCase):
     def test_no_tongs_forwards_anvil_argv_verbatim(self):
         forwarded, stderr = _run_launcher(["--repo-tongs", "/nonexistent/tongs"])
         self.assertEqual(forwarded, ANVIL_ARGV)
-        # Nothing about tongs is reported when none are discovered.
         self.assertNotIn("tong", stderr)
 
     def test_no_layer_flags_forwards_anvil_argv_verbatim(self):
@@ -189,16 +174,13 @@ class PassthroughInvariantTests(unittest.TestCase):
         self.assertEqual(forwarded, ANVIL_ARGV)
 
     def test_missing_workspace_tongs_dir_forwards_verbatim(self):
-        # The workspace layer is always passed by the macro, even when its dir
-        # does not exist; an absent dir must stay inert, not error.
+        # The macro always passes the workspace layer, existing dir or not.
         forwarded, stderr = _run_launcher(["--workspace-tongs", "/no/such/.swarmforge/tongs"])
         self.assertEqual(forwarded, ANVIL_ARGV)
         self.assertNotIn("tong", stderr)
 
     def test_launcher_flags_do_not_leak_into_anvil_argv(self):
-        # The Makefile always passes --anvil-image and --providers; with no tongs
-        # they are consumed by the launcher and the anvil argv is forwarded
-        # unchanged (the secret-provider table is never even read).
+        # The Makefile always passes --anvil-image and --providers; with no tongs the table goes unread.
         forwarded, stderr = _run_launcher([
             "--anvil-image", "opencode:local",
             "--providers", "/nonexistent/secret-providers.yaml",
@@ -275,8 +257,7 @@ class MainGateTests(unittest.TestCase):
         return tongs_dir
 
     def test_no_prompt_unapproved_returns_one_without_exec(self):
-        # The gate raises before exec_anvil, so main returns 1 in-process (the
-        # test process is not replaced).
+        # The gate raises before exec_anvil, so main returns in-process.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = self._workspace_tongs_dir(tmp)
             rc = launcher.main(
@@ -307,10 +288,7 @@ class MainGateTests(unittest.TestCase):
             self.assertIn("fails closed", completed.stderr)
 
     def test_approved_workspace_tong_passes_gate_then_refused_as_unsupported(self):
-        # Approval is no longer the only gate: an approved (and otherwise valid)
-        # workspace tong clears the approval prompt but, having a `volume`
-        # interface this launcher cannot wire up yet, is then refused as
-        # unsupported -- proving the gate passed without the anvil ever running.
+        # The `volume` interface, not the approval, is what refuses this launch.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
@@ -338,7 +316,6 @@ class MainGateTests(unittest.TestCase):
             self.assertNotIn("fails closed", completed.stderr)
 
     def test_invalid_tong_returns_one_without_exec(self):
-        # A discovered but invalid definition stops the launch before docker.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
@@ -349,9 +326,7 @@ class MainGateTests(unittest.TestCase):
             self.assertEqual(completed.stdout, "")  # anvil never ran
 
     def test_malformed_providers_file_returns_one_without_exec(self):
-        # The secret-provider table is loaded before any tong starts, so a
-        # malformed file stops the launch (a clear error, anvil never runs) rather
-        # than dropping a provider and failing mid-resolution.
+        # The provider table is loaded before any tong starts, not mid-resolution.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
@@ -371,8 +346,7 @@ class MainGateTests(unittest.TestCase):
             self.assertIn("op", completed.stderr)
 
     def test_keyboard_interrupt_during_run_returns_130(self):
-        # Ctrl-C while the anvil runs leaves the (long-lived) shared tongs up and
-        # reports the conventional 128+SIGINT status rather than a traceback.
+        # 130 is the conventional 128+SIGINT status.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
@@ -381,18 +355,14 @@ class MainGateTests(unittest.TestCase):
                     "lifecycle: shared\nimage: x\ninterface:\n  kind: none\n"
                     "readiness:\n  mode: none\n"
                 )
-            # Replaced on the module `main` calls it from: the package re-export
-            # is a second binding `main` never consults, so patching that one
-            # would run the real orchestration against a real docker.
+            # Patching the package re-export misses main's binding and hits docker.
             with mock.patch.object(launcher.cli, "run_with_tongs",
                                    side_effect=KeyboardInterrupt):
                 rc = launcher.main(["--repo-tongs", tongs_dir, "--", "/no/such/binary-xyz"])
             self.assertEqual(rc, 130)
 
     def test_colliding_mcp_aliases_refused_without_exec(self):
-        # Two `mcp` tongs that resolve to the same canonical alias (their shared
-        # interface.name) would make DNS nondeterministic, so the set is refused
-        # before docker -- the anvil never runs.
+        # Two tongs sharing an interface.name would make DNS nondeterministic.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
@@ -409,8 +379,7 @@ class MainGateTests(unittest.TestCase):
             self.assertIn("github", completed.stderr)  # the colliding alias
 
     def test_mcp_tong_without_supported_harness_refused_without_exec(self):
-        # MCP tongs need a harness-specific config emitter. A direct launcher use
-        # without --harness, or a typo, must stop before starting the tong.
+        # MCP tongs need a harness-specific config emitter.
         for harness_args in ([], ["--harness", "opencdoe"]):
             with self.subTest(harness_args=harness_args):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -430,8 +399,7 @@ class MainGateTests(unittest.TestCase):
                     self.assertIn("--harness", completed.stderr)
 
     def test_volume_tong_refused_without_exec(self):
-        # A `volume` interface (a shared named volume) has no consumer yet, so it
-        # is refused before docker.
+        # A `volume` interface (a shared named volume) has no consumer yet.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)
@@ -447,8 +415,7 @@ class MainGateTests(unittest.TestCase):
             self.assertIn("volume", completed.stderr)
 
     def test_shared_workspace_mount_refused_without_exec(self):
-        # A `shared` tong is reused across sessions, so mounting the workspace
-        # into it would leak one session's workspace into the next -- refused.
+        # A `shared` tong outlives the session, so a workspace mount would leak.
         with tempfile.TemporaryDirectory() as tmp:
             tongs_dir = os.path.join(tmp, "tongs")
             os.makedirs(tongs_dir)

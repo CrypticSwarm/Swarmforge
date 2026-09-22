@@ -9,15 +9,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -84,8 +80,7 @@ class ApprovalKeyingTests(unittest.TestCase):
             tongs.save_approvals(path, approvals)
             self.assertTrue(tongs.is_approved(tongs.load_approvals(path), self.ws, "github", self.defn))
 
-    def test_is_approved_tolerates_malformed_store(self):
-        # A hand-edited store with a non-dict workspace value must not crash.
+    def test_is_approved_tolerates_a_non_dict_workspace_value(self):
         self.assertFalse(tongs.is_approved({self.ws: "junk"}, self.ws, "github", self.defn))
 
     def test_load_missing_or_corrupt_is_empty(self):

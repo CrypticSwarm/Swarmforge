@@ -8,15 +8,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -54,8 +50,7 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(any("port" in e for e in errors))
 
     def test_tcp_readiness_rejected_for_portless_kind(self):
-        # A volume/none tong has no port, so a tcp probe could never succeed;
-        # validation must reject the combination rather than time out at runtime.
+        # A portless tong's tcp probe could only ever time out at runtime.
         errors = tongs.validate_tong("t", {
             "lifecycle": "session", "image": "x",
             "interface": {"kind": "none"}, "readiness": {"mode": "tcp"},
@@ -89,8 +84,7 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(any("unknown mount" in e for e in errors))
 
     def test_unknown_mount_word_reported_whatever_it_carries(self):
-        # The word is what is wrong, so say so rather than complaining about the
-        # suffix -- a mount nobody recognizes has no meaningful target or mode.
+        # A word nobody recognizes has no meaningful target or mode to complain about.
         errors = tongs.validate_tong("t", self._base(mounts=["gpu:all"]))
         self.assertTrue(any("unknown mount" in e for e in errors))
 
@@ -105,8 +99,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:rw"])), [])
 
     def test_workspace_target_path_accepted(self):
-        # A custom mountpoint lets an image that expects its sources elsewhere be
-        # used unmodified, with or without a trailing access mode.
+        # A custom mountpoint lets an image that expects its sources elsewhere run unmodified.
         self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:/work"])), [])
         self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:/work:ro"])), [])
 
@@ -115,8 +108,7 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(any("neither an absolute target path" in e for e in errors))
 
     def test_root_target_path_rejected(self):
-        # Including the spellings that only normalize to root: docker collapses
-        # them the same way, so accepting one would bury the image's own rootfs.
+        # Docker normalizes all of these to /, where a bind would bury the image's rootfs.
         for target in ("/", "//", "/.", "/..", "/opt/.."):
             errors = tongs.validate_tong("t", self._base(mounts=["workspace:" + target]))
             self.assertTrue(
@@ -132,10 +124,7 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(any("neither an absolute target path" in e for e in errors))
 
     def test_target_overlapping_the_secret_wiring_rejected(self):
-        # A secret-bearing tong gets a tmpfs at /run/swarmforge for its wrapper's
-        # FIFO and execs /bin/sh; a target over either buries that wiring. The
-        # whole tmpfs directory is reserved, so anything inside it is refused
-        # too. `//run` is the same destination as `/run`, so it goes the same way.
+        # The wiring is a tmpfs at /run/swarmforge and /bin/sh; `//run` cleans to `/run`.
         for target in ("/run/swarmforge", "/run/swarmforge/secret-env",
                        "/run/swarmforge/other", "/run", "//run", "/bin", "/bin/sh/x"):
             defn = self._base(mounts=["workspace:" + target])
@@ -149,23 +138,19 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(any("overlaps" in e for e in errors))
 
     def test_target_only_reserved_for_the_tongs_that_use_it(self):
-        # A tong with no secrets and no socket mount has none of that wiring, so
-        # nothing is reserved and those paths are ordinary targets.
         for target in ("/run", "/bin", "/var/run"):
             self.assertEqual(
                 tongs.validate_tong("t", self._base(mounts=["workspace:" + target])), [], target
             )
 
     def test_target_beside_a_launcher_path_accepted(self):
-        # Only overlap is refused: a sibling of a reserved path is left alone.
         defn = self._base(mounts=["workspace:/run/other"])
         defn["env"] = {"TOKEN": "${secret:op:op://Work/t}"}
         self.assertEqual(tongs.validate_tong("t", defn), [])
         self.assertEqual(tongs.validate_tong("t", self._base(mounts=["workspace:/runner"])), [])
 
     def test_two_mounts_on_the_same_destination_rejected(self):
-        # Docker refuses a duplicate destination outright and creates a nested one's
-        # mountpoint inside the outer bind; both are caught before the launch.
+        # Docker refuses a duplicate destination and nests a deeper one inside the outer bind.
         for mounts in (
             ["workspace", "workspace:/workspace"],
             ["workspace:/code", "workspace:/code:ro"],
@@ -192,14 +177,12 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(any("more than one target path" in e for e in errors))
 
     def test_socket_mount_target_rejected(self):
-        # The socket has to keep its host path inside the container -- that is
-        # where a docker client looks for it -- so only `workspace` takes a target.
+        # A docker client looks for the socket at its host path, so it cannot move.
         errors = tongs.validate_tong("t", self._base(mounts=["docker-socket:/run/d.sock"]))
         self.assertTrue(any("only the 'workspace' mount takes a target path" in e for e in errors))
 
     def test_extra_aliases_accepted_on_network_facing_kinds(self):
-        # Dotted names are the point: a client that must match a certificate CN
-        # dials the tong by that name, not by the canonical alias.
+        # A client matching a certificate CN dials the dotted name, not the canonical alias.
         defn = self._base(interface={
             "kind": "port", "port": 3000,
             "aliases": ["api", "console", "local.example.test"],
@@ -207,8 +190,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(tongs.validate_tong("t", defn), [])
 
     def test_extra_aliases_rejected_without_a_listener(self):
-        # volume/none tongs register no DNS name at all, so extra aliases there
-        # would silently do nothing.
+        # A volume/none tong registers no DNS name for an alias to resolve to.
         errors = tongs.validate_tong("t", self._base(
             interface={"kind": "none", "aliases": ["api"]}))
         self.assertTrue(any("aliases" in e for e in errors))
@@ -266,7 +248,6 @@ class ValidationTests(unittest.TestCase):
     def test_none_requires_explicit_readiness_mode(self):
         errors = tongs.validate_tong("t", {"lifecycle": "session", "image": "x", "interface": {"kind": "none"}})
         self.assertTrue(any("readiness" in e for e in errors))
-        # ...and is satisfied once a mode is declared.
         ok = tongs.validate_tong("t", {"lifecycle": "session", "image": "x", "interface": {"kind": "none"}, "readiness": {"mode": "none"}})
         self.assertEqual(ok, [])
 
@@ -289,7 +270,7 @@ class ValidationTests(unittest.TestCase):
             errors = tongs.validate_tong("t", {
                 "lifecycle": "session", "image": "x",
                 "interface": {"kind": "none"}, "readiness": {"mode": "none"},
-                field: "node server.js",  # must be a list of strings
+                field: "node server.js",
             })
             self.assertTrue(any(field in e for e in errors), field)
 

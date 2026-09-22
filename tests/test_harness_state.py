@@ -49,15 +49,11 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -76,9 +72,7 @@ from harness_fixtures import (
 # Every harness that keeps nothing across runs of its own.
 UNLINKED = ("codex", "grok", "opencode")
 
-# Every registered harness.
-# Derived, not spelled out: a harness this suite does not name is a harness
-# it does not cover, and registering one is meant to be the whole step.
+# Derived, so registering a harness is the whole step to being covered here.
 HARNESSES = tuple(harness.names())
 
 
@@ -155,8 +149,7 @@ class StateAllowlist(unittest.TestCase):
     is a session reading last week's configuration or losing today's history.
     """
 
-    # Paths claude reads as configuration or code, which the config merge and
-    # the asset install rebuild for every run.
+    # Paths claude reads as configuration or code; every run rebuilds them.
     LOADED = ("settings.json", "CLAUDE.md", "rules", "workflows",
               "output-styles", "routines", "skills", "commands", "agents")
 
@@ -298,8 +291,7 @@ class WorktreeCase(StateCase):
     metadata to rewrite.
     """
 
-    # The path the host has the checkout at, which nothing in the container
-    # resolves.
+    # The path the host has the checkout at, which nothing in the container resolves.
     HOST_WORKTREE = "/host/repos/proj/wt"
 
     def setUp(self):

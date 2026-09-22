@@ -7,26 +7,21 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from swarmforge import tongs
 
 
-# A docker invocation shaped like the one run_agent_container builds: the
-# interactive/remove flags, name, network, injected env/mounts, image, and the
-# harness args. The launcher must forward this verbatim when no tongs exist.
+# Shaped like a run_agent_container invocation; the launcher forwards it verbatim when no tongs exist.
 ANVIL_ARGV = [
     "docker", "run", "-it", "--rm", "--name", "claude-myproject",
     "--network", "opencode-net",
     "-e", "SWARMFORGE_UID=1000",
     "-e", "TZ=Etc/UTC",
     "-v", "/home/me/proj:/workspace",
-    # A path with a space exercises that a single argv word is forwarded whole,
-    # never re-split, through the real execvp.
+    # A path with a space proves one argv word is forwarded whole, never re-split.
     "-v", "/home/me/my proj:/repos/me/my proj",
     "claude-code:local",
     "--some-harness-arg",

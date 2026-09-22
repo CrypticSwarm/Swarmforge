@@ -13,9 +13,7 @@ import unittest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE_DIR = os.path.join(REPO_ROOT, "tests", "translate_fixtures")
 
-# The image puts the swarmforge package on PYTHONPATH; standing in for that
-# here keeps this file runnable on its own, not just under a discovery run
-# that already set it.
+# Standing in for the PYTHONPATH the image sets keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
@@ -90,8 +88,7 @@ class WholeLineCommentTests(unittest.TestCase):
         self.assertEqual(index, len(lines))
         return out
 
-    def test_comment_above_first_list_item(self):
-        # The comment must not hide the `- ` that makes this block a list.
+    def test_comment_above_first_list_item_still_opens_a_list(self):
         self.assertEqual(
             self.parse("mounts:\n  # why this mount\n  - docker-socket\n"),
             {"mounts": ["docker-socket"]},
@@ -104,7 +101,6 @@ class WholeLineCommentTests(unittest.TestCase):
         )
 
     def test_comment_indent_is_ignored_inside_a_list(self):
-        # Neither a shallower nor a deeper comment ends the list.
         self.assertEqual(
             self.parse("mounts:\n  - a\n# flush left\n  - b\n"),
             {"mounts": ["a", "b"]},
@@ -115,7 +111,6 @@ class WholeLineCommentTests(unittest.TestCase):
         )
 
     def test_comment_indent_does_not_set_the_block_indent(self):
-        # The block's indent comes from `kind:`, not from the deeper comment.
         self.assertEqual(
             self.parse("interface:\n      # deeply indented\n  kind: mcp\n"),
             {"interface": {"kind": "mcp"}},
@@ -220,13 +215,11 @@ class StripInlineCommentTests(unittest.TestCase):
     """The quote/`#` scan on its own, including shapes the emitter produces."""
 
     def test_escaped_quote_does_not_end_the_quoted_run(self):
-        # emit_scalar writes values through json.dumps, so `\\"` is the escaping
-        # this parser must read back. Miscounting it truncates the value.
+        # emit_scalar writes through json.dumps, so `\\"` is the escaping to read back.
         text = r'"a \" b # c"'
         self.assertEqual(yamlite.strip_inline_comment(text), text)
 
     def test_doubled_quote_does_not_end_the_quoted_run(self):
-        # The single-quoted counterpart of the escape above.
         self.assertEqual(
             yamlite.strip_inline_comment("'don''t # x'  # note"), "'don''t # x'  "
         )
@@ -278,8 +271,7 @@ class CommentedAgentTests(unittest.TestCase):
         self.assertEqual(body, "You are the reviewer agent.\n")
 
     def test_rewrite_drops_comments_and_is_stable(self):
-        # The in-place opencode translation rewrites a source file, so dropping
-        # the comments has to leave something that holds still.
+        # The in-place opencode translation rewrites the source file, so it must hold still.
         meta, body = ta.split_frontmatter(COMMENTED_AGENT)
         rendered = ta.render(meta, body)
         self.assertNotIn("Python only", rendered)
@@ -359,9 +351,7 @@ class OpencodeEmitterTests(MarkdownEmitterCase):
         out = self.emitted("a", {"description": "d", "model": "sonnet"})
         self.assertNotIn("model", out)
 
-    def test_idempotent(self):
-        # OpenCode translates in place, so a second pass over what the first
-        # wrote has to produce the same file byte for byte.
+    def test_in_place_second_pass_is_byte_identical(self):
         _, once = emit("opencode", "reviewer", self.meta, self.body)
         meta, body = ta.split_frontmatter(once)
         _, twice = emit("opencode", "reviewer", meta, body)
@@ -480,9 +470,7 @@ class MainTests(unittest.TestCase):
                 },
             )
 
-    def test_codex_name_override_keys_the_registration(self):
-        # The emitted file keeps the source stem; the registration and the
-        # file's own name follow the `codex:` block's declared name.
+    def test_codex_name_override_keys_the_registration_but_not_the_filename(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = os.path.join(tmp, "src")
             dest = os.path.join(tmp, "dest")
@@ -562,9 +550,7 @@ class RecordedFixtureTests(unittest.TestCase):
 
     maxDiff = None
 
-    # Every line a run over src/ writes to stderr, in the order it arrives:
-    # sources in filename order, and within a source the order its emitter
-    # warns. opencode's emitter warns about nothing, so its run is silent.
+    # Ordered as a run arrives: sources by filename, then each emitter's own order.
     RECORDED_STDERR = {
         "opencode": [],
         "claude": [

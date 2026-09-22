@@ -8,15 +8,11 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 
-# The launcher's entry-point shim puts the repo root on the path; standing in
-# for it here keeps this file runnable on its own, not just under a discovery
-# run that already set it.
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# Discovery and `python3 tests/<file>.py` both put this directory on the path,
-# but `python3 -m unittest tests.<module>` does not; the sibling fixture module
-# has to import under all three.
+# `python3 -m unittest tests.<module>` does not put this directory on the path.
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -41,14 +37,11 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(tongs.shared_container_name("my tong/x"), "swarmforge-shared-my-tong-x")
 
     def test_shared_container_name_scope_partitions_identical_names(self):
-        # Two orgs shipping the same tong name get distinct container names so
-        # they never collide on one daemon-global name (the teardown bug).
         a = tongs.shared_container_name("asana", scope="acme-1a2b3c4d")
         b = tongs.shared_container_name("asana", scope="globex-9f8e7d6c")
         self.assertEqual(a, "swarmforge-shared-acme-1a2b3c4d-asana")
         self.assertEqual(b, "swarmforge-shared-globex-9f8e7d6c-asana")
         self.assertNotEqual(a, b)
-        # No scope is byte-identical to the unscoped name (today's behavior).
         self.assertEqual(
             tongs.shared_container_name("asana"), "swarmforge-shared-asana"
         )
@@ -63,10 +56,7 @@ class DockerArgvTests(unittest.TestCase):
         self.assertIsNone(tongs.org_scope_token(None))
         self.assertIsNone(tongs.org_scope_token(""))
 
-    def test_org_scope_token_stable_per_path_and_distinct_per_org(self):
-        # Same org path (e.g. two repos under one org) => same token; different
-        # orgs => different tokens. Path is normalized so trailing slashes and
-        # `.`/`..` segments do not change identity.
+    def test_org_scope_token_stable_across_path_spellings_and_distinct_per_org(self):
         acme = tongs.org_scope_token("/home/me/orgs/acme/.swarmforge/tongs")
         acme_again = tongs.org_scope_token("/home/me/orgs/acme/.swarmforge/tongs/")
         acme_dotted = tongs.org_scope_token("/home/me/orgs/acme/./.swarmforge/tongs")
@@ -75,8 +65,7 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(acme, acme_dotted)
         self.assertNotEqual(acme, globex)
 
-    def test_org_scope_token_carries_readable_org_root_hint(self):
-        # The org root (parent of `.swarmforge/`) is prefixed for `docker ps`.
+    def test_org_scope_token_prefixes_the_org_root_for_docker_ps(self):
         token = tongs.org_scope_token("/home/me/orgs/acme/.swarmforge/tongs")
         self.assertTrue(token.startswith("acme-"), token)
 
@@ -85,8 +74,7 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(tongs.session_container_name("claude-proj", "my tong/x"), "claude-proj-tong-my-tong-x")
 
     def test_session_container_name_empty_token_has_no_trailing_dash(self):
-        # A name that sanitizes to empty must not yield a "<sess>-tong-" name that
-        # would collide with another such tong; fall back like shared names do.
+        # A trailing dash would collide with every other empty-sanitizing name.
         self.assertEqual(tongs.session_container_name("sess", "@@@"), "sess-tong")
 
     def test_resource_flags_memory(self):
@@ -111,28 +99,23 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(argv[:5], ["docker", "run", "-d", "--name", "ctr-pg"])
         self.assertIn("--network", argv)
         self.assertEqual(argv[argv.index("--network") + 1], "net")
-        # port is network-facing => it gets an alias
         self.assertIn("--network-alias", argv)
         self.assertEqual(argv[argv.index("--network-alias") + 1], "pg")
         self.assertIn("swarmforge.tong.name=pg", argv)
         self.assertIn("swarmforge.tong.config-hash=h0", argv)
         self.assertIn("PGDATA=/data", argv)
-        # image is last
         self.assertEqual(argv[-1], "postgres:16")
 
-    def test_run_argv_emits_one_flag_per_declared_alias(self):
+    def test_run_argv_emits_canonical_alias_then_declared_extras_in_order(self):
         defn = def_of(PORT_TONG)
         defn["interface"]["aliases"] = ["api", "local.example.test"]
         argv = tongs.tong_run_argv(
             "pg", defn, container_name="ctr-pg", network="net", alias="pg",
         )
         flagged = [argv[i + 1] for i, part in enumerate(argv) if part == "--network-alias"]
-        # Canonical first, then the declared extras, in declaration order.
         self.assertEqual(flagged, ["pg", "api", "local.example.test"])
 
     def test_run_argv_alias_flags_unchanged_without_extras(self):
-        # The inert case: a definition that declares no extras produces exactly
-        # the single alias flag it produced before extras existed.
         argv = tongs.tong_run_argv(
             "pg", def_of(PORT_TONG), container_name="ctr-pg", network="net", alias="pg",
         )
@@ -166,8 +149,6 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--memory") + 1], "256m")
 
     def test_run_argv_mount_target_is_workspace_unless_declared(self):
-        # The inert case beside its opt-in: an undeclared target still lands on
-        # /workspace, and declaring one changes nothing but the `-v` value.
         def argv_for(mounts):
             defn = def_of(NONE_TONG)
             defn["mounts"] = mounts
@@ -211,9 +192,6 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(with_none, omitted)
 
     def test_run_argv_secret_injection_mounts_tmpfs_wraps_entrypoint(self):
-        # A secret-bearing tong gets a tmpfs for its in-container FIFO, the
-        # /bin/sh entrypoint override, and the wrapper command appended after the
-        # image.
         entrypoint, command = tongs.secret_inject_argv(["node", "server.js"])
         argv = tongs.tong_run_argv(
             "g", def_of(NONE_TONG), container_name="c", network="n", alias="g",
@@ -225,7 +203,6 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--tmpfs") + 1],
                          "/run/swarmforge:rw,nosuid,nodev,noexec,mode=1777")
         self.assertNotIn("-v", argv)  # no host bind backs the secret channel
-        # The wrapper command trails the image (which is NONE_TONG's image).
         image = def_of(NONE_TONG)["image"]
         self.assertEqual(argv[argv.index(image) + 1 :], command)
 
@@ -236,11 +213,9 @@ class DockerArgvTests(unittest.TestCase):
         self.assertNotIn("--entrypoint", argv)
         self.assertNotIn("--tmpfs", argv)
         self.assertNotIn("secret-env", " ".join(argv))
-        self.assertEqual(argv[-1], def_of(NONE_TONG)["image"])  # nothing after image
+        self.assertEqual(argv[-1], def_of(NONE_TONG)["image"])
 
     def test_run_argv_without_secrets_applies_declared_command(self):
-        # A secret-free tong's command: still overrides the image CMD (regression:
-        # it used to be honored only on the secret-injection path).
         defn = def_of(PORT_TONG)
         defn["command"] = ["redis-server", "--port", "5002"]
         argv = tongs.tong_run_argv(
@@ -281,8 +256,7 @@ class DockerArgvTests(unittest.TestCase):
         self.assertNotIn("swarmforge.tong.config-hash=", " ".join(argv))
 
     def test_run_argv_injects_workspace_host_path_for_socket_tong(self):
-        # A broker (socket-holding) tong is handed the workspace's host path so it
-        # can bind-mount the workspace into the workers it spawns.
+        # The broker bind-mounts the workspace into the workers it spawns.
         defn = def_of(NONE_TONG)
         defn["mounts"] = ["docker-socket"]
         argv = tongs.tong_run_argv(
@@ -292,7 +266,6 @@ class DockerArgvTests(unittest.TestCase):
         self.assertIn("SWARMFORGE_WORKSPACE_HOST_PATH=/host/ws", argv)
 
     def test_run_argv_omits_workspace_host_path_for_non_socket_tong(self):
-        # Ordinary tongs never see the host path, so the env they get is unchanged.
         defn = def_of(NONE_TONG)
         defn["mounts"] = ["workspace:ro"]
         argv = tongs.tong_run_argv(
@@ -307,7 +280,6 @@ class DockerArgvTests(unittest.TestCase):
         self.assertNotIn("SWARMFORGE_WORKSPACE_HOST_PATH", " ".join(argv))
 
     def test_run_argv_explicit_workspace_host_path_wins(self):
-        # A tong that sets the name itself keeps its own value (setdefault).
         defn = def_of(NONE_TONG)
         defn["mounts"] = ["docker-socket"]
         argv = tongs.tong_run_argv(
@@ -318,8 +290,7 @@ class DockerArgvTests(unittest.TestCase):
         self.assertNotIn("SWARMFORGE_WORKSPACE_HOST_PATH=/host/ws", argv)
 
     def test_run_argv_omits_workspace_host_path_for_shared_socket_tong(self):
-        # A `shared` broker is reused across sessions, so it must not receive a
-        # per-session workspace path.
+        # A shared broker is reused across sessions, so no session's path may reach it.
         defn = def_of(NONE_TONG)
         defn["mounts"] = ["docker-socket"]
         defn["lifecycle"] = "shared"
@@ -344,7 +315,6 @@ class DockerArgvTests(unittest.TestCase):
         self.assertIsNone(tongs.anvil_option_value(argv, "--network"))
 
     def test_inject_noop_returns_argv_unchanged(self):
-        # The passthrough basis: no network/args injected => byte-identical argv.
         self.assertEqual(tongs.inject_anvil_argv(ANVIL_ARGV), ANVIL_ARGV)
 
     def test_inject_does_not_mutate_input(self):
@@ -387,7 +357,6 @@ class DockerArgvTests(unittest.TestCase):
     def test_to_create_argv_swaps_run_for_create(self):
         out = tongs.to_create_argv(ANVIL_ARGV)
         self.assertEqual(out[:2], ["docker", "create"])
-        # Everything else is preserved byte-for-byte.
         self.assertEqual(out[2:], ANVIL_ARGV[2:])
 
     def test_to_create_argv_does_not_mutate_input(self):
@@ -400,8 +369,6 @@ class DockerArgvTests(unittest.TestCase):
         self.assertEqual(tongs.to_create_argv(argv), argv)
 
     def test_to_create_argv_does_not_rewrite_a_harness_run_arg(self):
-        # Only the subcommand is swapped; a later 'run' token (e.g. a harness arg)
-        # is left alone.
         argv = ["docker", "run", "img", "run"]
         self.assertEqual(tongs.to_create_argv(argv), ["docker", "create", "img", "run"])
 
