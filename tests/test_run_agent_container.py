@@ -25,7 +25,7 @@ MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from swarmforge import tongs  # noqa: E402  (needs the path above)
+from swarmforge import names, tongs  # noqa: E402  (needs the path above)
 
 DOCKER_STUB = "#!/bin/sh\nexit 0\n"
 
@@ -361,6 +361,15 @@ class GeneratedNamesIdentifyOneDirectory(MakeRecipeCase):
         os.makedirs(nested)
         self.assertTrue(
             self.container_name("run_claude", nested).startswith("claude-src-"))
+
+    def test_a_path_a_shell_would_reparse_names_its_own_directory(self):
+        # make derives the name through $(shell), which must not rewrite the path first.
+        for branch in ("dol$lar", "back`tick", "quo'te", "sub$(id)", "a b"):
+            project = self.make_repo(os.path.join("repo1", branch))
+            self.assertEqual(
+                self.make_output("name_claude", project),
+                "claude-%s" % names.project_token(project),
+                branch)
 
     def test_the_same_directory_gets_the_same_name_every_run(self):
         project = self.make_repo("repo1/master")

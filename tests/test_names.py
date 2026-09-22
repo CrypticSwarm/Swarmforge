@@ -14,7 +14,6 @@ import shutil
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -196,13 +195,6 @@ class Command(unittest.TestCase):
             sys.stdout, sys.stderr = stdout, stderr
         return code, out.text, err.text
 
-    def setUp(self):
-        # patch.dict restores the mapping wholesale, leaving nothing behind for the next test.
-        patcher = mock.patch.dict(os.environ)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        os.environ.pop(names.PROJECT_DIR_ENV, None)
-
     def test_it_prints_the_token_for_the_directory_it_is_given(self):
         code, out, err = self.run_main(["/home/me/repo1/master"])
         self.assertEqual(code, 0)
@@ -210,25 +202,8 @@ class Command(unittest.TestCase):
             out, "%s\n" % names.project_token("/home/me/repo1/master"))
         self.assertEqual(err, "")
 
-    def test_it_reads_the_directory_make_exports_when_given_none(self):
-        # make exports it rather than writing a path a shell would reparse into `$(shell ...)`.
-        os.environ[names.PROJECT_DIR_ENV] = "/home/me/repo1/master"
-        code, out, err = self.run_main([])
-        self.assertEqual(code, 0)
-        self.assertEqual(
-            out, "%s\n" % names.project_token("/home/me/repo1/master"))
-        self.assertEqual(err, "")
-
-    def test_an_argument_wins_over_the_environment(self):
-        os.environ[names.PROJECT_DIR_ENV] = "/home/me/repo1/master"
-        code, out, _ = self.run_main(["/home/me/repo2/master"])
-        self.assertEqual(code, 0)
-        self.assertEqual(
-            out, "%s\n" % names.project_token("/home/me/repo2/master"))
-
     def test_naming_no_directory_is_a_usage_error(self):
         # A quiet default would bind a name for somewhere else and only show it in `docker ps`.
-        os.environ[names.PROJECT_DIR_ENV] = ""
         for argv in ([], [""], ["   "], ["a", "b"]):
             code, out, err = self.run_main(argv)
             self.assertEqual(code, 2, argv)

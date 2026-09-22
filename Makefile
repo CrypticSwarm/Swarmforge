@@ -36,10 +36,10 @@ PYTHON ?= python3
 
 SWARMFORGE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 PROJECT_DIR  := $(CURDIR)
-# `override`: a name for one directory while the recipe mounts another is the collision itself.
-# Exported, not spliced: a `$` or a backtick in the path is syntax on a $(shell) command line.
-override export SWARMFORGE_PROJECT_DIR := $(PROJECT_DIR)
-PROJECT_NAME := $(shell $(PYTHON) "$(SWARMFORGE_DIR)/bin/project-name")
+# Single-quoted: a `$` or a backtick in the path is shell syntax on a $(shell)
+# command line, and not every make propagates an export there instead.
+PROJECT_DIR_SQ := $(subst ','\'',$(PROJECT_DIR))
+PROJECT_NAME := $(shell $(PYTHON) "$(SWARMFORGE_DIR)/bin/project-name" '$(PROJECT_DIR_SQ)')
 ifeq ($(strip $(PROJECT_NAME)),)
 $(error Could not name a container for $(PROJECT_DIR); see the error above from $(SWARMFORGE_DIR)/bin/project-name)
 endif

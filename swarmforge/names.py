@@ -28,11 +28,6 @@ DIGEST_LENGTH = 8
 # and leaves 21 for `-tong-<tong>`.
 PROJECT_HINT_LIMIT = 24
 
-# Where `main` reads the project directory when none is on the command line: make
-# hands a `$(shell ...)` line to a shell, which would reparse a `$` or a backtick
-# in the path and digest a directory that does not exist.
-PROJECT_DIR_ENV = "SWARMFORGE_PROJECT_DIR"
-
 
 def sanitize_token(name):
     """`name` reduced to docker's characters, runs collapsed and ends trimmed."""
@@ -89,21 +84,12 @@ def project_token(project_dir):
 def main(argv):
     """Print the token naming one project directory, for the Makefile.
 
-    `make` needs the token while it is still reading variables, before any
-    recipe runs, so this is a command rather than something the launcher hands
-    back. It takes the directory on the command line, or -- as make calls it --
-    from `PROJECT_DIR_ENV`. Naming no directory is an error rather than a
-    default, because make would otherwise bind a name for somewhere else
-    entirely and only the containers would show it.
+    A command rather than something the launcher hands back, because make needs
+    the token while it is still reading variables. Naming no directory is an
+    error rather than a default, which make would bind silently.
     """
-    if len(argv) > 1:
-        sys.stderr.write("usage: project-name [<project-dir>]\n")
+    if len(argv) != 1 or not argv[0].strip():
+        sys.stderr.write("usage: project-name <project-dir>\n")
         return 2
-    path = argv[0] if argv else os.environ.get(PROJECT_DIR_ENV, "")
-    if not path.strip():
-        sys.stderr.write(
-            "usage: project-name [<project-dir>]; pass a directory or set %s\n"
-            % PROJECT_DIR_ENV)
-        return 2
-    sys.stdout.write("%s\n" % project_token(path))
+    sys.stdout.write("%s\n" % project_token(argv[0]))
     return 0
