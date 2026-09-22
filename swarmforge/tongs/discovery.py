@@ -14,9 +14,6 @@ from swarmforge.yamlite import parse_map
 from .model import TRUSTED_LAYERS, WORKSPACE, warn
 
 
-# --- YAML loading -------------------------------------------------------------
-
-
 def load_yaml(text):
     """Parse a plain-YAML tong document into a dict (empty dict if blank)."""
     lines = text.split("\n")
@@ -28,9 +25,6 @@ def load_tong_file(path):
     """Read and parse a single tong YAML file. Returns the definition dict."""
     with open(path, "r", encoding="utf-8") as handle:
         return load_yaml(handle.read())
-
-
-# --- Layer discovery ----------------------------------------------------------
 
 
 def load_tong_dir(path):
@@ -67,9 +61,6 @@ def discover(layer_dirs):
     `merge_tongs`.
     """
     return [(layer, load_tong_dir(path)) for layer, path in layer_dirs]
-
-
-# --- Merge --------------------------------------------------------------------
 
 
 def merge_tongs(layers):

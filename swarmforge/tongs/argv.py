@@ -17,13 +17,8 @@ from .mounts import DEFAULT_DOCKER_SOCKET, _has_socket_mount, tong_mount_specs
 from .secrets import SECRET_FIFO_TMPFS, declared_run_override
 
 
-# Shared tongs get a stable, session-independent container name so the same
-# long-lived container is found (and staleness-checked) across sessions.
 SHARED_CONTAINER_PREFIX = "swarmforge-shared"
 
-# A scoped shared tong is isolated on its own docker network (this prefix +
-# scope token) instead of the shared base network, so another scope's anvil has
-# no interface on it and cannot reach the tong even by raw IP.
 SHARED_NETWORK_PREFIX = "swarmforge-shared-net"
 
 
@@ -183,8 +178,6 @@ def tong_run_argv(
     if secret_channel:
         argv += ["--tmpfs", SECRET_FIFO_TMPFS]
     effective_env = dict(env or {})
-    # A `shared` container is reused across sessions, so a per-session workspace
-    # path baked into it would be stale for later ones; only `session` tongs get it.
     if workspace and _has_socket_mount(defn) and defn.get("lifecycle") == "session":
         effective_env.setdefault(WORKSPACE_HOST_ENV, workspace)
     for key in sorted(effective_env):
@@ -285,8 +278,7 @@ def to_create_argv(anvil_argv):
     docker run/create command.
     """
     out = list(anvil_argv)
-    # _docker_run_index points just past the run/create subcommand, so the token
-    # before it is the subcommand to rewrite (already 'create' is left as-is).
+    # _docker_run_index points past the subcommand, so -1 is the token to rewrite.
     out[_docker_run_index(out) - 1] = "create"
     return out
 

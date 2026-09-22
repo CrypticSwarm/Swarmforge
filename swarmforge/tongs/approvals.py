@@ -16,9 +16,6 @@ from .mounts import _has_socket_mount
 from .secrets import find_secret_refs
 
 
-# --- Config hash --------------------------------------------------------------
-
-
 def config_hash(defn):
     """Stable SHA-256 hex digest of a definition.
 
@@ -29,9 +26,6 @@ def config_hash(defn):
     """
     canonical = json.dumps(defn, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-# --- Privilege summary --------------------------------------------------------
 
 
 def privilege_summary(defn):
@@ -49,12 +43,6 @@ def privilege_summary(defn):
         "networks": list(defn.get("networks") or []),
         "socket": _has_socket_mount(defn),
     }
-
-
-# --- Approval keying ----------------------------------------------------------
-# Approvals are keyed by workspace path + tong name + definition hash and stored
-# in the user layer (~/.swarmforge/approvals.json). Any change to the definition
-# changes its hash and re-prompts. Only workspace-sourced tongs gate.
 
 
 def is_workspace_sourced(source_layer):

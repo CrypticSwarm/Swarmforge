@@ -14,10 +14,7 @@ import re
 from .discovery import load_tong_file
 
 
-# --- Secret references --------------------------------------------------------
-# Tong defs reference secrets as ${secret:<provider>:<ref>}. The provider is a
-# single token; the ref may itself contain colons (e.g. op://Work/github/token),
-# so it runs greedily up to the closing brace.
+# The ref may itself contain colons (op://Work/github/token), so it runs to the brace.
 SECRET_REF_RE = re.compile(r"\$\{secret:([^:}]+):([^}]+)\}")
 
 
@@ -81,46 +78,8 @@ def substitute_secrets(value, resolver):
     return value
 
 
-# --- Secret providers ---------------------------------------------------------
-# A secret reference (${secret:<provider>:<ref>}) is resolved on the host by
-# shelling out to a provider CLI -- the docker-credential-helper pattern, so
-# Swarmforge knows nothing about any individual secret manager. Providers are
-# declared once in the user layer (~/.swarmforge/secret-providers.yaml):
-#
-#     providers:
-#       op:   ["op", "read", "{ref}"]
-#       pass: ["pass", "show", "{ref}"]
-#
-# Each value is an argv template; the literal token "{ref}" in any element is
-# replaced with the reference.
-#
-# A provider value may instead be a *structured* entry, so a shared (org-layer)
-# tong can reference `${secret:<provider>:<ref>}` while each developer's personal
-# table decides how each individual secret is fetched -- one dev's `pass`, another
-# dev's `1Password`, all under the same reference:
-#
-#     providers:
-#       shared:
-#         default: ["pass", "show", "{ref}"]        # fallback for unlisted refs
-#         overrides:
-#           ci-token: ["doppler", "secrets", "get", "CI_TOKEN", "--plain"]
-#
-# Resolving `${secret:shared:<ref>}` uses the argv in `overrides` for that ref,
-# falling back to `default`; a ref with neither raises `UnmappedSecretError`.
-# `default` and `overrides` live in separate namespaces on purpose: a secret
-# literally named "default" is just `overrides.default`, distinct from the
-# fallback, and any other key at the provider level is a typo caught at load.
-#
-# Loading the table and building the argv are pure and live here; the subprocess
-# that actually runs the CLI is the caller's (see
-# swarmforge.anvil.make_secret_resolver), keeping this module side-effect free.
-
 SECRET_REF_TOKEN = "{ref}"
 
-# The two keys a structured provider entry may hold. `default` is the argv used
-# for any ref `overrides` does not name, so a table can override a couple of
-# secrets without re-declaring the command for all the rest. Kept as a frozenset
-# so an unrecognized key (a typo) fails loudly at load rather than being ignored.
 PROVIDER_DEFAULT_KEY = "default"
 PROVIDER_OVERRIDES_KEY = "overrides"
 PROVIDER_ENTRY_KEYS = frozenset({PROVIDER_DEFAULT_KEY, PROVIDER_OVERRIDES_KEY})
@@ -252,48 +211,23 @@ def secret_provider_command(providers, provider, ref):
     return [part.replace(SECRET_REF_TOKEN, ref) for part in template]
 
 
-# --- Secret delivery ----------------------------------------------------------
-# A resolved secret must never reach a tong as a docker `-e` env var, a command
-# argument, or a file on disk: anything holding the docker socket (the broker
-# tong) could read an `-e` value back via `docker inspect`. Instead the tong's
-# entrypoint is wrapped with a `/bin/sh` prologue that creates a FIFO *inside*
-# the container (on a tmpfs the launcher mounts at `SECRET_FIFO_DIR`), blocks
-# reading it, exports each delivered value into its own environment, then execs
-# the image's real entrypoint+command. The launcher delivers the `export` script
-# through `docker exec -i ... cat > <fifo>`, fed on stdin. The bytes travel
-# docker's API stream into the container kernel's pipe buffer -- never a file, an
-# argv, or the container's `Config.Env` -- and arrive as ordinary environment
-# variables, so an unmodified server that reads them from its environment at
-# startup works unchanged. Plain (non-secret) env keeps flowing through `-e`,
-# which is safe because those values are not secret.
-#
-# The FIFO lives in the container rather than on the host because a host FIFO
-# only works when host and container share a kernel: under Docker Desktop
-# (macOS/Windows) containers run in a VM and bind mounts cross the boundary via
-# a file-sharing layer (virtiofs) that shares file data, not pipe semantics.
-# Everything used here -- `docker exec -i`, a tmpfs, `mkfifo` in the container --
-# is served by the VM's own kernel, so it behaves identically on every platform.
-# FIFO open/EOF semantics double as the synchronization; `secret_inject_argv`
-# and `secret_deliver_command` each describe their half of the handshake.
+# A resolved secret never reaches a tong as a docker `-e`, an argv, or a file on
+# disk -- anything holding the docker socket can read those back. It arrives over
+# a FIFO created inside the container: a host-side FIFO would need host and
+# container to share a kernel, and under Docker Desktop the bind crosses a VM via
+# virtiofs, which shares file data, not pipe semantics.
 
-# The tmpfs holding the FIFO inside the tong, the FIFO itself, and the shell the
-# wrapper runs. The tmpfs keeps even the FIFO inode out of the container's
-# writable layer and guarantees the wrapper a writable path on any image. Its
-# options are pinned rather than left to engine defaults: `mode=1777` so a
-# non-root image user can `mkfifo` even where the engine would inherit a
-# stricter mode from a directory the image ships at this path.
 SECRET_FIFO_DIR = "/run/swarmforge"
+# A tmpfs, so the FIFO inode never lands in the container's writable layer.
+# `mode=1777` is pinned rather than left to the engine: a non-root image user must
+# be able to `mkfifo` here even if the image ships a stricter directory at this path.
 SECRET_FIFO_TMPFS = SECRET_FIFO_DIR + ":rw,nosuid,nodev,noexec,mode=1777"
 SECRET_FIFO_TARGET = SECRET_FIFO_DIR + "/secret-env"
 SECRET_INJECT_SHELL = "/bin/sh"
 
-# Exit code the delivery script reserves for "the wrapper has not created the
-# FIFO yet"; the launcher retries on it and treats any other failure as fatal.
 SECRET_FIFO_ABSENT_EXIT = 42
 
-# A secret env name becomes a shell assignment target (`export NAME=...`), so it
-# must be a valid identifier -- which is exactly what docker accepts for an env
-# var, and what keeps a hostile name from being anything but a variable name.
+# A secret env name becomes an `export NAME=` target, so it must be a bare identifier.
 ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 

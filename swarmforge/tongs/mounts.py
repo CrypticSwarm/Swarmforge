@@ -12,18 +12,12 @@ from .model import SOCKET_MOUNT
 from .secrets import SECRET_FIFO_DIR, SECRET_INJECT_SHELL, partition_secret_env
 
 
-# Mount magic words (decision: opt-in words, never raw host paths from a
-# definition). `workspace` mounts the session's workspace; `docker-socket` grants
-# docker control (the broker's privilege, surfaced by the approval gate). A mount
-# is spelled `<word>[:/target][:mode]` -- see `parse_mount` for the grammar.
 WORKSPACE_MOUNT = "workspace"
 MOUNT_WORDS = (WORKSPACE_MOUNT, SOCKET_MOUNT)
 DEFAULT_WORKSPACE_MOUNT_TARGET = "/workspace"
 DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
 
-# The docker access modes a mount may request. Anything else in the mode slot is
-# rejected rather than forwarded, so a typo cannot reach the daemon as a mount
-# option nobody vetted.
+# An allowlist, so an unvetted mount option cannot reach the daemon.
 MOUNT_MODES = ("ro", "rw")
 
 
@@ -73,8 +67,7 @@ def parse_mount(mount, words=MOUNT_WORDS):
     word, fields = fields[0], fields[1:]
     if word not in words:
         if word in MOUNT_WORDS:
-            # A real magic word the caller does not allow here is a policy refusal,
-            # not a typo, so it must not read as one.
+            # A known word the caller disallows is a refusal, not a typo.
             raise ValueError(
                 "mount %r: the %r mount is not allowed here (expected %s)"
                 % (mount, word, " or ".join(repr(allowed) for allowed in words))
@@ -96,14 +89,12 @@ def parse_mount(mount, words=MOUNT_WORDS):
             if target is not None:
                 raise ValueError("mount %r has more than one target path" % (mount,))
             if field.split() != [field]:
-                # Whitespace would become part of the directory name, so the image
-                # finds nothing where it looked.
+                # Docker would keep the whitespace in the name, so the image finds nothing there.
                 raise ValueError(
                     "mount %r: target path %r contains whitespace" % (mount, field)
                 )
             if normalize_mount_target(field) == "/":
-                # Mounting over the container's root would bury the image; docker
-                # refuses it too, but failing here keeps it a config error.
+                # Docker refuses this too; failing here keeps it a config error.
                 raise ValueError(
                     "mount %r: %r is not a usable target path (it is the "
                     "container's root)" % (mount, field)
@@ -209,7 +200,6 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET):
         if not isinstance(mount, str):
             raise ValueError("mount entries must be strings, got %r" % (mount,))
         word, target, mode = parse_mount(mount)
-        # Normalized, so the destination emitted is the one that was judged.
         destination = mount_destination(word, target, socket_path)
         reason = (mount_target_error(mount, word, target, destination, reserved)
                   or overlapping_mount_error(mount, destination, placed))
@@ -222,8 +212,7 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET):
         elif word == SOCKET_MOUNT:
             source = socket_path
         else:
-            # Unreachable while `parse_mount` guards the word set; kept so a new
-            # magic word cannot inherit the socket bind.
+            # Unreachable via `parse_mount`; a new word must not inherit the socket bind.
             raise ValueError("mount %r has no docker spec" % (mount,))
         spec = "%s:%s" % (source, destination)
         if mode:

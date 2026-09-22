@@ -150,7 +150,6 @@ from .secrets import (
 from .validate import DNS_NAME_MAX_LEN, validate_tong
 
 __all__ = [
-    # approvals
     "config_hash",
     "is_approved",
     "is_workspace_sourced",
@@ -158,7 +157,6 @@ __all__ = [
     "privilege_summary",
     "record_approval",
     "save_approvals",
-    # argv
     "SHARED_CONTAINER_PREFIX",
     "SHARED_NETWORK_PREFIX",
     "anvil_option_value",
@@ -170,15 +168,12 @@ __all__ = [
     "to_create_argv",
     "tong_resource_flags",
     "tong_run_argv",
-    # cli
     "main",
-    # discovery
     "discover",
     "load_tong_dir",
     "load_tong_file",
     "load_yaml",
     "merge_tongs",
-    # mcp
     "MCP_DEFAULT_PATH",
     "alias_collisions",
     "anvil_env",
@@ -190,7 +185,6 @@ __all__ = [
     "tong_aliases",
     "tong_env_prefix",
     "tong_env_var",
-    # model
     "DEFAULT_READINESS_TIMEOUT_S",
     "ENV_PREFIX",
     "INTERFACE_KINDS",
@@ -210,7 +204,6 @@ __all__ = [
     "parse_duration",
     "readiness_settings",
     "warn",
-    # mounts
     "DEFAULT_DOCKER_SOCKET",
     "DEFAULT_WORKSPACE_MOUNT_TARGET",
     "MOUNT_MODES",
@@ -224,11 +217,9 @@ __all__ = [
     "reserved_mount_targets",
     "tong_mount_specs",
     "workspace_mount_placements",
-    # network
     "SESSION_NET_PREFIX",
     "plan_network",
     "session_network_name",
-    # secrets
     "ENV_NAME_RE",
     "PROVIDER_DEFAULT_KEY",
     "PROVIDER_ENTRY_KEYS",
@@ -253,7 +244,6 @@ __all__ = [
     "secret_inject_argv",
     "secret_provider_command",
     "substitute_secrets",
-    # validate
     "DNS_NAME_MAX_LEN",
     "validate_tong",
 ]

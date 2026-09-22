@@ -13,7 +13,6 @@ from .validate import validate_tong
 
 
 def _layer_dirs_from_argv(paths):
-    # Map positional dirs onto LAYERS lowest-first; extra dirs keep the last name.
     pairs = []
     for index, path in enumerate(paths):
         layer = LAYERS[index] if index < len(LAYERS) else LAYERS[-1]

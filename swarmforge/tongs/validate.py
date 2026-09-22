@@ -29,10 +29,7 @@ from .mounts import (
 from .secrets import ENV_NAME_RE, partition_secret_env
 
 
-# Dot-separated labels of letters, digits and inner hyphens -- what docker's
-# embedded DNS resolves a `--network-alias` as. Anchored per label so a leading
-# or trailing hyphen (or an empty label from a doubled dot) is rejected here
-# rather than by `docker run` mid-launch.
+# Anchored per label, so a leading/trailing hyphen or an empty label is rejected.
 _DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 DNS_NAME_MAX_LEN = 253
 
@@ -92,10 +89,6 @@ def validate_tong(name, defn):
             if not interface.get("mountpoint"):
                 err("interface.kind=volume requires 'mountpoint' (where the anvil sees it)")
 
-        # Extra DNS names the tong answers to, beyond its canonical alias, for
-        # consumers that hardcode a hostname (vhosts, certificate CNs). They
-        # become `--network-alias` flags, so only a tong with a listener can
-        # carry them and each must be a name docker's embedded DNS accepts.
         aliases = interface.get("aliases")
         if aliases is not None:
             if kind in ("volume", "none"):
@@ -109,8 +102,6 @@ def validate_tong(name, defn):
                         err("invalid interface.aliases entry %r (must be a DNS name: "
                             "letters, digits, hyphens and dots)" % (alias,))
 
-    # Readiness: tcp is the implicit default for mcp/port; volume/none must
-    # declare a mode (the launcher refuses to silently fire-and-forget).
     readiness = defn.get("readiness")
     if readiness is not None and not isinstance(readiness, dict):
         err("'readiness' must be a mapping")
@@ -121,13 +112,9 @@ def validate_tong(name, defn):
     if kind in ("volume", "none") and mode is None:
         err("interface.kind=%s requires an explicit readiness.mode" % kind)
     if mode == "tcp" and kind not in ("mcp", "port"):
-        # A TCP probe needs a port to dial; a volume/none tong has none, so this
-        # would silently never become ready. Force a compatible mode instead.
         err("readiness.mode=tcp needs a port; interface.kind=%s has none "
             "(use 'healthcheck' or 'none')" % kind)
     if isinstance(readiness, dict):
-        # Validate the fields orchestration consumes so a bad value is a clean
-        # error here, not an uncaught ValueError/TypeError mid-launch.
         try:
             parse_duration(readiness.get("timeout"), DEFAULT_READINESS_TIMEOUT_S)
         except ValueError as exc:
@@ -147,8 +134,6 @@ def validate_tong(name, defn):
             if not ENV_NAME_RE.match(secret_name):
                 err("invalid secret env name %r (must be a valid identifier)" % secret_name)
 
-    # `entrypoint`/`command` override the image's entrypoint/command (and what the
-    # secret-injection wrapper execs), so they must be argv lists of strings.
     for argvish in ("entrypoint", "command"):
         value = defn.get(argvish)
         if value is not None and not (
@@ -161,8 +146,6 @@ def validate_tong(name, defn):
         if value is not None and not isinstance(value, list):
             err("'%s' must be a list" % listish)
 
-    # Entry-level checks for the values orchestration turns into docker flags, so
-    # a malformed entry fails validation rather than raising during the launch.
     mounts = defn.get("mounts")
     if isinstance(mounts, list):
         reserved = reserved_mount_targets(defn)
