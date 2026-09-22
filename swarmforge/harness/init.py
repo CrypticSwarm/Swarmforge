@@ -34,26 +34,20 @@ USAGE = "usage: python3 -m swarmforge.harness.init HARNESS HOME UID GID"
 # The container mounts the checkout here.
 WORKSPACE = "/workspace"
 
-# The config file the layer merge keys for every harness instead of overlaying
-# it whole, so a higher layer replaces only the keys it names.
+# Merged key-by-key for every harness instead of overlaid whole.
 KEYED_FILE = "opencode.json"
 
 # Layer variables are concatenated onto, never joined with, their subdirectory:
-# an empty layer yields an absolute "/skills" that no source check passes,
-# where a join would name a path relative to the workspace this runs in.
+# an empty layer must yield an absolute "/skills" that no source check passes,
+# where a join would give a relative "skills" read from the workspace.
 
 
 def layer_exclude_args(spec):
     """The tar `--exclude` arguments for one harness's config layer merge."""
     return [
-        # The keyed file is excluded from the overlay because it merges
-        # key-by-key instead of being copied whole.
         "--exclude=./" + KEYED_FILE,
-        # .swarmforge/ asset dirs are read via their own mounts, never through
-        # the config merge, so transporting them here would only litter the
-        # dest (or, for Claude, accumulate junk in the persistent home).
+        # .swarmforge asset dirs arrive by their own mounts, never this merge.
         "--exclude=./.swarmforge",
-        # Everything else the harness itself keeps out of the overlay.
         *["--exclude=" + entry for entry in spec.layer_excludes],
     ]
 
@@ -63,10 +57,7 @@ def merge_config_layer(src_dir, dst_dir, exclude_args):
     if not src_dir or not os.path.isdir(src_dir):
         return
 
-    # Skip when src and dst resolve to the same underlying directory (for
-    # example when a home-dir layer makes both paths bind-mounts of the host's
-    # own config dir). Otherwise tar would try to extract entries on top of
-    # themselves and abort.
+    # One directory under two paths: tar would extract onto itself and abort.
     try:
         src_stat = os.stat(src_dir)
         dst_stat = os.stat(dst_dir)
@@ -89,18 +80,15 @@ def merge_config_layer(src_dir, dst_dir, exclude_args):
             stdin=creator.stdout,
         )
     except BaseException:
-        # No reader will ever drain the pipe; closing it stops the creator,
-        # which is then reaped rather than left behind.
+        # Nothing drains the pipe; close it so the creator stops and is reaped.
         creator.stdout.close()
         creator.wait()
         raise
-    # The extractor now holds the read end; a copy left open here would keep
-    # it waiting on a pipe that never reaches end of file.
+    # The extractor holds the read end; a copy left open here blocks its EOF.
     creator.stdout.close()
 
     status = extractor.wait()
-    # Only the extractor decides the outcome: a POSIX shell pipeline's status
-    # is its last command's, and this keeps that contract.
+    # The extractor's status is the outcome, as in a shell pipeline.
     creator.wait()
     if status != 0:
         raise subprocess.CalledProcessError(status, ["tar", "-xf", "-"])
@@ -127,9 +115,7 @@ def initialize(name, home, environ):
         return 2
     spec = module.SPEC
 
-    # Not the run's to choose when the harness pins a destination: a merged
-    # layer landing in the shared home would outlive the container. Otherwise
-    # the run's variable decides, and an empty one skips the phase.
+    # The pin exists so a merged layer cannot outlive the container in the home.
     if provided(spec.config_dest):
         dest = spec.config_dest
     else:
@@ -156,13 +142,9 @@ def initialize(name, home, environ):
             shutil.rmtree(dest)
     os.makedirs(dest, exist_ok=True)
 
-    # Merge order (lowest to highest precedence): repo -> user -> org.
-    #
-    # Ordered by trust, not by specificity, because these files carry
-    # permissions, hooks, and env: a checkout is whatever repo you cloned, and
-    # the org layer is installed deliberately. That inverts the order the asset
-    # pipelines use for skills, commands, and agents, where a repo's own
-    # definitions are the most specific thing available and rightly win.
+    # repo -> user -> org: ordered by trust, not specificity, because these
+    # files carry permissions, hooks, and env. The asset pipelines put the repo
+    # layer above both instead, as the more specific one.
     excludes = layer_exclude_args(spec)
     for src in (ctx.config_repo_src, ctx.config_user_src, ctx.config_org_src):
         merge_config_layer(src, dest, excludes)
@@ -172,13 +154,9 @@ def initialize(name, home, environ):
 
     # Sidecar MCP servers merge last but yield to same-named layer entries.
     if spec.mcp_merge == "toml-managed-block":
-        # Servers go in a managed block the module rewrites each run rather
-        # than being appended; running with no fragment is what removes a
-        # stale block when no tongs are set.
+        # Running with no fragment is what clears a stale managed block.
         merge_toml_mcp.merge(dest + "/config.toml", ctx.tong_mcp_file or None)
     elif spec.mcp_merge == "json-replace-mcp":
-        # A no-op without the variable: merge_config_file ignores an empty or
-        # missing source.
         merge_config_file(
             ctx.tong_mcp_file, dest + "/opencode.json", replace_mcp_entries=True)
 
@@ -219,8 +197,6 @@ def translate_agents(spec, ctx, environ, workspace=WORKSPACE):
     warning, since a session can run without subagents while a stopped
     container serves nobody.
     """
-    # The Waiver is the opt-out on record: unified agent definitions are not
-    # delivered to this harness, so nothing is written and nothing is warned.
     if not provided(spec.agents_dest):
         return 0
 

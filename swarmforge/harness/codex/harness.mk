@@ -1,6 +1,4 @@
-# Codex CLI's make interface: the user knobs, run env/mounts, and layer
-# defaults for the targets harness_rules generates (build_codex,
-# update_codex, run_codex, stop_codex).
+# Codex CLI's make interface for the targets harness_rules generates.
 CODEX_IMG   ?= codex-cli:local
 CODEX_CTR   ?= codex-$(PROJECT_NAME)
 CODEX_DATA_DIR ?= $(HOME)/.local/share/codex
@@ -11,9 +9,8 @@ CODEX_RUN_ENV = \
 	-e SWARMFORGE_AGENT_BIN=codex \
 	$(SWARMFORGE_LAYER_ENV)
 
-# Codex reads its skills from ~/.agents/skills natively. Masking that dir
-# with tmpfs keeps it container-private, so per-repo assets never
-# accumulate in the persistent home. exec: skill packages ship scripts.
+# tmpfs masks codex's native skills dir so per-repo assets never accumulate in
+# the persistent home; exec, because skill packages ship scripts.
 CODEX_RUN_MOUNTS = \
 	-v "$(CODEX_HOME_DIR)":$(ANVIL_HOME) \
 	--tmpfs $(ANVIL_HOME)/.agents/skills:exec \

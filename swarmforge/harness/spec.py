@@ -31,10 +31,9 @@ class Context:
     missing.
     """
 
-    # The name the harness is registered and selected by.
     harness: str
 
-    # The anvil user's home inside the container, such as /home/anvil.
+    # The anvil user's home inside the container.
     home: str
 
     # Directory the layered config is merged into for this run.
@@ -45,11 +44,9 @@ class Context:
     config_user_src: str
     config_org_src: str
 
-    # The generated tong MCP fragment, empty when the run has no tongs.
     tong_mcp_file: str
 
-    # The working directory the harness process will start in; empty for
-    # phases that do not act on it.
+    # The working directory the harness process starts in.
     cwd: str = ""
 
 
@@ -166,77 +163,50 @@ class HarnessSpec:
     holds a `Waiver` naming the reason.
     """
 
-    # The name the harness is registered and selected by.
     name: str
 
-    # Container path the layered config is merged into when the harness forces
-    # one; a Waiver when the run's SWARMFORGE_CONFIG_DEST decides instead, and
-    # an unset variable skips the config phase.
+    # Container path the layered config is merged into, when the harness pins one.
     config_dest: object
 
-    # True when the harness always rebuilds the config destination from
-    # scratch; False when the run's SWARMFORGE_CONFIG_RESET decides.
+    # True when the harness always rebuilds its config destination; else the run.
     config_reset: bool
 
-    # Additions to the shared config-layer tar excludes ("./opencode.json",
-    # "./.swarmforge"), applied when a config layer is merged. Entries are
-    # tar patterns and must carry the "./" prefix, or they would match at any
-    # depth. Every harness lists the native skills/commands dirs it has: the
-    # asset copy is their only transport, so all layers get the same
-    # per-entry replacement semantics (a higher layer's skill package
-    # replaces the whole package, never file-merges into it), where the tar
-    # merge would union layers file-by-file.
+    # Additions to the shared config-layer tar excludes. Entries are tar
+    # patterns and must carry the "./" prefix, or they match at any depth.
+    # Every harness excludes the native skills/commands dirs it has, so the
+    # asset copy is their only transport: that copy replaces a package whole,
+    # where the tar merge would union the layers file-by-file.
     layer_excludes: tuple
 
-    # Where portable skills and commands land. A string may hold the
-    # placeholders "{home}" (the anvil user's home) and "{config}" (the merged
-    # config destination); a Waiver opts the harness out.
+    # Where portable skills and commands land; "{home}"/"{config}" expand.
     skills_dest: object
     commands_dest: object
 
-    # Where translated native agents land, under the same placeholder rules.
+    # Where translated native agents land, under the same placeholders.
     agents_dest: object
 
-    # Callable `(servers) -> dict` shaping `{alias: url}` into the harness's
-    # MCP config fragment, `{}` for no servers.
+    # Callable `(servers) -> dict` shaping `{alias: url}` into an MCP fragment.
     mcp_fragment: object
 
-    # How the anvil learns the generated MCP config path: ("flag", FLAG)
-    # appends `FLAG <path>` to the harness argv, ("env", VAR) sets
-    # `VAR=<path>` for the config driver to merge.
+    # How the anvil learns the MCP config path: ("flag", FLAG) or ("env", VAR).
     mcp_delivery: tuple
 
-    # How the delivered fragment merges into the harness config:
-    # "json-replace-mcp" (opencode.json key merge, whole MCP entries replaced)
-    # or "toml-managed-block" (a rewritten managed block in config.toml); a
-    # Waiver when nothing merges it into a file.
+    # Which merge carries the fragment in: json-replace-mcp or toml-managed-block.
     mcp_merge: object
 
-    # Callable `(name, meta, body) -> (filename, text) | None` producing one
-    # native agent file, or None to skip that agent; a Waiver when the harness
-    # has no emitter and unified agents are not translated for it.
+    # Callable `(name, meta, body) -> (filename, text) | None` per agent.
     agent_emitter: object
 
-    # Container paths outside the home handed to the anvil uid before
-    # privileges drop, after every root-phase write. They are changed without
-    # following symlinks, so a state link changes owner itself while what it
-    # points at is the home pass's business.
+    # Container paths outside the home to hand to the anvil uid.
     extra_chown_paths: tuple
 
-    # Hook `(dest_dir, emitted, home)` run after every agent file is written,
-    # where `emitted` lists `(name, meta, path)` for the agents actually
-    # emitted. `home` is the anvil user's home when the container driver runs
-    # the translation, and empty for a bare CLI run.
+    # Hook `(dest_dir, emitted, home)` run after every agent file is written.
     finalize_agents: object = finalize_agents
 
-    # Hook `(ctx, layer)` run once per asset layer, lowest precedence first,
-    # installing that layer's portable skills and commands. The default copies
-    # into the declared destinations with per-entry replacement; a harness
-    # overrides it when its native asset shape needs more than a copy.
+    # Hook `(ctx, layer)` run once per asset layer, lowest precedence first.
     install_assets: object = install_assets
 
-    # Hook `(ctx)` run after the config layers merge, before the tong MCP
-    # servers merge.
+    # Hook `(ctx)` run after the config layers merge, before the MCP merge.
     build_config: object = build_config
 
     # Hook `(ctx)` run after the tong MCP servers merge.
@@ -245,16 +215,11 @@ class HarnessSpec:
     # Hook `(ctx)` run last, after the whole config phase.
     publish_config: object = publish_config
 
-    # Hook `(ctx)` run after the asset phase, linking whatever state the
-    # harness keeps across runs into its config destination.
+    # Hook `(ctx)` run after the asset phase, linking persistent state in.
     link_state: object = link_state
 
-    # Hook `(ctx)` run after state is linked, for container preparation only
-    # root can do.
+    # Hook `(ctx)` run after state is linked, for root-only preparation.
     root_setup: object = root_setup
 
-    # Hook `(ctx, argv, env) -> (argv, env)` with the last word on the argv
-    # and the environment the harness binary is exec'd with. It runs as the
-    # anvil user, after the root phases, in the process that becomes the
-    # harness.
+    # Hook `(ctx, argv, env) -> (argv, env)` run last, as the anvil user.
     pre_exec: object = pre_exec

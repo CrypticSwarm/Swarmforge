@@ -26,14 +26,10 @@ USAGE = "usage: python3 -m swarmforge.harness.execute HARNESS HOME -- [ARG...]"
 
 BIN_DIR = "/usr/local/bin"
 
-# The variables this driver's own launch adds, which the exec it performs must
-# not pass on. A value the run itself carried is dropped with them: by the
-# time this runs, the two are indistinguishable.
+# Added by this driver's own launch; the exec drops them, run-supplied or not.
 LAUNCH_VARS = ("PYTHONPATH", "PYTHONCOERCECLOCALE")
 
-# Signals the interpreter sets to "ignore" at startup. An ignored disposition
-# survives exec, so left alone the binary -- and every process it spawns --
-# would start with signal handling a direct exec never gave it.
+# CPython ignores these at startup, and an ignored disposition survives exec.
 IGNORED_SIGNALS = (signal.SIGPIPE, signal.SIGXFSZ)
 
 

@@ -124,14 +124,12 @@ def finalize_agents(dest_dir, emitted, home=""):
         return
     config_file = home + "/.codex/config.toml"
     try:
-        # Imported at call time: the launcher imports this module on whatever
-        # python3 the host has, while merge_toml needs the container's tomllib
-        # (3.11+) and this merge only ever runs there. Inside the try so a
-        # python without it fails the registration, not the translation.
+        # Imported at call time: merge_toml needs tomllib (3.11+), which the
+        # host python the launcher imports this module on may not have. Inside
+        # the try, so a python without it fails the registration, not the run.
         from swarmforge.config import merge_toml
 
-        # Sources lowest precedence first: the published config's own keys
-        # outrank the generated registrations.
+        # Lowest precedence first: the published config outranks these.
         merge_toml.build_file(config_file, [config_path, config_file])
     except Exception:
         print(
@@ -171,9 +169,7 @@ def build_config(ctx):
     propagate: a config the serializer cannot round-trip must fail the run
     rather than hand codex something it will not read.
     """
-    # Imported at call time: the launcher imports this module on whatever
-    # python3 the host has, while merge_toml needs the container's tomllib
-    # (3.11+) and this hook only ever runs there.
+    # Imported at call time: merge_toml needs the container's tomllib (3.11+).
     from swarmforge.config import merge_toml
 
     sources = [
@@ -204,9 +200,7 @@ SPEC = HarnessSpec(
     name="codex",
     config_dest="/run/swarmforge/codex-config",
     config_reset=True,
-    # packages, sessions, history.jsonl, and log are session state the dest
-    # rebuild must not resurrect; config.toml merges by key through
-    # build_config instead of overlaying whole.
+    # packages, sessions, history.jsonl, and log must not survive the rebuild.
     layer_excludes=(
         "./skills",
         "./packages",

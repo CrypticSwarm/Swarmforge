@@ -8,25 +8,17 @@ from swarmforge.agents.emit import OPENCODE_ONLY_FIELDS, render, warn
 from swarmforge.config import merge_json
 from swarmforge.harness.spec import HarnessSpec, Waiver
 
-# Derived from the layers on every run and never read as an input. It stays
-# off the persistent home -- one directory shared by every container for this
-# user, where it would carry an org layer's permissions, hooks, and env into
-# later runs that do not mount that layer -- and rides claude's command line
-# instead, spliced into the argv by the pre-exec hook.
+# Rebuilt from the layers every run and kept off the persistent home, where an
+# org layer's permissions, hooks, and env would reach runs without that layer.
 SETTINGS_FILE = "/run/swarmforge/claude-settings.json"
 
-# The image's own defaults, and the bottom settings layer: any higher and the
-# image would overrule a key a session chose. This is the path claude's
-# image.sh installs to.
+# The image's own defaults, the bottom settings layer; image.sh installs it.
 IMAGE_DEFAULT_SETTINGS = "/usr/local/share/swarmforge/claude-settings.json"
 
 # Holds the git wrapper the root phase installs when the workspace needs one.
-# The pre-exec hook puts this directory ahead of the real git on PATH exactly
-# when the wrapper is standing there.
 WRAPPER_DIR = "/usr/local/libexec/swarmforge"
 
-# The wrapper's text, given the real git, the worktree path recorded on the
-# host, and the directory the same checkout is mounted at in the container.
+# The wrapper's text, given the real git and the two worktree paths.
 GIT_WRAPPER = """\
 #!/bin/sh
 # Swarmforge git wrapper: rewrite worktree paths for container compatibility.
@@ -40,11 +32,9 @@ case "$*" in
 esac
 """
 
-# State only: nothing claude loads as configuration or code belongs here.
-# Listing what survives the rebuild rather than what does not fails safe: a
-# directory claude learns to load in a later release stays inert until someone
-# lists it, at the cost that a state directory nobody has listed dies with the
-# run.
+# State only, and an allowlist rather than a denylist, so a directory a later
+# claude release loads as config stays inert until someone lists it here, at
+# the cost that an unlisted state dir dies with the run.
 STATE_DIRS = (
     "projects",
     "sessions",
@@ -67,8 +57,7 @@ STATE_FILES = (
     "scheduled_tasks.lock",
 )
 
-# OpenCode tool id -> Claude Code tool name. Ids mapping to None have no
-# Claude equivalent and are dropped.
+# OpenCode tool id -> Claude Code tool name; None means no equivalent.
 CLAUDE_TOOL_NAMES = {
     "bash": "Bash",
     "edit": "Edit",
@@ -88,8 +77,7 @@ CLAUDE_TOOL_NAMES = {
 
 
 def _override_keys():
-    # Imported at call time: the registry package imports this module while
-    # building the harness table, so the table does not exist yet at import.
+    # Imported at call time: the registry imports this module to build the table.
     from swarmforge import harness
 
     return harness.agent_override_keys()
@@ -167,9 +155,7 @@ def finalize_config(ctx):
     object is the safe reading of "no layer could be applied".
     """
     os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
-    # A path is passed for every layer whether or not it exists, which is the
-    # normal case merge_json.build_file skips over; an empty layer contributes
-    # "/settings.json", which is no more present than the rest.
+    # build_file skips a missing source, an empty layer's "/settings.json" too.
     sources = [IMAGE_DEFAULT_SETTINGS] + [
         src + "/settings.json"
         for src in (ctx.config_repo_src, ctx.config_user_src, ctx.config_org_src)
@@ -215,8 +201,7 @@ def link_state(ctx):
     shared = ctx.home + "/.claude"
     os.makedirs(ctx.config_dest, exist_ok=True)
 
-    # Claude keeps this one beside the shared dir rather than inside it, so
-    # it is linked on its own rather than from either tuple.
+    # Claude keeps this one beside the shared dir rather than inside it.
     link_entry(ctx.home + "/.claude.json",
                os.path.join(ctx.config_dest, ".claude.json"))
 
@@ -224,15 +209,13 @@ def link_state(ctx):
         try:
             os.makedirs(shared + "/" + entry, exist_ok=True)
         except OSError:
-            # Something already stands at that name, a file among them; the
-            # entry is linked to it either way.
+            # Something already stands at that name; the entry links to it.
             pass
         link_entry(shared + "/" + entry,
                    os.path.join(ctx.config_dest, entry))
 
     for entry in STATE_FILES:
-        # The link dangles until claude writes the file, which is what an
-        # untouched piece of state looks like.
+        # The link dangles until claude writes the file.
         link_entry(shared + "/" + entry,
                    os.path.join(ctx.config_dest, entry))
 
@@ -296,13 +279,11 @@ def root_setup(ctx):
     if not gitdir_ptr:
         return
 
-    # The administrative directory points back at the worktree's own .git,
-    # which is where the host path is recorded.
-    reverse_file = gitdir_ptr + "/gitdir"
-    if not os.path.isfile(reverse_file):
+    host_dotgit_record = gitdir_ptr + "/gitdir"
+    if not os.path.isfile(host_dotgit_record):
         return
 
-    with open(reverse_file, "r", encoding="utf-8") as handle:
+    with open(host_dotgit_record, "r", encoding="utf-8") as handle:
         host_dotgit = handle.read().rstrip("\n")
     host_worktree = os.path.dirname(host_dotgit)
     if host_worktree == workspace:
@@ -321,8 +302,7 @@ def root_setup(ctx):
             "workspace": workspace,
         })
 
-    # Root owns the wrapper and the unprivileged session user execs it off
-    # PATH.
+    # Root owns it; the unprivileged session user execs it off PATH.
     os.chmod(path, 0o755)
 
 
@@ -363,11 +343,9 @@ SPEC = HarnessSpec(
     name="claude",
     config_dest="/run/swarmforge/claude-config",
     config_reset=False,
-    # agents/ is kept out because unified agent translation is its sole
-    # source; settings.json merges by key through finalize_config instead of
-    # overlaying whole; .credentials.json stays out because the default user
-    # layer is the host's own ~/.claude and the store is named elsewhere, so
-    # a merged copy is a secret nothing reads.
+    # agents/ comes only from unified translation; settings.json merges by key
+    # in finalize_config; a merged .credentials.json would be a copied secret
+    # nothing reads, since pre_exec names the store elsewhere.
     layer_excludes=(
         "./skills",
         "./commands",

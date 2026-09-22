@@ -1,7 +1,4 @@
-# OpenCode's make interface: the user knobs, run env/mounts, and layer
-# defaults for the targets harness_rules generates (build_opencode,
-# update_opencode, run_opencode, stop_opencode). Its data dir and profile
-# knobs are the user-facing names DATA_DIR and PROFILE, unprefixed.
+# OpenCode's make interface for the targets harness_rules generates.
 OPENCODE_IMG ?= opencode:local
 OPENCODE_CTR ?= opencode-$(PROJECT_NAME)
 PROFILE      ?=
