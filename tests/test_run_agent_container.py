@@ -22,12 +22,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
 MAKEFILE = os.path.join(REPO_ROOT, "Makefile")
 
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from swarmforge import names, tongs  # noqa: E402  (needs the path above)
+
 DOCKER_STUB = "#!/bin/sh\nexit 0\n"
 
-# Stands in for PYTHON, except for the git guard the recipe also runs: that is code under test.
+# Stands in for PYTHON, except for the git guard and name helper: those are code under test.
 CAPTURE_STUB = """#!/bin/sh
 case "$1" in
-  */bin/git-guard) exec "$PYTHON_REAL" "$@" ;;
+  */bin/git-guard|*/bin/project-name) exec "$PYTHON_REAL" "$@" ;;
 esac
 : > "$CAPTURE_FILE"
 for arg in "$@"; do printf '%s\\0' "$arg" >> "$CAPTURE_FILE"; done
@@ -75,7 +80,7 @@ class MakeRecipeCase(unittest.TestCase):
         self.capture = os.path.join(self.bin, "capture-argv")
         _write_exec(self.capture, CAPTURE_STUB)
 
-    def make_repo(self, name="proj"):
+    def make_repo(self, name=make_argv_fixtures.PROJECT_SUBDIR):
         """A git checkout with one commit, so `git worktree add` works."""
         path = os.path.join(self.tmp, name)
         os.makedirs(path)
@@ -107,6 +112,22 @@ class MakeRecipeCase(unittest.TestCase):
         )
         with open(self.capture_path) as handle:
             return handle.read().split("\0")[:-1]
+
+    def make_output(self, target, project_dir):
+        """The stdout of a target that only prints, with no docker to stub."""
+        completed = subprocess.run(
+            ["make", "-s", "-C", project_dir, "-f", MAKEFILE, target],
+            env={
+                "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
+                "HOME": self.home,
+            },
+            capture_output=True, text=True,
+        )
+        self.assertEqual(
+            completed.returncode, 0,
+            "make failed:\n%s\n%s" % (completed.stdout, completed.stderr),
+        )
+        return completed.stdout.strip()
 
     def docker_argv(self, target, project_dir):
         """The argv after the launcher's `--`, i.e. the anvil's `docker run`."""
@@ -292,6 +313,94 @@ class HostTerminalEnv(MakeRecipeCase):
                 any(flag.startswith("TERM=") for flag in flags), target)
             self.assertFalse(
                 any(flag.startswith("COLORTERM=") for flag in flags), target)
+
+
+class GeneratedNamesIdentifyOneDirectory(MakeRecipeCase):
+    """Two checkouts with the same basename get different docker names.
+
+    The worktree layout makes `repo1/master` and `repo2/master` share a
+    basename, and the run recipe removes a container of the name it is about to
+    use, so a shared name means the second session kills the first. The
+    per-session network and each session tong are built from this name, so they
+    are checked here too, and the same `PROJECT_DIR` has to reproduce it.
+    """
+
+    def container_name(self, target, project_dir):
+        argv = self.docker_argv(target, project_dir)
+        self.assertIn("--name", argv)
+        return argv[argv.index("--name") + 1]
+
+    def derived_names(self, name):
+        """The docker names the launcher builds out of a container name."""
+        return [
+            tongs.session_network_name(name),
+            tongs.session_container_name(name, "github"),
+        ]
+
+    def test_same_basename_under_different_parents_gets_distinct_names(self):
+        first = self.container_name("run_claude", self.make_repo("repo1/master"))
+        second = self.container_name("run_claude", self.make_repo("repo2/master"))
+        self.assertNotEqual(first, second)
+        # Every other session name carries the container name, so it separates with it.
+        for name in (first, second):
+            for derived in self.derived_names(name):
+                self.assertIn(name, derived)
+        self.assertEqual(
+            set(self.derived_names(first)) & set(self.derived_names(second)),
+            set())
+
+    def test_the_name_still_reads_as_the_directory_it_is_for(self):
+        name = self.container_name("run_claude", self.make_repo("repo1/master"))
+        self.assertTrue(
+            name.startswith("claude-master-"),
+            "%s does not name the harness and the directory" % name)
+
+    def test_a_subdirectory_of_a_repo_is_named_for_that_subdirectory(self):
+        # PROJECT_DIR is what the name identifies, not the workspace root the recipe resolves.
+        nested = os.path.join(self.make_repo("repo1/master"), "src")
+        os.makedirs(nested)
+        self.assertTrue(
+            self.container_name("run_claude", nested).startswith("claude-master-src-"))
+
+    def test_a_directory_inside_a_repository_is_named_for_that_repository_too(self):
+        # A `master` in several repositories is unreadable without the repository name.
+        self.make_repo("repo1")
+        project = self.make_repo("repo1/master")
+        self.assertTrue(
+            self.container_name("run_claude", project).startswith("claude-repo1-master-"))
+
+    def test_a_path_a_shell_would_reparse_names_its_own_directory(self):
+        # make derives the name through $(shell), which must not rewrite the path first.
+        for branch in ("dol$lar", "back`tick", "quo'te", "sub$(id)", "a b"):
+            project = self.make_repo(os.path.join("repo1", branch))
+            self.assertEqual(
+                self.make_output("name_claude", project),
+                "claude-%s" % names.project_token(project),
+                branch)
+
+    def test_the_same_directory_gets_the_same_name_every_run(self):
+        project = self.make_repo("repo1/master")
+        self.assertEqual(
+            self.container_name("run_claude", project),
+            self.container_name("run_claude", project))
+
+    def test_the_name_target_prints_the_name_the_run_target_used(self):
+        project = self.make_repo("repo1/master")
+        started = self.container_name("run_claude", project)
+        self.assertEqual(self.make_output("name_claude", project), started)
+
+    def test_every_harness_names_its_own_container_for_the_directory(self):
+        # Read off the recording, so a harness added later is held to this for free.
+        harnesses = [target[len("run_"):] for target in make_argv_fixtures.RUN_ARGV]
+        self.assertTrue(harnesses)
+        project = self.make_repo("repo1/master")
+        names = {
+            harness: self.container_name("run_%s" % harness, project)
+            for harness in harnesses
+        }
+        self.assertEqual(len(set(names.values())), len(names))
+        for harness, name in names.items():
+            self.assertTrue(name.startswith("%s-master-" % harness), name)
 
 
 class RunArgvBaseline(MakeRecipeCase):

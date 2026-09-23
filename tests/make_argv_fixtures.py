@@ -11,6 +11,8 @@ placeholders:
   {TMP}         the test's temporary directory (its HOME and the
                 project checkout both live under it)
   {UID} {GID}   the invoking user's ids
+  {HASH}        the digest half of the project's container name, which
+                is taken over the temporary directory's path
 
 A mismatch means the make interface changed. Fix the recipe, or -- for
 a deliberate change -- update the recording in the same diff: print the
@@ -19,15 +21,27 @@ rewrites this file automatically.
 """
 
 import os
+import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Standing in for the launcher's entry-point shim keeps this file readable on its own.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from swarmforge import names  # noqa: E402  (needs the path above)
+
+PROJECT_SUBDIR = "proj"
 
 
 def normalize(argv, tmp):
     """Replace machine-specific words with the placeholders above."""
     uid, gid = str(os.getuid()), str(os.getgid())
+    # The whole token, not just the digest: a wrong hint or directory then fails to substitute.
+    token = names.project_token(os.path.join(tmp, PROJECT_SUBDIR))
     normalized = []
     for arg in argv:
+        arg = arg.replace(token, "%s-{HASH}" % PROJECT_SUBDIR)
         arg = arg.replace(tmp, "{TMP}").replace(REPO_ROOT, "{SWARMFORGE}")
         if arg == "SWARMFORGE_UID=" + uid:
             arg = "SWARMFORGE_UID={UID}"
@@ -58,7 +72,7 @@ RUN_ARGV = {'run_claude': ['{SWARMFORGE}/bin/run-anvil',
                 '-it',
                 '--rm',
                 '--name',
-                'claude-proj',
+                'claude-proj-{HASH}',
                 '--network',
                 'opencode-net',
                 '-e',
@@ -159,7 +173,7 @@ RUN_ARGV = {'run_claude': ['{SWARMFORGE}/bin/run-anvil',
                '-it',
                '--rm',
                '--name',
-               'codex-proj',
+               'codex-proj-{HASH}',
                '--network',
                'opencode-net',
                '-e',
@@ -260,7 +274,7 @@ RUN_ARGV = {'run_claude': ['{SWARMFORGE}/bin/run-anvil',
               '-it',
               '--rm',
               '--name',
-              'grok-proj',
+              'grok-proj-{HASH}',
               '--network',
               'opencode-net',
               '-e',
@@ -363,7 +377,7 @@ RUN_ARGV = {'run_claude': ['{SWARMFORGE}/bin/run-anvil',
                   '-it',
                   '--rm',
                   '--name',
-                  'opencode-proj',
+                  'opencode-proj-{HASH}',
                   '--network',
                   'opencode-net',
                   '-e',

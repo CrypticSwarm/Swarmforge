@@ -31,9 +31,18 @@ TIMEZONE     ?= Etc/UTC
 UID          := $(shell id -u)
 GID          := $(shell id -g)
 
+# The host's python: the launcher and the unit suite run outside any image.
+PYTHON ?= python3
+
 SWARMFORGE_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 PROJECT_DIR  := $(CURDIR)
-PROJECT_NAME := $(notdir $(abspath $(PROJECT_DIR)))
+# Single-quoted: a `$` or a backtick in the path is shell syntax on a $(shell)
+# command line, and not every make propagates an export there instead.
+PROJECT_DIR_SQ := $(subst ','\'',$(PROJECT_DIR))
+PROJECT_NAME := $(shell $(PYTHON) "$(SWARMFORGE_DIR)/bin/project-name" '$(PROJECT_DIR_SQ)')
+ifeq ($(strip $(PROJECT_NAME)),)
+$(error Could not name a container for $(PROJECT_DIR); see the error above from $(SWARMFORGE_DIR)/bin/project-name)
+endif
 # Not for overriding -- the entrypoint and docs name it; a variable only so the git-dir guard tracks it.
 WORKSPACE_MOUNT := /workspace
 # The entrypoint hardcodes this same path, so no overrides.
@@ -51,9 +60,6 @@ SWARMFORGE_REPO_TONGS_DIR ?= $(SWARMFORGE_DIR)/tongs
 # The portable .agents/{skills,commands} overlay, distinct from the .swarmforge asset layers above.
 SWARMFORGE_USER_DOTAGENTS_DIR ?= $(HOME)/.agents
 SWARMFORGE_ORG_DOTAGENTS_DIR ?= $(if $(strip $(SWARMFORGE_ORG_CONFIG_ROOT)),$(SWARMFORGE_ORG_CONFIG_ROOT)/.agents,)
-
-# The host's python: the launcher and the unit suite run outside any image.
-PYTHON ?= python3
 
 # The one tool outside the stdlib this repo asks for, and only for `make lint`.
 RUFF ?= ruff
@@ -183,14 +189,14 @@ define run_agent_container
 	set +x
 endef
 
-# Generates one harness's build/update/run/stop targets. $(1) is the harness
+# Generates one harness's build/update/run/stop/name targets. $(1) is the harness
 # name (target names, --build-arg AGENT); $(2) is its harness.mk variable
 # prefix (CLAUDE, OPENCODE, ...). Fragment knobs are referenced by name and
 # expand when a recipe runs, so overrides behave as on a rule written out in
 # full. $(2)_MKDIRS is the one knob spliced verbatim at eval time, so its
 # entries must carry $$-escaped references.
 define harness_rules
-.PHONY: build_$(1) update_$(1) run_$(1) stop_$(1)
+.PHONY: build_$(1) update_$(1) run_$(1) stop_$(1) name_$(1)
 
 build_$(1):
 	docker build --target harness-runtime --build-arg AGENT=$(1)$(if $($(2)_EXTRA_BUILD_ARGS), $$($(2)_EXTRA_BUILD_ARGS)) --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) -f "$$(SWARMFORGE_DIR)/anvil/Dockerfile" -t $$($(2)_IMG) "$$(SWARMFORGE_DIR)"
@@ -210,6 +216,10 @@ run_$(1): opencode_network
 
 stop_$(1):
 	@docker rm -f $$($(2)_CTR) >/dev/null 2>&1 || true
+
+# The name carries a path digest; this prints the one run_$(1) uses, and nothing else, so it composes.
+name_$(1):
+	@echo "$$($(2)_CTR)"
 
 # No image depends on another, so `make -j build_harnesses` builds them in parallel.
 build_harnesses: build_$(1)

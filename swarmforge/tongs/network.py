@@ -1,6 +1,6 @@
 """Planning the per-session docker network the anvil and its tongs share."""
 
-import re
+from swarmforge.names import sanitize_token
 
 from .mcp import tong_aliases
 from .model import LIFECYCLES, warn
@@ -15,11 +15,12 @@ def session_network_name(session_id):
     """Per-session docker network name derived from a unique `session_id`.
 
     `session_id` is the launcher's per-session handle (e.g. the anvil container
-    name, which already carries the project/worktree suffix). It is sanitized to
-    the characters docker permits in a network name and prefixed so sessions
-    never collide and the networks are recognizable as Swarmforge-managed.
+    name, which identifies one project directory -- see `swarmforge.names`). It
+    is sanitized to the characters docker permits in a network name and prefixed
+    so sessions never collide and the networks are recognizable as
+    Swarmforge-managed.
     """
-    token = re.sub(r"[^A-Za-z0-9_.-]+", "-", session_id).strip("-_.")
+    token = sanitize_token(session_id)
     return "%s-%s" % (SESSION_NET_PREFIX, token) if token else SESSION_NET_PREFIX
 
 

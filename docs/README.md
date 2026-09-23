@@ -36,7 +36,7 @@
 ## Reference
 
 - [Environment variables](reference/environment.md) — every knob, its default, and whether it is a `make` variable, a host variable, or one the container is given.
-- [Make targets](reference/make-targets.md) — the build, run, update, and stop families, the Ollama and test targets, and what each one accepts.
+- [Make targets](reference/make-targets.md) — the build, run, update, stop, and name families, how a container is named, the Ollama and test targets, and what each one accepts.
 
 ## Reading paths
 

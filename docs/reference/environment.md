@@ -15,7 +15,7 @@ Computed with `:=`, which ignores an exported value. A command-line assignment s
 | Variable | Value |
 | --- | --- |
 | `SWARMFORGE_DIR` | the directory holding the `Makefile`, which every checkout-relative default derives from |
-| `PROJECT_NAME` | the basename of `PROJECT_DIR`, which names the container |
+| `PROJECT_NAME` | the repository, the worktree and a digest of `PROJECT_DIR` resolved, which [names the container](make-targets.md#container-names) |
 | `UID` `GID` | `id -u` and `id -g`, so session files come out owned by you |
 | `WORKSPACE_MOUNT` | `/workspace`, named by the entrypoint, the layer env, and the [git-dir guard](../git-guard.md) alike |
 | `ANVIL_HOME` | `/home/anvil`, hardcoded again in `anvil/entrypoint.sh` |
@@ -119,7 +119,7 @@ What each target runs is in [Testing](../development/testing.md).
 
 | Variable | Default | Read by |
 | --- | --- | --- |
-| `PYTHON` | `python3` | `make test`, and the launcher shims the `run_*` targets call. |
+| `PYTHON` | `python3` | Every invocation: `make` derives `PROJECT_NAME` through it, and `make test` and the `run_*` launcher shims run on it. |
 | `RUFF` | `ruff` | `make lint`, as the path to the ruff binary. |
 | `MODEL` | empty | `make test-skills`, which requires it. |
 | `EVAL_MODEL` | `$(MODEL)` | The judge model, when judging is on. |

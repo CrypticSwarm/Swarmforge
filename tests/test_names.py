@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""Tests for the docker-name tokens derived from a host directory.
+
+Run: python3 tests/test_names.py
+
+Two properties carry the module: a token is a function of the directory, or a
+user cannot stop the session they started, and it is injective over
+directories, or `docker rm -f` takes the wrong session down.
+"""
+
+import hashlib
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(HERE)
+
+# Standing in for the launcher's entry-point shim keeps this file runnable on its own.
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from swarmforge import names
+
+
+class SanitizeToken(unittest.TestCase):
+    """What comes out is a name docker will accept."""
+
+    def test_runs_of_rejected_characters_become_one_dash(self):
+        self.assertEqual(names.sanitize_token("my project/v2"), "my-project-v2")
+
+    def test_the_characters_docker_allows_are_kept(self):
+        self.assertEqual(names.sanitize_token("a_b.c-1"), "a_b.c-1")
+
+    def test_leading_and_trailing_separators_are_trimmed(self):
+        # docker refuses a name that starts with a separator.
+        self.assertEqual(names.sanitize_token("/opt/x/"), "opt-x")
+
+    def test_a_name_of_nothing_but_separators_sanitizes_away(self):
+        self.assertEqual(names.sanitize_token("///"), "")
+
+
+class CanonicalPath(unittest.TestCase):
+    """Spellings of one directory collapse before the digest is taken."""
+
+    def test_trailing_slash_and_dot_segments_are_resolved(self):
+        base = names.canonical_path("/home/me/repo/master")
+        self.assertEqual(names.canonical_path("/home/me/repo/master/"), base)
+        self.assertEqual(names.canonical_path("/home/me/repo/./master"), base)
+        self.assertEqual(
+            names.canonical_path("/home/me/repo/other/../master"), base)
+
+    def test_a_relative_path_resolves_against_the_working_directory(self):
+        self.assertEqual(
+            names.canonical_path("."), os.path.normpath(os.getcwd()))
+
+
+class PathDigest(unittest.TestCase):
+    """The unique half of a token, and the thing a user must be able to repeat."""
+
+    def test_the_digest_is_the_documented_prefix_of_the_path_sha256(self):
+        # Computed here, so changing how the name is derived has to change this line too.
+        path = "/home/me/repo1/master"
+        expected = hashlib.sha256(path.encode("utf-8")).hexdigest()[:8]
+        self.assertEqual(names.path_digest(path), expected)
+
+    def test_the_digest_is_hex_of_the_declared_length(self):
+        digest = names.path_digest("/home/me/repo1/master")
+        self.assertEqual(len(digest), names.DIGEST_LENGTH)
+        self.assertTrue(all(c in "0123456789abcdef" for c in digest))
+
+    def test_the_same_directory_digests_the_same_every_call(self):
+        self.assertEqual(
+            names.path_digest("/home/me/repo1/master"),
+            names.path_digest("/home/me/repo1/./master/"))
+
+    def test_directories_sharing_a_basename_digest_differently(self):
+        self.assertNotEqual(
+            names.path_digest("/home/me/repo1/master"),
+            names.path_digest("/home/me/repo2/master"))
+
+
+class DirHint(unittest.TestCase):
+    """The readable half of a token."""
+
+    def test_the_hint_is_the_basename_as_a_name_docker_accepts(self):
+        self.assertEqual(names.dir_hint("/home/me/my project"), "my-project")
+
+    def test_a_basename_that_sanitizes_away_gives_nothing(self):
+        self.assertEqual(names.dir_hint("/"), "")
+
+    def test_a_hint_is_cut_to_the_limit_it_is_given(self):
+        self.assertEqual(names.dir_hint("/home/me/abcdefghij", limit=4), "abcd")
+
+    def test_a_cut_never_leaves_the_hint_on_a_separator(self):
+        # docker would take `name--digest`, but a cosmetic cut should not read as a typo.
+        self.assertEqual(names.dir_hint("/home/me/abc-defg", limit=4), "abc")
+
+
+class PathToken(unittest.TestCase):
+    """The readable hint and the digest, joined."""
+
+    def test_the_token_reads_as_the_directory_it_names(self):
+        self.assertEqual(
+            names.path_token("/home/me/repo1/master", "master"),
+            "master-%s" % names.path_digest("/home/me/repo1/master"))
+
+    def test_two_worktrees_of_the_same_branch_name_do_not_collide(self):
+        first = names.path_token("/home/me/repo1/master", "master")
+        second = names.path_token("/home/me/repo2/master", "master")
+        self.assertNotEqual(first, second)
+        # ...and both still say which branch they are, which is what the hint is for.
+        self.assertTrue(first.startswith("master-"))
+        self.assertTrue(second.startswith("master-"))
+
+    def test_a_hint_may_name_a_directory_other_than_the_hashed_one(self):
+        token = names.path_token(
+            "/home/me/orgs/acme/.swarmforge/tongs", names.dir_hint("/home/me/orgs/acme"))
+        self.assertEqual(
+            token,
+            "acme-%s" % names.path_digest("/home/me/orgs/acme/.swarmforge/tongs"))
+
+    def test_no_hint_leaves_the_digest_alone(self):
+        self.assertEqual(names.path_token("/", ""), names.path_digest("/"))
+
+
+class ProjectToken(unittest.TestCase):
+    """The token the Makefile names a session's container with."""
+
+    def setUp(self):
+        # realpath: a symlinked TMPDIR (the macOS default) would look resolved when it is not.
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="swarmforge-names-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_a_symlink_and_its_target_are_one_session(self):
+        # The recipe mounts the resolved worktree root, so both spellings are one workspace.
+        target = os.path.join(self.tmp, "real", "master")
+        os.makedirs(target)
+        os.symlink(os.path.join(self.tmp, "real"), os.path.join(self.tmp, "link"))
+        through_link = os.path.join(self.tmp, "link", "master")
+        self.assertNotEqual(through_link, target)
+        self.assertEqual(
+            names.project_token(through_link), names.project_token(target))
+
+    def test_two_real_directories_sharing_a_basename_stay_distinct(self):
+        first = os.path.join(self.tmp, "repo1", "master")
+        second = os.path.join(self.tmp, "repo2", "master")
+        os.makedirs(first)
+        os.makedirs(second)
+        self.assertNotEqual(
+            names.project_token(first), names.project_token(second))
+
+    def test_a_long_directory_name_is_cut_to_the_hint_limit(self):
+        # Nothing downstream truncates, and a session tong's name becomes a DNS label.
+        branch = "feature-really-long-branch-name-that-people-do-write"
+        token = names.project_token(os.path.join(self.tmp, branch))
+        hint, _, digest = token.rpartition("-")
+        self.assertEqual(hint, branch[:names.WORKTREE_HINT_LIMIT])
+        self.assertEqual(len(digest), names.DIGEST_LENGTH)
+        longest = "opencode-%s-tong-github" % token
+        self.assertLessEqual(len(longest), 63, longest)
+
+    def test_the_cuts_leave_room_for_the_names_built_on_the_container(self):
+        """The budget the limits are picked against, as arithmetic not prose."""
+        hint = "%s-%s" % (
+            "x" * names.REPO_HINT_LIMIT, "x" * names.WORKTREE_HINT_LIMIT)
+        container = "opencode-%s-%s" % (hint, "0" * names.DIGEST_LENGTH)
+        self.assertLessEqual(
+            len("%s-tong-%s" % (container, "x" * 15)), 63, container)
+
+    def make_repo_dir(self, *parts):
+        """A directory git would recognize as holding a repository."""
+        path = os.path.join(self.tmp, *parts)
+        os.makedirs(os.path.join(path, ".git"))
+        return path
+
+    def test_a_worktree_is_named_for_its_repository_and_itself(self):
+        worktree = os.path.join(self.make_repo_dir("Swarmforge"), "master")
+        os.makedirs(worktree)
+        self.assertTrue(
+            names.project_token(worktree).startswith("Swarmforge-master-"),
+            names.project_token(worktree))
+
+    def test_a_repository_root_is_not_named_for_wherever_it_is_kept(self):
+        # Its parent is the user's code directory, which says nothing about the session.
+        root = self.make_repo_dir("projects", "Swarmforge")
+        self.assertTrue(
+            names.project_token(root).startswith("Swarmforge-"),
+            names.project_token(root))
+
+    def test_the_same_branch_in_two_repositories_reads_as_two_sessions(self):
+        first = os.path.join(self.make_repo_dir("repo1"), "master")
+        second = os.path.join(self.make_repo_dir("repo2"), "master")
+        os.makedirs(first)
+        os.makedirs(second)
+        self.assertTrue(names.project_token(first).startswith("repo1-master-"))
+        self.assertTrue(names.project_token(second).startswith("repo2-master-"))
+
+    def test_each_half_of_the_hint_is_cut_to_its_own_limit(self):
+        repo = "a" * (names.REPO_HINT_LIMIT + 5)
+        worktree = "b" * (names.WORKTREE_HINT_LIMIT + 5)
+        path = os.path.join(self.make_repo_dir(repo), worktree)
+        os.makedirs(path)
+        self.assertTrue(
+            names.project_token(path).startswith(
+                "%s-%s-" % ("a" * names.REPO_HINT_LIMIT,
+                            "b" * names.WORKTREE_HINT_LIMIT)))
+
+    def test_a_directory_with_no_repository_beside_it_keeps_its_own_name(self):
+        path = os.path.join(self.tmp, "plain", "master")
+        os.makedirs(path)
+        self.assertTrue(names.project_token(path).startswith("master-"))
+
+    def test_a_path_that_is_not_valid_utf_8_still_names_a_container(self):
+        # make dies on an empty token, so a latin-1 filename must not raise.
+        raw = os.path.join(os.fsencode(self.tmp), b"caf\xe9")
+        os.mkdir(raw)
+        token = names.project_token(os.fsdecode(raw))
+        self.assertTrue(token.startswith("caf"))
+        self.assertEqual(len(token.rpartition("-")[2]), names.DIGEST_LENGTH)
+
+
+class Command(unittest.TestCase):
+    """`bin/project-name`, which the Makefile calls while reading variables."""
+
+    class Out:
+        def __init__(self):
+            self.text = ""
+
+        def write(self, text):
+            self.text += text
+
+    def run_main(self, argv):
+        out, err = self.Out(), self.Out()
+        stdout, stderr = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            code = names.main(argv)
+        finally:
+            sys.stdout, sys.stderr = stdout, stderr
+        return code, out.text, err.text
+
+    def test_it_prints_the_token_for_the_directory_it_is_given(self):
+        code, out, err = self.run_main(["/home/me/repo1/master"])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            out, "%s\n" % names.project_token("/home/me/repo1/master"))
+        self.assertEqual(err, "")
+
+    def test_naming_no_directory_is_a_usage_error(self):
+        # A quiet default would bind a name for somewhere else and only show it in `docker ps`.
+        for argv in ([], [""], ["   "], ["a", "b"]):
+            code, out, err = self.run_main(argv)
+            self.assertEqual(code, 2, argv)
+            self.assertEqual(out, "", argv)
+            self.assertIn("usage", err, argv)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
