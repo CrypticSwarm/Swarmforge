@@ -82,38 +82,48 @@ class PathDigest(unittest.TestCase):
             names.path_digest("/home/me/repo2/master"))
 
 
+class DirHint(unittest.TestCase):
+    """The readable half of a token."""
+
+    def test_the_hint_is_the_basename_as_a_name_docker_accepts(self):
+        self.assertEqual(names.dir_hint("/home/me/my project"), "my-project")
+
+    def test_a_basename_that_sanitizes_away_gives_nothing(self):
+        self.assertEqual(names.dir_hint("/"), "")
+
+    def test_a_hint_is_cut_to_the_limit_it_is_given(self):
+        self.assertEqual(names.dir_hint("/home/me/abcdefghij", limit=4), "abcd")
+
+    def test_a_cut_never_leaves_the_hint_on_a_separator(self):
+        # docker would take `name--digest`, but a cosmetic cut should not read as a typo.
+        self.assertEqual(names.dir_hint("/home/me/abc-defg", limit=4), "abc")
+
+
 class PathToken(unittest.TestCase):
     """The readable hint and the digest, joined."""
 
     def test_the_token_reads_as_the_directory_it_names(self):
         self.assertEqual(
-            names.path_token("/home/me/repo1/master"),
+            names.path_token("/home/me/repo1/master", "master"),
             "master-%s" % names.path_digest("/home/me/repo1/master"))
 
     def test_two_worktrees_of_the_same_branch_name_do_not_collide(self):
-        first = names.path_token("/home/me/repo1/master")
-        second = names.path_token("/home/me/repo2/master")
+        first = names.path_token("/home/me/repo1/master", "master")
+        second = names.path_token("/home/me/repo2/master", "master")
         self.assertNotEqual(first, second)
         # ...and both still say which branch they are, which is what the hint is for.
         self.assertTrue(first.startswith("master-"))
         self.assertTrue(second.startswith("master-"))
 
-    def test_a_hint_directory_may_be_named_separately_from_the_hashed_one(self):
+    def test_a_hint_may_name_a_directory_other_than_the_hashed_one(self):
         token = names.path_token(
-            "/home/me/orgs/acme/.swarmforge/tongs", hint_from="/home/me/orgs/acme")
+            "/home/me/orgs/acme/.swarmforge/tongs", names.dir_hint("/home/me/orgs/acme"))
         self.assertEqual(
             token,
             "acme-%s" % names.path_digest("/home/me/orgs/acme/.swarmforge/tongs"))
 
-    def test_a_hint_that_sanitizes_away_leaves_the_digest_alone(self):
-        # The root has no basename, and a digest is a valid name on its own.
-        token = names.path_token("/")
-        self.assertEqual(token, names.path_digest("/"))
-
-    def test_a_hint_is_sanitized_into_a_name_docker_accepts(self):
-        token = names.path_token("/home/me/my project")
-        self.assertEqual(
-            token, "my-project-%s" % names.path_digest("/home/me/my project"))
+    def test_no_hint_leaves_the_digest_alone(self):
+        self.assertEqual(names.path_token("/", ""), names.path_digest("/"))
 
 
 class ProjectToken(unittest.TestCase):
@@ -147,24 +157,61 @@ class ProjectToken(unittest.TestCase):
         branch = "feature-really-long-branch-name-that-people-do-write"
         token = names.project_token(os.path.join(self.tmp, branch))
         hint, _, digest = token.rpartition("-")
-        self.assertEqual(hint, branch[:names.PROJECT_HINT_LIMIT])
+        self.assertEqual(hint, branch[:names.WORKTREE_HINT_LIMIT])
         self.assertEqual(len(digest), names.DIGEST_LENGTH)
         longest = "opencode-%s-tong-github" % token
         self.assertLessEqual(len(longest), 63, longest)
 
-    def test_the_cut_leaves_room_for_the_names_built_on_the_container(self):
-        """The budget the limit is picked against, as arithmetic not prose."""
-        container = "opencode-%s-%s" % (
-            "x" * names.PROJECT_HINT_LIMIT, "0" * names.DIGEST_LENGTH)
+    def test_the_cuts_leave_room_for_the_names_built_on_the_container(self):
+        """The budget the limits are picked against, as arithmetic not prose."""
+        hint = "%s-%s" % (
+            "x" * names.REPO_HINT_LIMIT, "x" * names.WORKTREE_HINT_LIMIT)
+        container = "opencode-%s-%s" % (hint, "0" * names.DIGEST_LENGTH)
         self.assertLessEqual(
             len("%s-tong-%s" % (container, "x" * 15)), 63, container)
 
-    def test_a_cut_hint_never_ends_on_a_separator(self):
-        # docker would take `name--digest`, but a cosmetic cut should not read as a typo.
-        branch = "release-" + "x" * (names.PROJECT_HINT_LIMIT - 9) + "-tail"
-        self.assertEqual(branch[names.PROJECT_HINT_LIMIT - 1], "-")
-        token = names.project_token(os.path.join(self.tmp, branch))
-        self.assertNotIn("--", token)
+    def make_repo_dir(self, *parts):
+        """A directory git would recognize as holding a repository."""
+        path = os.path.join(self.tmp, *parts)
+        os.makedirs(os.path.join(path, ".git"))
+        return path
+
+    def test_a_worktree_is_named_for_its_repository_and_itself(self):
+        worktree = os.path.join(self.make_repo_dir("Swarmforge"), "master")
+        os.makedirs(worktree)
+        self.assertTrue(
+            names.project_token(worktree).startswith("Swarmforge-master-"),
+            names.project_token(worktree))
+
+    def test_a_repository_root_is_not_named_for_wherever_it_is_kept(self):
+        # Its parent is the user's code directory, which says nothing about the session.
+        root = self.make_repo_dir("projects", "Swarmforge")
+        self.assertTrue(
+            names.project_token(root).startswith("Swarmforge-"),
+            names.project_token(root))
+
+    def test_the_same_branch_in_two_repositories_reads_as_two_sessions(self):
+        first = os.path.join(self.make_repo_dir("repo1"), "master")
+        second = os.path.join(self.make_repo_dir("repo2"), "master")
+        os.makedirs(first)
+        os.makedirs(second)
+        self.assertTrue(names.project_token(first).startswith("repo1-master-"))
+        self.assertTrue(names.project_token(second).startswith("repo2-master-"))
+
+    def test_each_half_of_the_hint_is_cut_to_its_own_limit(self):
+        repo = "a" * (names.REPO_HINT_LIMIT + 5)
+        worktree = "b" * (names.WORKTREE_HINT_LIMIT + 5)
+        path = os.path.join(self.make_repo_dir(repo), worktree)
+        os.makedirs(path)
+        self.assertTrue(
+            names.project_token(path).startswith(
+                "%s-%s-" % ("a" * names.REPO_HINT_LIMIT,
+                            "b" * names.WORKTREE_HINT_LIMIT)))
+
+    def test_a_directory_with_no_repository_beside_it_keeps_its_own_name(self):
+        path = os.path.join(self.tmp, "plain", "master")
+        os.makedirs(path)
+        self.assertTrue(names.project_token(path).startswith("master-"))
 
     def test_a_path_that_is_not_valid_utf_8_still_names_a_container(self):
         # make dies on an empty token, so a latin-1 filename must not raise.

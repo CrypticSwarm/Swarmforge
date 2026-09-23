@@ -9,7 +9,7 @@ they return argv lists and run no docker -- so the exact flags can be unit-teste
 
 import os
 
-from swarmforge.names import canonical_path, path_token, sanitize_token
+from swarmforge.names import canonical_path, dir_hint, path_token, sanitize_token
 
 from .mcp import _is_network_facing, _ordered_aliases
 from .model import LABEL_CONFIG_HASH, LABEL_TONG_NAME, WORKSPACE_HOST_ENV
@@ -43,7 +43,7 @@ def org_scope_token(org_tongs_dir):
         return None
     canonical = canonical_path(org_tongs_dir)
     org_root = os.path.dirname(os.path.dirname(canonical))
-    return path_token(canonical, hint_from=org_root)
+    return path_token(canonical, dir_hint(org_root))
 
 
 def shared_container_name(name, scope=None):

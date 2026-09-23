@@ -22,11 +22,12 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 # Collision-free over the directories one machine holds.
 DIGEST_LENGTH = 8
 
-# Characters of readable hint a project token keeps. Docker registers a session
-# tong's `<harness>-<hint>-<digest>-tong-<tong>` as a DNS label, capped at 63
-# and truncated by nothing downstream; this cut holds the container name to 42
-# and leaves 21 for `-tong-<tong>`.
-PROJECT_HINT_LIMIT = 24
+# Characters of repository and of worktree the readable half of a project token
+# keeps. Docker registers a session tong's `<harness>-<hint>-<digest>-tong-<tong>`
+# as a DNS label, capped at 63 and truncated by nothing downstream; 12 + 1 + 11
+# holds the container name to 42 and leaves 21 for `-tong-<tong>`.
+REPO_HINT_LIMIT = 12
+WORKTREE_HINT_LIMIT = 11
 
 
 def sanitize_token(name):
@@ -52,33 +53,40 @@ def path_digest(path):
     return digest.hexdigest()[:DIGEST_LENGTH]
 
 
-def path_token(path, hint_from=None, hint_limit=None):
-    """Docker-name token for one host directory: readable hint, then digest.
+def dir_hint(path, limit=None):
+    """`path`'s basename as a docker name, cut to `limit` and not left on a separator."""
+    hint = sanitize_token(os.path.basename(canonical_path(path)))
+    return hint[:limit].rstrip("-_.") if limit is not None else hint
 
-    The hint is the basename of `hint_from`, or of `path` itself when no other
-    directory is named -- a caller passes one when the readable name sits
-    somewhere other than at the path being identified -- and is cut to
-    `hint_limit` characters when one is given. A hint that sanitizes away to
-    nothing is dropped, leaving the digest, which is a valid name on its own.
+
+def path_token(path, hint):
+    """Docker-name token for one host directory: `hint`, then `path`'s digest.
+
+    An empty `hint` leaves the digest, which is a valid name by itself.
     """
-    hint_path = path if hint_from is None else hint_from
-    hint = sanitize_token(os.path.basename(canonical_path(hint_path)))
-    if hint_limit is not None:
-        hint = hint[:hint_limit].rstrip("-_.")
     digest = path_digest(path)
     return "%s-%s" % (hint, digest) if hint else digest
 
 
-def project_token(project_dir):
-    """The token the Makefile names a session's container with.
+def holds_a_repository(path):
+    """Whether a git repository lives directly in `path`, as a checkout or a bare root."""
+    return os.path.exists(os.path.join(path, ".git"))
 
-    Symlinks are resolved, so a link and the directory it points at are one
-    session rather than two container names over one workspace: `make` reads
-    `PROJECT_DIR` from `getcwd()` while a shell alias passes the logical
-    `$(pwd)`, and the two spell the same directory differently.
+
+def project_token(project_dir):
+    """The token the Makefile names a session's container with: repository, then worktree.
+
+    The repository is prefixed only when the parent directory holds it -- true
+    of a worktree beside its bare root and of a subdirectory of a checkout, not
+    of a repository root, whose parent is wherever the user keeps their code.
+    Symlinks are resolved, so a link and its target are one session.
     """
-    return path_token(
-        os.path.realpath(project_dir), hint_limit=PROJECT_HINT_LIMIT)
+    resolved = os.path.realpath(project_dir)
+    parent = os.path.dirname(resolved)
+    hints = [dir_hint(resolved, WORKTREE_HINT_LIMIT)]
+    if parent != resolved and holds_a_repository(parent):
+        hints.insert(0, dir_hint(parent, REPO_HINT_LIMIT))
+    return path_token(resolved, "-".join(hint for hint in hints if hint))
 
 
 def main(argv):

@@ -360,7 +360,14 @@ class GeneratedNamesIdentifyOneDirectory(MakeRecipeCase):
         nested = os.path.join(self.make_repo("repo1/master"), "src")
         os.makedirs(nested)
         self.assertTrue(
-            self.container_name("run_claude", nested).startswith("claude-src-"))
+            self.container_name("run_claude", nested).startswith("claude-master-src-"))
+
+    def test_a_directory_inside_a_repository_is_named_for_that_repository_too(self):
+        # A `master` in several repositories is unreadable without the repository name.
+        self.make_repo("repo1")
+        project = self.make_repo("repo1/master")
+        self.assertTrue(
+            self.container_name("run_claude", project).startswith("claude-repo1-master-"))
 
     def test_a_path_a_shell_would_reparse_names_its_own_directory(self):
         # make derives the name through $(shell), which must not rewrite the path first.

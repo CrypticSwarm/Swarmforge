@@ -15,7 +15,7 @@ Computed with `:=`, which ignores an exported value. A command-line assignment s
 | Variable | Value |
 | --- | --- |
 | `SWARMFORGE_DIR` | the directory holding the `Makefile`, which every checkout-relative default derives from |
-| `PROJECT_NAME` | the basename and a digest of `PROJECT_DIR` resolved, which [names the container](make-targets.md#container-names) |
+| `PROJECT_NAME` | the repository, the worktree and a digest of `PROJECT_DIR` resolved, which [names the container](make-targets.md#container-names) |
 | `UID` `GID` | `id -u` and `id -g`, so session files come out owned by you |
 | `WORKSPACE_MOUNT` | `/workspace`, named by the entrypoint, the layer env, and the [git-dir guard](../git-guard.md) alike |
 | `ANVIL_HOME` | `/home/anvil`, hardcoded again in `anvil/entrypoint.sh` |
