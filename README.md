@@ -7,6 +7,9 @@ It emphasizes robustness, constraint-driven design, and interoperability over ad
 
 ## Installation
 
+Check the [prerequisites](docs/installation.md#prerequisites) first.
+On Windows, set up [WSL](docs/windows.md) and run everything below inside it.
+
 1. Add the shell helper alias and link the `swarmforge` command:
 
 ```bash
@@ -44,7 +47,7 @@ is worth it once one build has populated that cache (`-O` keeps the parallel log
 
 [docs/](docs/README.md) is the index. The pages behind it:
 
-- [Installation](docs/installation.md), [swarmforge CLI](docs/cli.md), and [Git repos and worktrees](docs/git-guard.md) — getting a session running, and what the read-only git mounts change about it.
+- [Installation](docs/installation.md), [Windows (WSL)](docs/windows.md), [swarmforge CLI](docs/cli.md), and [Git repos and worktrees](docs/git-guard.md) — getting a session running, and what the read-only git mounts change about it.
 - [OpenCode](docs/harnesses/opencode.md), [Claude Code](docs/harnesses/claude-code.md), [Grok Build CLI](docs/harnesses/grok.md), [Codex CLI](docs/harnesses/codex.md) — one page per harness.
 - [Configuration and assets](docs/configuration.md), [Agents](docs/authoring/agents.md), [Skills](docs/authoring/skills.md), [Commands](docs/authoring/commands.md) — what every harness picks up, and how to write it once.
 - [Tongs](docs/tongs/README.md) — sidecar containers that hold what the agent must not, such as credentials.
