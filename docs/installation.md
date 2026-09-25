@@ -3,6 +3,11 @@
 The three install steps are in the [repo README](../README.md); this page carries the detail behind them.
 Every variable below has a row in [Environment variables](reference/environment.md), and every target one in [Make targets](reference/make-targets.md).
 
+## Prerequisites
+
+The host needs Docker with BuildKit, git, GNU make, bash, and Python 3.9 or newer; the launcher uses only the standard library.
+On Windows these live inside WSL: see [Windows (WSL)](windows.md).
+
 ## The install script
 
 Run it with `bash` (it uses Bash arrays) even if your login shell is Zsh.

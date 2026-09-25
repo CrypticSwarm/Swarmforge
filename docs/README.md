@@ -2,7 +2,8 @@
 
 ## Running a session
 
-- [Installation](installation.md) — the install script, pinning an OpenCode release, several aliases against one checkout.
+- [Installation](installation.md) — prerequisites, the install script, pinning an OpenCode release, several aliases against one checkout.
+- [Windows (WSL)](windows.md) — Ubuntu under WSL 2 with Docker Desktop, set up to run the installation steps.
 - [swarmforge CLI](cli.md) — `swarmforge clone` and `swarmforge init`, and the worktree layout they create.
 - [Git repos and worktrees](git-guard.md) — the read-only git mounts every session gets, what they stop, and what they do not.
 
@@ -40,7 +41,7 @@
 
 ## Reading paths
 
-- **First session in a container** — [Installation](installation.md), then your harness's page, then [Git repos and worktrees](git-guard.md) for what the read-only mounts change about git.
+- **First session in a container** — [Windows (WSL)](windows.md) if you are on Windows, [Installation](installation.md), then your harness's page, then [Git repos and worktrees](git-guard.md) for what the read-only mounts change about git.
 - **Giving an agent a credential without handing it over** — [Tongs](tongs/README.md), [Definition format](tongs/definitions.md), [Secret providers](tongs/secrets.md).
 - **Sharing skills, commands, and agents across repos** — [Configuration and assets](configuration.md), then [Agents](authoring/agents.md).
 - **Adding a harness or changing startup** — [Harness lifecycle](development/architecture.md), then [Testing](development/testing.md).
