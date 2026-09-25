@@ -2,6 +2,7 @@
 """Docker mounts that keep the anvil out of a repo's git configuration.
 
 Usage: git-guard --workspace DIR [--target CONTAINER_PATH]...
+                 [--worktree-at CONTAINER_PATH]
 
 Prints one docker `-v` value per line (the caller supplies the `-v` itself), for
 the workspace mounted at each `--target`. Nothing is printed when the workspace
@@ -60,6 +61,17 @@ Three things make read-only actually hold:
     directory above it. The guard warns and names the fix -- `core.bare`
     moved into `config.worktree`, which git reads after that decision.
 
+A linked worktree's `gitdir` record names its checkout by host path, which the
+container does not have, so `git worktree list` there calls it `prunable` and a
+harness that resolves its project root from the record finds none.
+`--worktree-at` names the container path the session starts in, and the guard
+mounts a replacement record holding `<path>/.git` read-only over the
+workspace's own; the host's copy stays as the host's git needs it. The
+replacement lives under the system temp dir, in a directory only this user can
+write, at a name derived from the paths it stands for: nothing removes it, since
+the guard exits before the container starts. It is refused inside anything the
+container mounts, where the source of a read-only mount is still writable.
+
 Symlinks are refused rather than followed. A guarded path that is a symlink is
 skipped, and the walk never descends through one: otherwise a container that
 writes `.git/modules/x/HEAD` and points `.git/modules/x/config` at a host file
@@ -90,6 +102,10 @@ Where this stops:
   * A path carrying a colon or a newline cannot be spelled as a docker `-v`
     value, so it is reported and left unguarded rather than turned into some
     other mount. Nothing is created on the host for such a path either.
+  * Only the workspace's own worktree registration is restated. Sibling
+    worktrees still read `prunable` in the container, and a `git worktree
+    prune` there -- an automatic `gc` runs one -- unlinks part of their
+    registration on the host before the read-only mounts stop it.
   * Hooks and commands that config already points *outside* the git dir
     (`core.hooksPath = .githooks`, husky's `.husky/`, an `include.path` into the
     worktree) live in the workspace, as do attribute-driven filter and diff
@@ -103,9 +119,12 @@ cooperation -- the ones that fire on a bare `git status` in a repo the user has
 no reason to distrust.
 """
 
+import hashlib
 import os
+import stat
 import subprocess
 import sys
+import tempfile
 
 # Made read-only in every git dir that holds a repository's config and hooks.
 # The value is written when the file is absent: an empty `config` is inert, and
@@ -129,9 +148,10 @@ class UsageError(Exception):
 
 
 def parse_args(argv):
-    """Return (workspace, targets) from `--workspace DIR --target PATH...`."""
+    """Return (workspace, targets, worktree_at) from the command line."""
     workspace = None
     targets = []
+    worktree_at = None
     index = 0
     while index < len(argv):
         token = argv[index]
@@ -147,12 +167,18 @@ def parse_args(argv):
             targets.append(argv[index + 1].rstrip("/") or "/")
             index += 2
             continue
+        if token == "--worktree-at":
+            if index + 1 >= len(argv):
+                raise UsageError("--worktree-at requires a path argument")
+            worktree_at = argv[index + 1].rstrip("/") or "/"
+            index += 2
+            continue
         raise UsageError("unrecognized argument: %s" % token)
     if not workspace:
         raise UsageError("--workspace is required")
     if not targets:
         raise UsageError("at least one --target is required")
-    return workspace, targets
+    return workspace, targets, worktree_at
 
 
 # --- Reading the repo ---------------------------------------------------------
@@ -346,6 +372,27 @@ def submodule_checkout(git_dir, config):
     return os.path.realpath(os.path.join(git_dir, worktree))
 
 
+def linked_worktree_git_dir(workspace, common, warn):
+    """`workspace`'s own git dir when it is a linked worktree's, else None.
+
+    Checked against the unresolved `<common>/worktrees`, so a symlinked
+    `worktrees`, which the walk leaves unguarded, is refused, not mounted into.
+    """
+    found = git_output(
+        workspace, "rev-parse", "--path-format=absolute", "--git-dir")
+    if not found:
+        return None
+    git_dir = os.path.realpath(found)
+    if git_dir == common:
+        return None
+    if os.path.dirname(git_dir) != os.path.join(common, "worktrees"):
+        warn(registration_refused(
+            "%s is a linked worktree whose git dir is not under %s/worktrees"
+            % (workspace, common)))
+        return None
+    return git_dir
+
+
 def worktree_checkout_pointer(worktree_git_dir):
     """The `.git` pointer file of a linked worktree, from its `gitdir` file."""
     record = os.path.join(worktree_git_dir, "gitdir")
@@ -417,18 +464,75 @@ def guarded_paths(git_dir, files, dirs, worktree_config, warn):
     return paths
 
 
-def mountable(path, warn):
+def spellable(path):
     """True if `path` survives the trip to docker as part of a `-v` value.
 
     A `-v` value is colon-separated and the caller reads one mount per line, so
-    a path carrying either would be split into a different mount -- and
-    directories inside a git dir are the container's to name. Callers check
+    a path carrying either would be split into a different mount.
+    """
+    return ":" not in path and "\n" not in path
+
+
+def mountable(path, warn):
+    """True if `path` can be guarded, reporting it when it cannot.
+
+    Directories inside a git dir are the container's to name, so an unspellable
+    one is left alone rather than turned into some other mount. Callers check
     this before creating anything, so a path that cannot be guarded is also not
     modified.
     """
-    if ":" in path or "\n" in path:
+    if not spellable(path):
         warn("%s cannot be expressed as a docker mount (it contains a colon or "
              "newline); leaving it writable in the container" % path)
+        return False
+    return True
+
+
+def registration_refused(reason):
+    """A refusal to restate the workspace's worktree registration."""
+    return ("%s; the container reads the registration the host wrote, which "
+            "names a checkout it does not have" % reason)
+
+
+def gitdir_record_source(workspace, container_checkout):
+    """The host file holding the replacement `gitdir` for one pair of paths.
+
+    Named by the pair, so a rerun overwrites its own file rather than adding one.
+    """
+    key = "%s\0%s" % (workspace, container_checkout)
+    return os.path.join(
+        tempfile.gettempdir(),
+        "swarmforge-gitdir-%d" % os.getuid(),
+        hashlib.sha256(key.encode("utf-8", "surrogateescape")).hexdigest())
+
+
+def write_gitdir_record(path, container_checkout, warn):
+    """Write the `.git` of `container_checkout` to `path`. True if it landed.
+
+    The system temp dir is shared, so the directory must be this user's alone.
+    """
+    directory = os.path.dirname(path)
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        info = os.lstat(directory)
+    except OSError as exc:
+        warn(registration_refused("could not prepare %s (%s)"
+                                  % (directory, exc.strerror or exc)))
+        return False
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() \
+            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        warn(registration_refused(
+            "%s is not a plain directory this user alone can write" % directory))
+        return False
+    try:
+        # The name is predictable, so a symlink planted there must fail the write.
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write("%s/.git\n" % container_checkout)
+    except OSError as exc:
+        warn(registration_refused("could not write %s (%s)"
+                                  % (path, exc.strerror or exc)))
         return False
     return True
 
@@ -442,7 +546,61 @@ def ancestors_between(path, root):
             for depth in range(1, len(parts))]
 
 
-def build_mounts(workspace, targets, warn=None):
+def gitdir_records(workspace, common, targets, worktree_at, container_paths,
+                   warn):
+    """(container path, replacement file) for the workspace's own `gitdir`.
+
+    Empty unless the workspace is a linked worktree and `worktree_at` is given.
+    Every refusal precedes the write, so a refused one leaves nothing on the host.
+    """
+    if not worktree_at:
+        return []
+    git_dir = linked_worktree_git_dir(workspace, common, warn)
+    if git_dir is None:
+        return []
+    if worktree_at not in targets:
+        warn(registration_refused(
+            "%s is not one of the paths the workspace is mounted at (%s)"
+            % (worktree_at, ", ".join(targets))))
+        return []
+    if not spellable(worktree_at):
+        warn(registration_refused(
+            "%s cannot be expressed as a docker mount (it contains a colon or "
+            "newline)" % worktree_at))
+        return []
+    record = os.path.join(git_dir, "gitdir")
+    if os.path.islink(record):
+        warn(registration_refused("%s is a symlink" % record))
+        return []
+    if not os.path.isfile(record):
+        warn(registration_refused("%s has no gitdir record" % git_dir))
+        return []
+    if not mountable(record, warn):
+        return []
+    destinations = [container for container in container_paths(record)
+                    if mountable(container, warn)]
+    if not destinations:
+        return []
+    source = gitdir_record_source(workspace, worktree_at)
+    if not spellable(source):
+        warn(registration_refused(
+            "%s cannot be expressed as a docker mount (it contains a colon or "
+            "newline)" % source))
+        return []
+    # TMPDIR may sit in the workspace, where the container could rewrite the
+    # source and a host `git clean -fdx` could delete it mid-session.
+    reachable = os.path.realpath(os.path.dirname(source))
+    for root in (workspace, common):
+        if reachable == root or is_inside(reachable, root):
+            warn(registration_refused(
+                "%s is inside %s, which the container mounts" % (source, root)))
+            return []
+    if not write_gitdir_record(source, worktree_at, warn):
+        return []
+    return [(container, source) for container in destinations]
+
+
+def build_mounts(workspace, targets, warn=None, worktree_at=None):
     """Every mount that guards `workspace`'s git configuration.
 
     Each host path is placed at every container path it is reachable from:
@@ -450,6 +608,9 @@ def build_mounts(workspace, targets, warn=None):
     path when it does not -- which is where the pointer file naming it says to
     look. Two paths landing on the same container path keep the first, since
     docker refuses a repeated mount destination.
+
+    `worktree_at`, one of `targets`, is where the session starts; a linked
+    worktree then also gets its registration restated for that path.
     """
     report = warn or (lambda message: None)
     reported = set()
@@ -548,12 +709,15 @@ def build_mounts(workspace, targets, warn=None):
             spec = "%s:%s:ro" % (host, container) if read_only \
                 else "%s:%s" % (host, container)
             specs.setdefault(container, spec)
+    for container, source in gitdir_records(
+            workspace, common, targets, worktree_at, container_paths, warn):
+        specs.setdefault(container, "%s:%s:ro" % (source, container))
     return list(specs.values())
 
 
 def main(argv, out=sys.stdout, err=sys.stderr):
     try:
-        workspace, targets = parse_args(argv)
+        workspace, targets, worktree_at = parse_args(argv)
     except UsageError as exc:
         err.write("git-guard: %s\n" % exc)
         return 2
@@ -561,7 +725,8 @@ def main(argv, out=sys.stdout, err=sys.stderr):
     def warn(message):
         err.write("%s\n" % message)
 
-    for spec in build_mounts(workspace, targets, warn=warn):
+    for spec in build_mounts(workspace, targets, warn=warn,
+                             worktree_at=worktree_at):
         out.write("%s\n" % spec)
     return 0
 

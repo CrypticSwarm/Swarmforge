@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -41,6 +42,16 @@ class GuardCase(unittest.TestCase):
         # realpath: git reports resolved paths, and the guard compares them.
         self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="git-guard-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        # The guard leaves worktree registrations in the temp dir.
+        temp = mock.patch.object(tempfile, "tempdir", self.tmp)
+        temp.start()
+        self.addCleanup(temp.stop)
+
+    def records_written(self):
+        """Replacement `gitdir` files the guard has left on the host."""
+        directory = os.path.dirname(
+            gitguard.gitdir_record_source("workspace", "/target"))
+        return sorted(os.listdir(directory)) if os.path.isdir(directory) else []
 
     def repo(self, name="repo", bare=False):
         path = os.path.join(self.tmp, name)
@@ -400,6 +411,218 @@ class LinkedWorktree(GuardCase):
             self.assertEqual(handle.read(), before)
 
 
+class WorktreeRegistration(GuardCase):
+    """`--worktree-at` restates a worktree's `gitdir` in the container's terms."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo_path = self.repo()
+        self.common = os.path.join(self.repo_path, ".git")
+        self.worktree = os.path.join(self.tmp, "wt")
+        git(self.repo_path, "worktree", "add", "-q", "-b", "topic",
+            self.worktree)
+        self.record = os.path.join(self.common, "worktrees", "wt", "gitdir")
+
+    def guarded(self, workspace=None, targets=("/workspace",),
+                worktree_at="/workspace", warn=None):
+        return gitguard.build_mounts(
+            workspace or self.worktree, list(targets),
+            warn=warn, worktree_at=worktree_at)
+
+    def replacements(self, mounts):
+        """The specs mounting something over a `gitdir` record."""
+        return [spec for spec in mounts
+                if spec.split(":")[1].endswith("/gitdir")]
+
+    def guard_mounts(self, target="/workspace"):
+        """What the workspace gets with no registration mount at all."""
+        worktree_dir = os.path.join(self.common, "worktrees", "wt")
+        return [
+            "%s:%s" % (self.common, self.common),
+            "%s/config:%s/config:ro" % (self.common, self.common),
+            "%s/commondir:%s/commondir:ro" % (self.common, self.common),
+            "%s/hooks:%s/hooks:ro" % (self.common, self.common),
+            "%s/remotes:%s/remotes:ro" % (self.common, self.common),
+            "%s/branches:%s/branches:ro" % (self.common, self.common),
+            "%s/worktrees:%s/worktrees" % (self.common, self.common),
+            "%s:%s" % (worktree_dir, worktree_dir),
+            "%s/commondir:%s/commondir:ro" % (worktree_dir, worktree_dir),
+            "%s/.git:%s/.git:ro" % (self.worktree, target),
+        ]
+
+    def test_the_option_adds_one_mount_and_changes_nothing_else(self):
+        source = gitguard.gitdir_record_source(self.worktree, "/workspace")
+        self.assertEqual(
+            self.guarded(),
+            self.guard_mounts() + ["%s:%s:ro" % (source, self.record)])
+
+    def test_without_the_option_the_registration_is_left_alone(self):
+        self.assertEqual(self.guarded(worktree_at=None), self.guard_mounts())
+        self.assertEqual(self.records_written(), [])
+
+    def test_the_replacement_names_the_checkout_the_container_has(self):
+        mounts = self.guarded(targets=("/repos/me/proj",),
+                              worktree_at="/repos/me/proj")
+        specs = self.replacements(mounts)
+        self.assertEqual(len(specs), 1, mounts)
+        source, destination, mode = specs[0].split(":")
+        self.assertEqual(destination, self.record)
+        self.assertEqual(mode, "ro")
+        with open(source) as handle:
+            self.assertEqual(handle.read(), "/repos/me/proj/.git\n")
+
+    def test_one_record_mount_however_many_targets(self):
+        # The record lives in the common git dir, mounted only at its host path.
+        mounts = self.guarded(targets=("/workspace", "/repos/me/proj"))
+        specs = self.replacements(mounts)
+        self.assertEqual(len(specs), 1, mounts)
+        self.assertEqual(specs[0].split(":")[1], self.record)
+
+    def test_the_replacement_is_somewhere_the_container_cannot_reach(self):
+        source = self.replacements(self.guarded())[0].split(":")[0]
+        for reachable in (self.worktree, self.common):
+            self.assertFalse(gitguard.is_inside(source, reachable), source)
+
+    def test_a_rerun_writes_the_same_file_rather_than_another_one(self):
+        # Nothing ever removes these files.
+        first = self.guarded()
+        written = self.records_written()
+        self.assertEqual(len(written), 1, written)
+        self.assertEqual(self.guarded(), first)
+        self.assertEqual(self.records_written(), written)
+
+    def test_the_hosts_own_record_is_left_as_it_was(self):
+        # The host's `git worktree prune` would read a container path as gone.
+        with open(self.record) as handle:
+            before = handle.read()
+        self.guarded()
+        with open(self.record) as handle:
+            self.assertEqual(handle.read(), before)
+
+    def test_a_plain_checkout_has_no_registration_to_restate(self):
+        # And nothing to say about the option either, however it is spelled.
+        plain = self.repo("plain")
+        warnings = []
+        self.assertEqual(
+            gitguard.build_mounts(plain, ["/workspace"], warn=warnings.append,
+                                  worktree_at="/repos/a:b"),
+            gitguard.build_mounts(plain, ["/workspace"]))
+        self.assertEqual(warnings, [])
+        self.assertEqual(self.records_written(), [])
+
+    def test_the_repo_the_worktree_belongs_to_is_left_alone(self):
+        self.assertEqual(
+            self.replacements(self.guarded(workspace=self.repo_path)), [])
+        self.assertEqual(self.records_written(), [])
+
+    def assert_refused(self, warning, mounts, warnings):
+        self.assertEqual(self.replacements(mounts), [])
+        self.assertEqual(self.records_written(), [])
+        self.assertIn(gitguard.registration_refused(warning), warnings)
+
+    def test_a_symlinked_record_is_refused(self):
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        with open(elsewhere, "w") as handle:
+            handle.write("/somewhere/.git\n")
+        os.remove(self.record)
+        os.symlink(elsewhere, self.record)
+        warnings = []
+        mounts = self.guarded(warn=warnings.append)
+        self.assert_refused("%s is a symlink" % self.record, mounts, warnings)
+        with open(elsewhere) as handle:
+            self.assertEqual(handle.read(), "/somewhere/.git\n")
+
+    def test_a_missing_record_is_reported(self):
+        os.remove(self.record)
+        warnings = []
+        mounts = self.guarded(warn=warnings.append)
+        self.assert_refused(
+            "%s has no gitdir record" % os.path.dirname(self.record),
+            mounts, warnings)
+
+    def test_a_symlinked_worktrees_directory_is_reported(self):
+        # Kept inside the common dir so the relative `commondir` still resolves.
+        moved = os.path.join(self.common, "worktree-store")
+        shutil.move(os.path.join(self.common, "worktrees"), moved)
+        os.symlink(moved, os.path.join(self.common, "worktrees"))
+        warnings = []
+        mounts = self.guarded(warn=warnings.append)
+        self.assert_refused(
+            "%s is a linked worktree whose git dir is not under %s/worktrees"
+            % (self.worktree, self.common), mounts, warnings)
+
+    def test_a_container_path_the_workspace_is_not_mounted_at_is_refused(self):
+        warnings = []
+        mounts = self.guarded(worktree_at="/repos/x", warn=warnings.append)
+        self.assert_refused(
+            "/repos/x is not one of the paths the workspace is mounted at "
+            "(/workspace)", mounts, warnings)
+
+    def test_a_container_path_docker_cannot_express_creates_nothing(self):
+        warnings = []
+        mounts = self.guarded(targets=("/repos/a:b",),
+                              worktree_at="/repos/a:b", warn=warnings.append)
+        self.assert_refused(
+            "/repos/a:b cannot be expressed as a docker mount (it contains a "
+            "colon or newline)", mounts, warnings)
+
+    def test_a_record_path_docker_cannot_express_creates_nothing(self):
+        # A colon anywhere above the repository reaches the record's host path.
+        odd = os.path.join(self.tmp, "od:d")
+        repo = os.path.join(odd, "repo")
+        os.makedirs(repo)
+        git(repo, "init", "-q")
+        git(repo, "commit", "-q", "--allow-empty", "-m", "root")
+        worktree = os.path.join(odd, "wt")
+        git(repo, "worktree", "add", "-q", "-b", "other", worktree)
+        warnings = []
+        mounts = gitguard.build_mounts(worktree, ["/workspace"],
+                                       warn=warnings.append,
+                                       worktree_at="/workspace")
+        self.assertEqual(self.replacements(mounts), [])
+        self.assertEqual(self.records_written(), [])
+        self.assertTrue([w for w in warnings if "colon or newline" in w],
+                        warnings)
+
+    def test_a_temp_dir_inside_the_workspace_is_refused(self):
+        inside = os.path.join(self.worktree, ".tmp")
+        os.makedirs(inside)
+        warnings = []
+        with mock.patch.object(tempfile, "tempdir", inside):
+            mounts = self.guarded(warn=warnings.append)
+            self.assertEqual(self.records_written(), [])
+        self.assertEqual(self.replacements(mounts), [])
+        self.assertTrue(
+            [w for w in warnings if "which the container mounts" in w],
+            warnings)
+
+    def test_a_shared_temp_dir_is_refused(self):
+        # A predictable name in a shared directory can be pre-filled.
+        directory = os.path.dirname(
+            gitguard.gitdir_record_source(self.worktree, "/workspace"))
+        os.makedirs(directory, mode=0o700)
+        os.chmod(directory, 0o777)
+        warnings = []
+        mounts = self.guarded(warn=warnings.append)
+        self.assertEqual(self.replacements(mounts), [])
+        self.assertEqual(os.listdir(directory), [])
+        self.assertTrue(
+            [w for w in warnings if "this user alone can write" in w], warnings)
+
+    def test_a_symlinked_temp_dir_is_refused(self):
+        directory = os.path.dirname(
+            gitguard.gitdir_record_source(self.worktree, "/workspace"))
+        target = os.path.join(self.tmp, "planted")
+        os.makedirs(target, mode=0o700)
+        os.symlink(target, directory)
+        warnings = []
+        mounts = self.guarded(warn=warnings.append)
+        self.assertEqual(self.replacements(mounts), [])
+        self.assertEqual(os.listdir(target), [])
+        self.assertTrue(
+            [w for w in warnings if "this user alone can write" in w], warnings)
+
+
 class Submodules(GuardCase):
     def setUp(self):
         super().setUp()
@@ -616,6 +839,17 @@ class BareRootWithSiblingWorktrees(GuardCase):
                     "git -C %s config --worktree core.bare true" % self.common,
                     bare[0])
 
+    def test_the_worktrees_registration_is_restated_for_the_container(self):
+        # The layout `swarmforge init` builds.
+        self.repair()
+        mounts = gitguard.build_mounts(
+            self.worktree, ["/repos/me/repo"], worktree_at="/repos/me/repo")
+        record = os.path.join(self.common, "worktrees", "wt1", "gitdir")
+        spec, = [m for m in mounts if m.split(":")[1] == record]
+        self.assertTrue(spec.endswith(":ro"), spec)
+        with open(spec.split(":")[0]) as handle:
+            self.assertEqual(handle.read(), "/repos/me/repo/.git\n")
+
     def test_repaired_repo_stays_bare_and_its_worktrees_stay_checkouts(self):
         self.repair()
         for workspace in self.workspaces:
@@ -656,9 +890,24 @@ class CommandLine(GuardCase):
         self.assertIn("%s/.git/config:/workspace/.git/config:ro" % repo,
                       out.splitlines())
 
+    def test_worktree_at_reaches_the_guard(self):
+        repo = self.repo()
+        worktree = os.path.join(self.tmp, "wt")
+        git(repo, "worktree", "add", "-q", "-b", "topic", worktree)
+        record = os.path.join(repo, ".git", "worktrees", "wt", "gitdir")
+        code, out, _ = self._main(
+            ["--workspace", worktree, "--target", "/workspace",
+             "--worktree-at", "/workspace"])
+        self.assertEqual(code, 0)
+        spec, = [line for line in out.splitlines()
+                 if line.split(":")[1] == record]
+        with open(spec.split(":")[0]) as handle:
+            self.assertEqual(handle.read(), "/workspace/.git\n")
+
     def test_missing_arguments_are_a_usage_error(self):
         for argv in ([], ["--workspace", "/x"], ["--target", "/workspace"],
-                     ["--workspace"], ["--bogus"]):
+                     ["--workspace"], ["--bogus"],
+                     ["--workspace", "/x", "--target", "/w", "--worktree-at"]):
             code, out, err = self._main(argv)
             self.assertEqual(code, 2, argv)
             self.assertEqual(out, "")

@@ -95,6 +95,8 @@ class MakeRecipeCase(unittest.TestCase):
         env = {
             "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
             "HOME": self.home,
+            # The guard leaves a worktree registration in the temp dir.
+            "TMPDIR": self.tmp,
             "CAPTURE_FILE": self.capture_path,
             "PYTHON_REAL": sys.executable,
             "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -223,6 +225,19 @@ class WorktreeGitDirMounts(MakeRecipeCase):
         mounts = self.mounts(self.docker_argv("run_opencode", self.worktree))
         self.assertIn("%s/.git:/workspace/.git:ro" % self.worktree, mounts)
         self.assertNotIn("%s/.git:/workspace/.git" % self.worktree, mounts)
+
+    def test_the_registration_names_the_path_the_session_starts_in(self):
+        record = os.path.join(self.common, "worktrees", "wt", "gitdir")
+        # The image's WORKDIR, then the `-w` of repo-slug mode.
+        for target, workdir in (("run_opencode", "/workspace"),
+                                ("run_claude", "/repos/wt")):
+            mounts = self.mounts(self.docker_argv(target, self.worktree))
+            spec, = [m for m in mounts if m.split(":")[1] == record]
+            self.assertTrue(spec.endswith(":ro"), spec)
+            with open(spec.split(":")[0]) as handle:
+                self.assertEqual(handle.read(), workdir + "/.git\n")
+        with open(record) as handle:
+            self.assertEqual(handle.read(), "%s/.git\n" % self.worktree)
 
 
 class ClaudeSharedHomeMounts(MakeRecipeCase):

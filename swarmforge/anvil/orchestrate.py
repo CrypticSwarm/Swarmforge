@@ -54,7 +54,8 @@ def _workspace_git_dir_specs(defn, workspace, warn=None):
     look. A tong that mounts the workspace needs the same set, or git inside it
     cannot resolve a worktree checkout at all ("fatal: not a git repository").
     The guard maps workspace-internal paths below every destination the
-    definition mounts the workspace at.
+    definition mounts the workspace at. A tong keeps the host's worktree
+    registration, since no harness resolves a project root inside one.
 
     When every workspace mount is read-only, the extra mounts are forced
     read-only too: build_mounts emits the git-dir binds writable (the anvil's

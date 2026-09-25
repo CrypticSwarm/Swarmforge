@@ -154,6 +154,7 @@ define run_agent_container
 	fi; \
 	git_guard_flags=(--workspace "$$workspace_dir" --target "$(WORKSPACE_MOUNT)"); \
 	if [ -n "$${repo_mount_path:-}" ]; then git_guard_flags+=(--target "$$repo_mount_path"); fi; \
+	git_guard_flags+=(--worktree-at "$${repo_mount_path:-$(WORKSPACE_MOUNT)}"); \
 	git_dir_mounts=(); \
 	git_guard_specs="$$($(PYTHON) "$(SWARMFORGE_DIR)/bin/git-guard" "$${git_guard_flags[@]}")"; \
 	if [ -n "$$git_guard_specs" ]; then \
