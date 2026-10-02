@@ -22,7 +22,7 @@ make build_opencode OPENCODE_VERSION=1.4.14
 make update_opencode OPENCODE_VERSION=1.4.14
 ```
 
-The four harness images share the same Debian base and toolchain (Node.js + Python; see `anvil/Dockerfile`).
+The four harness images share the same Debian base and toolchain (Node.js, Python, and Ruby; see `anvil/Dockerfile`).
 
 ## Multiple aliases (work/personal)
 

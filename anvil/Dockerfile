@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 ARG DEBIAN_TAG=trixie-slim
 ARG PYTHON_VERSION=3.12.7
+ARG RUBY_VERSION=3.2.11
+ARG RUBY_SHA256=b3eeabd6636f334531db3ffdc3229eb05e524740e6c84fdc043720573cf2f8b2
+ARG BUNDLER_VERSION=2.6.9
 ARG NODE_MAJOR=24
 
 FROM debian:${DEBIAN_TAG} AS python-builder
@@ -40,16 +43,50 @@ RUN set -eux; \
     make install; \
     rm -rf /tmp/python.tgz /tmp/Python-${PYTHON_VERSION}
 
+FROM debian:${DEBIAN_TAG} AS ruby-builder
+
+ARG RUBY_VERSION
+ARG RUBY_SHA256
+ARG BUNDLER_VERSION
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        libffi-dev \
+        libgmp-dev \
+        libssl-dev \
+        libyaml-dev \
+        tar \
+        zlib1g-dev; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    curl -fsSL "https://cache.ruby-lang.org/pub/ruby/${RUBY_VERSION%.*}/ruby-${RUBY_VERSION}.tar.gz" -o /tmp/ruby.tgz; \
+    printf '%s  %s\n' "${RUBY_SHA256}" /tmp/ruby.tgz | sha256sum -c -; \
+    tar -xzf /tmp/ruby.tgz -C /tmp; \
+    cd /tmp/ruby-${RUBY_VERSION}; \
+    ./configure --prefix=/opt/ruby --enable-shared --disable-install-doc; \
+    make -j"$(nproc)"; \
+    make install; \
+    /opt/ruby/bin/gem install --no-document bundler -v "${BUNDLER_VERSION}"; \
+    rm -rf /tmp/ruby.tgz /tmp/ruby-${RUBY_VERSION}
+
 FROM debian:${DEBIAN_TAG} AS runtime-base
 
 ARG PYTHON_VERSION
 ARG NODE_MAJOR
 ARG PLAYWRIGHT_VERSION=1.60.0
 
-ENV PATH="/opt/python/bin:${PATH}"
+# /opt/ruby is root's, so gems go under the anvil home; its bin trails PATH so it shadows nothing root runs.
+ENV GEM_HOME=/home/anvil/.gem
+ENV PATH="/opt/python/bin:/opt/ruby/bin:${PATH}:${GEM_HOME}/bin"
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 COPY --from=python-builder /opt/python /opt/python
+COPY --from=ruby-builder /opt/ruby /opt/ruby
 
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
@@ -69,7 +106,10 @@ RUN set -eux; \
         less \
         libclang-rt-dev \
         libcurl4-openssl-dev \
+        libffi-dev \
+        libgmp-dev \
         libssl-dev \
+        libyaml-dev \
         lldb \
         ninja-build \
         openssh-client \
@@ -77,7 +117,8 @@ RUN set -eux; \
         ripgrep \
         tar \
         tini \
-        tzdata; \
+        tzdata \
+        zlib1g-dev; \
     curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
     npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps chromium; \

@@ -209,6 +209,47 @@ class ClaudePerRunPaths(unittest.TestCase):
                 "claude config dir lands in a host mount: %s" % path)
 
 
+class ImagePathOrder(unittest.TestCase):
+    """No directory a session can write comes ahead of the system's on PATH.
+
+    The image PATH is the root phase's too: the entrypoint and the config
+    driver run id, adduser, chown, and gosu by bare name, and Claude's resolves
+    the git its wrapper execs. A writable directory ahead of /usr/bin lets a
+    session plant one of those for root to run on the next start, and the
+    persistent home carries it into every later project for that harness.
+    """
+
+    def env_paths(self):
+        """Each `ENV PATH=` value's entries ahead of `${PATH}`, expanded."""
+        env = {}
+        found = []
+        with open(DOCKERFILE) as handle:
+            for line in handle:
+                match = re.match(r'ENV (\w+)="?([^"\s]*)"?\s*$', line)
+                if not match:
+                    continue
+                name, value = match.groups()
+                if name == "PATH":
+                    found.append(value.split("${PATH}")[0].split(":"))
+                env[name] = re.sub(
+                    r"\$\{(\w+)\}", lambda m: env.get(m.group(1), m.group(0)),
+                    value)
+        return [
+            [re.sub(r"\$\{(\w+)\}", lambda m: env.get(m.group(1), m.group(0)),
+                    entry) for entry in entries if entry]
+            for entries in found
+        ]
+
+    def test_path_prepends_nothing_under_a_host_mount(self):
+        paths = self.env_paths()
+        self.assertTrue(paths, "Dockerfile sets no PATH")
+        for entries in paths:
+            for entry in entries:
+                self.assertFalse(
+                    entry.startswith(("/home/", "/workspace", "$")),
+                    "PATH puts %s ahead of the system bin dirs" % entry)
+
+
 class StatusLineAgreement(unittest.TestCase):
     """The status line the Claude image ships must be the one it turns on.
 
