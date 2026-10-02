@@ -170,6 +170,7 @@ The launcher reads `SWARMFORGE_USER_ASSETS_DIR` from its own environment too, as
 | `PATH` | `/opt/python/bin` and `/opt/ruby/bin` ahead of the image default, `$GEM_HOME/bin` after it, since the session can write there and root resolves commands through the same `PATH` | Every process in the container. Claude's `pre_exec` prepends the git-wrapper directory on top of it when the root phase installed one. |
 | `GEM_HOME` | `/home/anvil/.gem` | RubyGems and Bundler, as where gems install. `/opt/ruby` belongs to root, and the anvil home persists for every harness but OpenCode. |
 | `PLAYWRIGHT_BROWSERS_PATH` | `/ms-playwright` | Playwright, for the chromium the image installs. |
+| `COREPACK_ENABLE_DOWNLOAD_PROMPT` `COREPACK_ENABLE_AUTO_PIN` | `0` | Corepack, behind the image's `yarn`: it fetches the release a project's `packageManager` names, or Yarn 1 when there is none, without waiting on a prompt or writing that field into `package.json`. |
 | `SWARMFORGE_CONFIG_{USER,ORG,REPO}_DIR` | `/tmp/swarmforge-config/{user,org,repo}` | `swarmforge.harness.init`, as the three config layers. |
 | `SWARMFORGE_ASSETS_{USER,ORG,REPO}_DIR` | `/tmp/swarmforge-assets/{user,org,repo}` | `swarmforge.harness.init`, as the agent-definition layers. |
 | `SWARMFORGE_DOTAGENTS_{USER,ORG}_DIR` | `/tmp/swarmforge-dotagents/{user,org}` | `swarmforge.harness.init`, as the portable skill and command layers. |

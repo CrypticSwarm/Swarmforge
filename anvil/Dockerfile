@@ -84,6 +84,8 @@ ARG PLAYWRIGHT_VERSION=1.60.0
 ENV GEM_HOME=/home/anvil/.gem
 ENV PATH="/opt/python/bin:/opt/ruby/bin:${PATH}:${GEM_HOME}/bin"
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+# No session is there to answer corepack's download prompt, and its auto-pin would edit package.json.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_ENABLE_AUTO_PIN=0
 
 COPY --from=python-builder /opt/python /opt/python
 COPY --from=ruby-builder /opt/ruby /opt/ruby
@@ -99,6 +101,7 @@ RUN set -eux; \
         clang-format \
         cmake \
         curl \
+        default-libmysqlclient-dev \
         gdb \
         git \
         gnupg \
@@ -121,6 +124,7 @@ RUN set -eux; \
         zlib1g-dev; \
     curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
+    corepack enable yarn; \
     npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps chromium; \
     PYTHON_MINOR="${PYTHON_VERSION%.*}"; \
     ln -sf /opt/python/bin/python${PYTHON_MINOR} /usr/local/bin/python3; \
