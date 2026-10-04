@@ -99,3 +99,22 @@ Both are optional and passed to `docker run` as written. `gpus` grants the tong 
 Docker's other `--gpus` keys are deliberately refused. `driver=`, `capabilities=`, and `options=` can grant more than GPU access — `driver=cdi`, for one, injects any device registered on the host — and `count=` is redundant with a plain count.
 GPU access needs a docker host set up for GPU containers — the NVIDIA Container Toolkit on Linux; Docker Desktop's WSL 2 backend provides GPU support itself. Without it `docker run` fails and the launch stops.
 A workspace tong's GPU request is called out in its [approval prompt](approval.md).
+
+## Example: a GPU model server
+
+A `shared` `port` tong that serves models from the host's GPUs and keeps its multi-GB model store in a volume, so a recreated container does not download it again:
+
+```yaml
+# ~/.swarmforge/tongs/models.yaml
+lifecycle: shared
+image: ollama/ollama@sha256:...
+interface:
+  kind: port
+  port: 11434
+mounts:
+  - volume:store:/root/.ollama
+resources:
+  gpus: all
+```
+
+The anvil gets `SWARMFORGE_TONG_MODELS_HOST=models` and `SWARMFORGE_TONG_MODELS_PORT=11434`, and the store lives in the volume `swarmforge-volume-models-<digest>_store`. The tong is named `models` rather than `ollama` because `make run_ollama` already answers to `ollama` on the same network; a tong of that name would clash with it.
