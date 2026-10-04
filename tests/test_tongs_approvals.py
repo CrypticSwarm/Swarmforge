@@ -49,6 +49,30 @@ class PrivilegeSummaryTests(unittest.TestCase):
     def test_no_socket_without_mount(self):
         self.assertFalse(tongs.privilege_summary(def_of(GITHUB_TONG))["socket"])
 
+    def test_summary_reports_requested_gpus(self):
+        defn = def_of(GITHUB_TONG)
+        defn["resources"] = {"memory": "8g", "gpus": "all"}
+        self.assertEqual(tongs.privilege_summary(defn)["gpus"], "all")
+
+    def test_no_gpus_without_request(self):
+        defn = def_of(GITHUB_TONG)
+        self.assertIsNone(tongs.privilege_summary(defn)["gpus"])
+        defn["resources"] = {"memory": "8g"}
+        self.assertIsNone(tongs.privilege_summary(defn)["gpus"])
+
+    def test_non_mapping_resources_reports_no_gpus(self):
+        for resources in ("8g", ["gpus"]):
+            with self.subTest(resources=resources):
+                defn = def_of(GITHUB_TONG)
+                defn["resources"] = resources
+                self.assertIsNone(tongs.privilege_summary(defn)["gpus"])
+
+    def test_summary_reports_an_unvalidated_gpus_value_as_declared(self):
+        # The gate runs before validation, so a value is shown rather than parsed.
+        defn = def_of(GITHUB_TONG)
+        defn["resources"] = {"gpus": 0}
+        self.assertEqual(tongs.privilege_summary(defn)["gpus"], 0)
+
 
 class ApprovalKeyingTests(unittest.TestCase):
     def setUp(self):
@@ -66,6 +90,13 @@ class ApprovalKeyingTests(unittest.TestCase):
         tongs.record_approval(approvals, self.ws, "github", self.defn)
         changed = def_of(GITHUB_TONG)
         changed["image"] = "ghcr.io/crypticswarm/github-tong@sha256:MOVED"
+        self.assertFalse(tongs.is_approved(approvals, self.ws, "github", changed))
+
+    def test_gpu_request_reprompts(self):
+        approvals = {}
+        tongs.record_approval(approvals, self.ws, "github", self.defn)
+        changed = def_of(GITHUB_TONG)
+        changed["resources"] = {"gpus": "all"}
         self.assertFalse(tongs.is_approved(approvals, self.ws, "github", changed))
 
     def test_keyed_by_workspace_path(self):
