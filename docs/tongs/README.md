@@ -13,7 +13,7 @@ The host-side launcher (`swarmforge/anvil/`, run through `bin/run-anvil`) discov
 1. (Only if the tong needs secrets) configure the secret-provider table (see [Secret providers](secrets.md)).
 2. Drop a tong definition into a layer directory, e.g. `~/.swarmforge/tongs/<name>.yaml` (personal) or `<workspace>/.swarmforge/tongs/<name>.yaml` (project).
 3. Run the anvil as usual (`oc`, or `make run_claude PROJECT_DIR=$(pwd)`). A **workspace**-sourced tong prints a privilege summary and asks for approval on first run (see [First-run approval](approval.md)). The launcher resolves secrets (which may prompt your provider CLI to unlock), starts the tong, waits for readiness, injects reachability into the anvil, then runs the anvil in the foreground.
-4. On exit (including Ctrl-C), the per-session network and its `session` tongs are torn down.
+4. On exit — including Ctrl-C, closing the terminal or tmux pane the session runs in (SIGHUP), or a plain `kill` (SIGTERM) — the `session` tongs are removed, and the per-session network with them. One exception: when the anvil command has no `--network`, its container can outlive a docker client killed by the hangup or `kill`, and while it runs it holds the per-session network, which stays behind (the next launch reuses it). Only a `kill -9`, the OOM killer, a launcher crash, or a host reboot skips teardown altogether.
 
 ## Where definitions live
 

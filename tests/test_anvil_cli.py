@@ -3,6 +3,7 @@
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -428,6 +429,267 @@ class MainGateTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             self.assertEqual(completed.stdout, "")
             self.assertIn("workspace", completed.stderr)
+
+
+def _write_shared_tong(tmp):
+    """A tong layer under `tmp` holding one startable `shared` tong; returns its path."""
+    tongs_dir = os.path.join(tmp, "tongs")
+    os.makedirs(tongs_dir)
+    with open(os.path.join(tongs_dir, "shipper.yaml"), "w") as handle:
+        handle.write(
+            "lifecycle: shared\nimage: x\ninterface:\n  kind: none\n"
+            "readiness:\n  mode: none\n"
+        )
+    return tongs_dir
+
+
+_TERMINATION_SIGNALS = (signal.SIGHUP, signal.SIGTERM)
+
+
+def _handlers():
+    return {signum: signal.getsignal(signum) for signum in _TERMINATION_SIGNALS}
+
+
+class TerminationSignalTests(unittest.TestCase):
+    """SIGHUP/SIGTERM unwind an orchestrated run through its teardown."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.tongs_dir = _write_shared_tong(self.tmp.name)
+        # Keeps main from reading the real user layer's provider table.
+        patcher = mock.patch.dict(
+            os.environ, {"SWARMFORGE_USER_ASSETS_DIR": self.tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _main_with_run(self, fake_run):
+        # Patching the package re-export misses main's binding and hits docker.
+        with mock.patch.object(launcher.cli, "run_with_tongs", side_effect=fake_run):
+            return launcher.main(["--repo-tongs", self.tongs_dir, "--", "/no/such/binary-xyz"])
+
+    @staticmethod
+    def _deliver(signum):
+        """Invoke the installed handler as the interpreter would on a signal."""
+        signal.getsignal(signum)(signum, None)
+
+    def test_handlers_raise_only_while_orchestrating_then_are_restored(self):
+        before = _handlers()
+        seen = {}
+
+        def fake_run(*args, **kwargs):
+            seen.update(_handlers())
+            return 0
+
+        self.assertEqual(self._main_with_run(fake_run), 0)
+        for signum in _TERMINATION_SIGNALS:
+            self.assertIsInstance(seen[signum].__self__, launcher.cli._TerminationTrap)
+        self.assertEqual(_handlers(), before)
+
+    def test_passthrough_leaves_handlers_alone(self):
+        before = _handlers()
+        seen = {}
+
+        def fake_exec(anvil_cmd):
+            seen.update(_handlers())
+            return 0
+
+        with mock.patch.object(launcher.cli, "exec_anvil", side_effect=fake_exec):
+            self.assertEqual(launcher.main(["--", "/no/such/binary-xyz"]), 0)
+        self.assertEqual(seen, before)
+
+    def test_an_inherited_ignore_is_kept(self):
+        # Under nohup the launcher must stay deaf to the hangup it was told to ignore.
+        saved = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        self.addCleanup(signal.signal, signal.SIGHUP, saved)
+        seen = {}
+
+        def fake_run(*args, **kwargs):
+            seen.update(_handlers())
+            return 0
+
+        self.assertEqual(self._main_with_run(fake_run), 0)
+        self.assertIs(seen[signal.SIGHUP], signal.SIG_IGN)
+        self.assertIsInstance(seen[signal.SIGTERM].__self__, launcher.cli._TerminationTrap)
+        self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+
+    def test_signal_mid_run_returns_128_plus_signum_and_restores_handlers(self):
+        previous = mock.Mock()  # stands in for an embedding caller's handler
+        for signum, expected in ((signal.SIGHUP, 129), (signal.SIGTERM, 143)):
+            with self.subTest(signal=signum.name):
+                saved = signal.signal(signum, previous)
+                try:
+                    def fake_run(*args, **kwargs):
+                        self._deliver(signum)
+
+                    self.assertEqual(self._main_with_run(fake_run), expected)
+                    self.assertIs(signal.getsignal(signum), previous)
+                finally:
+                    signal.signal(signum, saved)
+
+    def _teardown_run(self, start, steps):
+        """A fake run that ends via `start`, then delivers signals mid-teardown."""
+        def fake_run(*args, teardown_guard, **kwargs):
+            try:
+                return start()
+            finally:
+                with teardown_guard():
+                    steps.append("first")
+                    self._deliver(signal.SIGTERM)
+                    self._deliver(signal.SIGHUP)
+                    steps.append("last")
+        return fake_run
+
+    def test_repeat_signal_cannot_interrupt_teardown(self):
+        steps = []
+
+        def hang_up():
+            self._deliver(signal.SIGHUP)
+
+        self.assertEqual(self._main_with_run(self._teardown_run(hang_up, steps)), 129)
+        self.assertEqual(steps, ["first", "last"])
+
+    def test_signal_during_teardown_after_a_clean_exit_sets_the_exit_status(self):
+        steps = []
+        self.assertEqual(self._main_with_run(self._teardown_run(lambda: 0, steps)), 143)
+        self.assertEqual(steps, ["first", "last"])
+
+    def test_signal_during_teardown_after_ctrl_c_keeps_the_ctrl_c_status(self):
+        steps = []
+
+        def ctrl_c():
+            raise KeyboardInterrupt
+
+        self.assertEqual(self._main_with_run(self._teardown_run(ctrl_c, steps)), 130)
+        self.assertEqual(steps, ["first", "last"])
+
+    def test_signal_during_teardown_after_an_error_skips_the_report(self):
+        steps = []
+
+        def fail():
+            raise launcher.OrchestrationError("tong 'shipper' did not become ready")
+
+        with mock.patch.object(launcher.cli.tongs, "warn") as warn:
+            self.assertEqual(self._main_with_run(self._teardown_run(fail, steps)), 143)
+        warn.assert_not_called()
+        self.assertEqual(steps, ["first", "last"])
+
+    def test_teardown_blocks_the_signals_then_restores_the_mask(self):
+        before = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+        blocked = []
+
+        def fake_run(*args, teardown_guard, **kwargs):
+            with teardown_guard():
+                blocked.extend(signal.pthread_sigmask(signal.SIG_BLOCK, []))
+            return 0
+
+        self.assertEqual(self._main_with_run(fake_run), 0)
+        self.assertTrue(set(_TERMINATION_SIGNALS) <= set(blocked))
+        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), before)
+
+    def test_signal_while_reporting_an_error_still_returns_its_code(self):
+        def fake_run(*args, **kwargs):
+            raise launcher.OrchestrationError("tong 'shipper' did not become ready")
+
+        def hangup_on_warn(message):
+            self._deliver(signal.SIGHUP)
+
+        with mock.patch.object(launcher.cli.tongs, "warn", side_effect=hangup_on_warn):
+            self.assertEqual(self._main_with_run(fake_run), 129)
+
+
+# Teardown's real child shares the launcher's process group, as `docker rm -f` does.
+_TEARDOWN_CHILD = (
+    "import signal, sys, time\n"
+    "print('tearing down', flush=True)\n"
+    "while not signal.sigpending():\n"
+    "    time.sleep(0.01)\n"
+    "open(sys.argv[1], 'w').close()\n"
+)
+
+# Runs the real main with only the orchestrator faked; `mode` says when the signal lands.
+_SIGNALLED_LAUNCHER = r"""
+import os, signal, subprocess, sys, time
+from unittest import mock
+repo_root, tongs_dir, marker, mode, teardown_child = sys.argv[1:6]
+sys.path.insert(0, repo_root)
+from swarmforge.anvil import cli
+
+def run_with_tongs(*args, teardown_guard, **kwargs):
+    try:
+        if mode == "mid-run":
+            print("running", flush=True)
+            while True:
+                time.sleep(0.1)
+        if mode == "after-ctrl-c":
+            os.kill(os.getpid(), signal.SIGINT)
+            while True:
+                time.sleep(0.1)
+        return 0
+    finally:
+        with teardown_guard():
+            if mode == "mid-run":
+                os.kill(os.getpid(), signal.SIGHUP)
+                os.kill(os.getpid(), signal.SIGTERM)
+            else:
+                child = subprocess.run([sys.executable, "-c", teardown_child, marker + ".child"])
+                assert child.returncode == 0, child.returncode
+            with open(marker, "w") as handle:
+                handle.write("torn down")
+
+with mock.patch.object(cli, "run_with_tongs", run_with_tongs):
+    sys.exit(cli.main(["--repo-tongs", tongs_dir, "--", "true"]))
+"""
+
+
+class RealTerminationSignalTests(unittest.TestCase):
+    """A real SIGHUP/SIGTERM to the launcher's process group runs the whole teardown.
+
+    The stand-in leads its own session, so signalling its group never reaches this runner.
+    """
+
+    def _signal_launcher(self, mode, signum):
+        """Returns `(exit code, teardown finished, teardown child finished, stderr)`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tongs_dir = _write_shared_tong(tmp)
+            marker = os.path.join(tmp, "teardown-ran")
+            env = dict(os.environ, SWARMFORGE_USER_ASSETS_DIR=tmp)
+            proc = subprocess.Popen(
+                [sys.executable, "-c", _SIGNALLED_LAUNCHER, REPO_ROOT, tongs_dir, marker,
+                 mode, _TEARDOWN_CHILD],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                start_new_session=True,
+            )
+            try:
+                self.assertIn(proc.stdout.readline(), ("running\n", "tearing down\n"))
+                os.killpg(proc.pid, signum)
+                _, stderr = proc.communicate(timeout=30)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.communicate()
+            return (proc.returncode, os.path.exists(marker),
+                    os.path.exists(marker + ".child"), stderr)
+
+    def test_sighup_mid_run_runs_teardown_and_exits_129(self):
+        self.assertEqual(
+            self._signal_launcher("mid-run", signal.SIGHUP), (129, True, False, ""))
+
+    def test_sigterm_mid_run_runs_teardown_and_exits_143(self):
+        self.assertEqual(
+            self._signal_launcher("mid-run", signal.SIGTERM), (143, True, False, ""))
+
+    def test_group_sighup_during_teardown_spares_its_child_and_exits_129(self):
+        self.assertEqual(
+            self._signal_launcher("after-exit", signal.SIGHUP), (129, True, True, ""))
+
+    def test_group_sigterm_during_teardown_spares_its_child_and_exits_143(self):
+        self.assertEqual(
+            self._signal_launcher("after-exit", signal.SIGTERM), (143, True, True, ""))
+
+    def test_group_sighup_during_teardown_after_ctrl_c_exits_130(self):
+        self.assertEqual(
+            self._signal_launcher("after-ctrl-c", signal.SIGHUP), (130, True, True, ""))
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ per-harness config. `exec_anvil` is the degenerate case -- no tongs, so the anvi
 argv is exec'd verbatim.
 """
 
+import contextlib
 import json
 import os
 import shutil
@@ -285,7 +286,7 @@ def _mcp_injection(mcp_config, harness, mcp_dir):
 
 
 def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
-                   make_channel=SecretChannel,
+                   make_channel=SecretChannel, teardown_guard=contextlib.nullcontext,
                    sleep=time.sleep, monotonic=time.monotonic):
     """Start the discovered tongs, run the anvil, and tear down session state.
 
@@ -307,9 +308,12 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     vars and, for `mcp` tongs, the per-harness MCP config -- and the anvil runs
     in the foreground.
 
-    On exit -- including SIGINT -- the `session` tongs and the per-session network
+    On exit -- including SIGINT, and SIGHUP/SIGTERM once the caller has made them
+    raise (`cli.main` does) -- the `session` tongs and the per-session network
     are torn down (and the connected `shared` tongs disconnected) while the
-    long-lived `shared` tongs are left running.
+    long-lived `shared` tongs are left running. The teardown runs inside
+    `teardown_guard()`, a context manager the caller supplies to hold off its
+    own signals until teardown has finished; the default guards nothing.
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
     becomes ready (the anvil does not run against a half-up environment) or a
@@ -429,21 +433,22 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             return docker.run_foreground_multi(injected, extra_networks, session_id)
         return docker.run_foreground(injected)
     finally:
-        # Order matters: docker refuses to remove a network while endpoints remain.
-        for container in started_sessions:
-            docker.rm_force(container)
-        # rm_force covers a create path that failed before its own --rm could fire.
-        if anvil_multi:
-            docker.rm_force(session_id)
-        for network, container in connected_shared:
-            docker.network_disconnect(network, container)
-        if created_network:
-            docker.network_rm(created_network)
-        # Best-effort: docker refuses while the long-lived shared tong is still attached.
-        for network in joined_shared_networks:
-            docker.network_rm(network)
-        if mcp_dir:
-            shutil.rmtree(mcp_dir, ignore_errors=True)
+        with teardown_guard():
+            # Order matters: docker refuses to remove a network while endpoints remain.
+            for container in started_sessions:
+                docker.rm_force(container)
+            # rm_force covers a create path that failed before its own --rm could fire.
+            if anvil_multi:
+                docker.rm_force(session_id)
+            for network, container in connected_shared:
+                docker.network_disconnect(network, container)
+            if created_network:
+                docker.network_rm(created_network)
+            # Best-effort: docker refuses while the long-lived shared tong is still attached.
+            for network in joined_shared_networks:
+                docker.network_rm(network)
+            if mcp_dir:
+                shutil.rmtree(mcp_dir, ignore_errors=True)
 
 
 def exec_anvil(anvil_cmd):

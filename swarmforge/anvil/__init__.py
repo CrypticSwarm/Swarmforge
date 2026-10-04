@@ -23,7 +23,7 @@ One module per concern, in the order a launch passes through them:
     docker      the one seam every docker invocation goes through
     readiness   waiting for a started tong to report ready
     orchestrate starting the tongs, running the anvil, tearing down after it
-    errors      the one failure raised from more than one of the above
+    errors      the failures and interruptions raised from more than one of the above
 
 Every public name is re-exported below, so a caller imports `swarmforge.anvil`
 and never has to know which module a function sits in; a module's own private
@@ -41,7 +41,8 @@ missing/stopped/stale one is (re)started, and it is left running afterwards. A
 `session` tong is per-session: when any exists the launcher creates a per-session
 network, starts the `session` tongs on it under their canonical aliases, connects
 each network-facing `shared` tong to it, and joins the anvil to it (plus the base
-`NETWORK=` network). On exit -- including SIGINT -- the `session` tongs and the
+`NETWORK=` network). On exit -- including SIGINT, and the SIGHUP a closing
+terminal or tmux pane sends, or a SIGTERM -- the `session` tongs and the
 per-session network are torn down (and the connected `shared` tongs disconnected)
 while the long-lived `shared` tongs keep running. A `port` tong's reachability is
 injected into the anvil as environment; an `mcp` tong's as generated MCP config
@@ -130,7 +131,7 @@ from .cli import (
     parse_args,
 )
 from .docker import DockerCLI, DockerError
-from .errors import OrchestrationError
+from .errors import OrchestrationError, TerminationSignal
 from .orchestrate import (
     MCP_CONFIG_CONTAINER_PATH,
     MCP_FILE_ENV,
@@ -162,6 +163,7 @@ __all__ = [
     "DockerCLI",
     "DockerError",
     "OrchestrationError",
+    "TerminationSignal",
     "MCP_CONFIG_CONTAINER_PATH",
     "MCP_FILE_ENV",
     "ensure_mcp_harness_supported",
