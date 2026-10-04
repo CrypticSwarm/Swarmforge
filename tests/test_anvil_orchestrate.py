@@ -106,6 +106,23 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
             })
         ))
 
+    def test_shared_tmux_socket_mount_refused(self):
+        for mount in ("tmux-socket", "tmux-socket:ro"):
+            reasons = self._reasons({
+                "lifecycle": "shared", "image": "x", "mounts": [mount],
+                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+            })
+            self.assertTrue(any("tmux socket" in r for r in reasons), mount)
+
+    def test_session_tmux_socket_mount_startable(self):
+        self.assertEqual(
+            self._reasons({
+                "lifecycle": "session", "image": "x", "mounts": ["tmux-socket"],
+                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+            }),
+            [],
+        )
+
     def test_workspace_refusal_is_shared_scoped(self):
         # A `session` tong is torn down with the anvil, so it cannot leak.
         self.assertEqual(
@@ -206,10 +223,12 @@ class FakeChannels:
             raise self._deliver_error
 
 
-def _opts(workspace=None, anvil_image="anvil:img", harness="opencode"):
+def _opts(workspace=None, anvil_image="anvil:img", harness="opencode",
+          tmux=None, tmux_pane=None):
     return launcher.LauncherOptions(
         layer_dirs=[], workspace=workspace, approvals=None, providers=None,
         harness=harness, anvil_image=anvil_image, no_prompt=False,
+        tmux=tmux, tmux_pane=tmux_pane,
     )
 
 
@@ -257,6 +276,14 @@ SESSION_PORT = {
     "lifecycle": "session",
     "image": "fixture-pg",
     "interface": {"kind": "port", "port": 5432},
+    "readiness": {"mode": "none"},
+}
+
+SESSION_TMUX = {
+    "lifecycle": "session",
+    "image": "spawner",
+    "mounts": ["tmux-socket"],
+    "interface": {"kind": "none"},
     "readiness": {"mode": "none"},
 }
 
@@ -814,6 +841,99 @@ class RunWithTongsTests(unittest.TestCase):
                 docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
             )
         self.assertEqual(docker.calls, [])  # nothing created => nothing to tear down
+
+    def _run_tmux(self, docker, tmux, tmux_pane=None, workspace=None):
+        merged = {
+            "pg": {"source": tongs.REPO, "definition": SESSION_PORT},
+            "spawner": {"source": tongs.REPO, "definition": SESSION_TMUX},
+        }
+        return launcher.run_with_tongs(
+            merged, ANVIL_ARGV,
+            _opts(workspace=workspace, tmux=tmux, tmux_pane=tmux_pane),
+            docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
+        )
+
+    def test_tmux_tong_outside_tmux_raises_before_any_docker_call(self):
+        docker = FakeDocker()
+        with self.assertRaisesRegex(launcher.OrchestrationError, "inside a tmux pane"):
+            self._run_tmux(docker, tmux=None)
+        self.assertEqual(docker.calls, [])
+
+    def test_malformed_tmux_raises_before_any_docker_call(self):
+        for tmux, pane in (
+            ("/home/me/custom.sock,1,0", None),
+            ("/tmp/tmux-1000/default,1", None),
+            ("/tmp/tmux-1000/default,1,0", "7"),
+        ):
+            docker = FakeDocker()
+            with self.assertRaisesRegex(launcher.OrchestrationError, "tong\\(s\\) spawner"):
+                self._run_tmux(docker, tmux=tmux, tmux_pane=pane)
+            self.assertEqual(docker.calls, [], tmux)
+
+    def test_tmux_values_reach_a_tong_started_over_the_secret_channel(self):
+        docker = FakeDocker()
+        channels = FakeChannels()
+        defn = dict(SESSION_TMUX, env={"TOKEN": "${secret:echo:s3cr3t}"})
+        launcher.run_with_tongs(
+            _merged("spawner", defn, source=tongs.REPO), ANVIL_ARGV,
+            _opts(tmux="/tmp/tmux-1000/default,4242,3", tmux_pane="%7"),
+            docker=docker, providers=ECHO_PROVIDERS, make_channel=channels,
+            sleep=lambda _s: None, monotonic=_Clock(),
+        )
+        self.assertEqual(channels.payloads, ["export TOKEN='s3cr3t'\n"])
+        (started,) = docker.run_argvs
+        self.assertIn("--tmpfs", started)
+        self.assertIn("TMUX=/run/swarmforge-tmux/default,4242,3", started)
+        self.assertIn("TMUX_PANE=%7", started)
+        self.assertIn("SWARMFORGE_SESSION_HANDLE=claude-myproject", started)
+        self.assertEqual(
+            started[started.index("/tmp/tmux-1000:/run/swarmforge-tmux:ro") - 1], "-v")
+
+    def test_tmux_launcher_env_as_a_secret_never_reaches_docker(self):
+        docker = FakeDocker()
+        channels = FakeChannels()
+        defn = dict(SESSION_TMUX, env={"TMUX_PANE": "${secret:echo:%9}"})
+        with self.assertRaisesRegex(launcher.OrchestrationError,
+                                    "tong 'spawner'.*TMUX_PANE.*secret reference"):
+            launcher.run_with_tongs(
+                _merged("spawner", defn, source=tongs.REPO), ANVIL_ARGV,
+                _opts(tmux="/tmp/tmux-1000/default,4242,3", tmux_pane="%7"),
+                docker=docker, providers=ECHO_PROVIDERS, make_channel=channels,
+                sleep=lambda _s: None, monotonic=_Clock(),
+            )
+        self.assertEqual(docker.calls, [])
+        self.assertEqual(channels.payloads, [])
+
+    def test_tmux_values_reach_only_the_tmux_tongs_argv(self):
+        docker = FakeDocker()
+        rc = self._run_tmux(
+            docker, tmux="/tmp/tmux-1000/default,4242,3", tmux_pane="%7",
+            workspace="/home/me/proj",
+        )
+        self.assertEqual(rc, 0)
+        spawner = next(argv for argv in docker.run_argvs
+                       if "claude-myproject-tong-spawner" in argv)
+        self.assertIn("TMUX=/run/swarmforge-tmux/default,4242,3", spawner)
+        self.assertIn("TMUX_PANE=%7", spawner)
+        self.assertIn("SWARMFORGE_SESSION_HANDLE=claude-myproject", spawner)
+        self.assertIn("SWARMFORGE_WORKSPACE_HOST_PATH=/home/me/proj", spawner)
+        self.assertIn("/tmp/tmux-1000:/run/swarmforge-tmux:ro", spawner)
+        pg = next(argv for argv in docker.run_argvs if "claude-myproject-tong-pg" in argv)
+        self.assertNotIn("TMUX", " ".join(pg))
+        self.assertNotIn("TMUX", " ".join(docker.anvil_argv))
+
+    def test_shared_tmux_tong_is_never_handed_the_server(self):
+        # Refused before this in main; reaching here anyway must not wire it.
+        docker = FakeDocker()
+        shared = dict(SESSION_TMUX, lifecycle="shared")
+        with self.assertRaisesRegex(launcher.OrchestrationError,
+                                    "only allowed on a 'session' tong"):
+            launcher.run_with_tongs(
+                _merged("spawner", shared, source=tongs.REPO), ANVIL_ARGV,
+                _opts(tmux="/tmp/tmux-1000/default,4242,3"),
+                docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
+            )
+        self.assertEqual(docker.run_argvs, [])
 
     # --- Per-org isolation of `shared` tongs --------------------------------
 

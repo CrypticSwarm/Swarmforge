@@ -12,7 +12,7 @@ import json
 import os
 
 from .model import WORKSPACE
-from .mounts import _has_socket_mount
+from .mounts import _has_socket_mount, _has_tmux_mount
 from .secrets import find_secret_refs
 
 
@@ -32,9 +32,9 @@ def privilege_summary(defn):
     """Structured summary of what a definition asks for, for the approval gate.
 
     Gathers the privileges a reviewer must see before approving a
-    workspace-sourced tong: image, secret references, mounts, networks, and
-    docker-socket access. Rendering and prompting are the caller's job; this
-    just assembles the facts.
+    workspace-sourced tong: image, secret references, mounts, networks,
+    docker-socket access, and tmux-socket access. Rendering and prompting are
+    the caller's job; this just assembles the facts.
     """
     return {
         "image": defn.get("image"),
@@ -42,6 +42,7 @@ def privilege_summary(defn):
         "mounts": list(defn.get("mounts") or []),
         "networks": list(defn.get("networks") or []),
         "socket": _has_socket_mount(defn),
+        "tmux": _has_tmux_mount(defn),
     }
 
 
