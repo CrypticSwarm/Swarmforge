@@ -193,6 +193,26 @@ class ValidationTests(unittest.TestCase):
         errors = tongs.validate_tong("t", self._base(mounts=["tmux-socket:/tmux"]))
         self.assertTrue(any("only the 'workspace' mount takes a target path" in e for e in errors))
 
+    def test_tmux_launcher_env_as_a_secret_rejected(self):
+        # A FIFO-delivered secret is exported after `-e`, so it would beat the launcher.
+        for name in ("TMUX", "TMUX_PANE", "SWARMFORGE_SESSION_HANDLE"):
+            defn = self._base(mounts=["tmux-socket"], env={name: "${secret:op:r}"})
+            errors = tongs.validate_tong("t", defn)
+            self.assertTrue(
+                any("the launcher sets" in e and name in e for e in errors), (name, errors))
+
+    def test_tmux_launcher_env_plain_value_accepted(self):
+        defn = self._base(mounts=["tmux-socket"], env={"TMUX_PANE": "%1"})
+        self.assertEqual(tongs.validate_tong("t", defn), [])
+
+    def test_tmux_launcher_env_secret_accepted_without_the_mount(self):
+        defn = self._base(env={"TMUX": "${secret:op:r}"})
+        self.assertEqual(tongs.validate_tong("t", defn), [])
+
+    def test_unrelated_secret_on_a_tmux_tong_accepted(self):
+        defn = self._base(mounts=["tmux-socket"], env={"TOKEN": "${secret:op:r}"})
+        self.assertEqual(tongs.validate_tong("t", defn), [])
+
     def test_target_overlapping_the_tmux_mount_rejected(self):
         errors = tongs.validate_tong(
             "t", self._base(mounts=["workspace:/run", "tmux-socket"]))

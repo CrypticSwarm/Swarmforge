@@ -26,6 +26,7 @@ from .mounts import (
     overlapping_mount_error,
     parse_mount,
     reserved_mount_targets,
+    tmux_secret_env_error,
 )
 from .secrets import ENV_NAME_RE, partition_secret_env
 
@@ -134,6 +135,9 @@ def validate_tong(name, defn):
         for secret_name in sorted(secret):
             if not ENV_NAME_RE.match(secret_name):
                 err("invalid secret env name %r (must be a valid identifier)" % secret_name)
+        owned_secret = tmux_secret_env_error(defn)
+        if owned_secret:
+            err(owned_secret)
 
     for argvish in ("entrypoint", "command"):
         value = defn.get(argvish)

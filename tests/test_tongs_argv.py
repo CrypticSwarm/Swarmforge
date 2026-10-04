@@ -300,6 +300,74 @@ class DockerArgvTests(unittest.TestCase):
         )
         self.assertNotIn("SWARMFORGE_WORKSPACE_HOST_PATH", " ".join(argv))
 
+    def _tmux_argv(self, env=None, mounts=("tmux-socket",), lifecycle="session",
+                   tmux="/tmp/tmux-1000/default,4242,3", tmux_pane="%7",
+                   session_handle="claude-proj"):
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = list(mounts)
+        defn["lifecycle"] = lifecycle
+        return tongs.tong_run_argv(
+            "spawner", defn, container_name="c", network="n", alias="spawner",
+            env=env, workspace="/host/ws",
+            tmux=tmux, tmux_pane=tmux_pane, session_handle=session_handle,
+        )
+
+    def test_run_argv_tmux_tong_gets_the_host_server_and_session(self):
+        argv = self._tmux_argv()
+        self.assertIn("TMUX=/run/swarmforge-tmux/default,4242,3", argv)
+        self.assertIn("TMUX_PANE=%7", argv)
+        self.assertIn("SWARMFORGE_SESSION_HANDLE=claude-proj", argv)
+        self.assertIn("SWARMFORGE_WORKSPACE_HOST_PATH=/host/ws", argv)
+        mounted = [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
+        self.assertEqual(mounted, ["/tmp/tmux-1000:/run/swarmforge-tmux:ro"])
+
+    def test_run_argv_tmux_values_override_the_definitions_env(self):
+        argv = self._tmux_argv(env={
+            "TMUX": "/elsewhere,1,1", "TMUX_PANE": "%99",
+            "SWARMFORGE_SESSION_HANDLE": "other", "KEEP": "1",
+        })
+        self.assertIn("TMUX=/run/swarmforge-tmux/default,4242,3", argv)
+        self.assertIn("TMUX_PANE=%7", argv)
+        self.assertIn("SWARMFORGE_SESSION_HANDLE=claude-proj", argv)
+        self.assertIn("KEEP=1", argv)
+        joined = " ".join(argv)
+        for stale in ("/elsewhere", "%99", "=other"):
+            self.assertNotIn(stale, joined)
+
+    def test_run_argv_tmux_names_the_launcher_lacks_are_dropped(self):
+        # A definition cannot know the caller's pane, so it never supplies one.
+        argv = self._tmux_argv(env={"TMUX_PANE": "%99", "SWARMFORGE_SESSION_HANDLE": "x"},
+                               tmux_pane=None, session_handle=None)
+        joined = " ".join(argv)
+        self.assertNotIn("TMUX_PANE", joined)
+        self.assertNotIn("SWARMFORGE_SESSION_HANDLE", joined)
+        self.assertIn("TMUX=/run/swarmforge-tmux/default,4242,3", argv)
+
+    def test_run_argv_tmux_mount_without_tmux_raises(self):
+        for tmux in (None, ""):
+            with self.assertRaisesRegex(ValueError, "not running inside tmux"):
+                self._tmux_argv(tmux=tmux)
+
+    def test_run_argv_tmux_malformed_values_raise(self):
+        with self.assertRaisesRegex(ValueError, "default per-user socket directory"):
+            self._tmux_argv(tmux="/home/me/s,1,0")
+        with self.assertRaisesRegex(ValueError, "pane id"):
+            self._tmux_argv(tmux_pane="7")
+
+    def test_run_argv_without_tmux_mount_injects_nothing(self):
+        for mounts in ((), ("docker-socket",), ("workspace:ro",)):
+            argv = self._tmux_argv(mounts=mounts)
+            joined = " ".join(argv)
+            self.assertNotIn("TMUX", joined, mounts)
+            self.assertNotIn("SWARMFORGE_SESSION_HANDLE", joined, mounts)
+            self.assertNotIn("swarmforge-tmux", joined, mounts)
+
+    def test_run_argv_tmux_mount_on_a_shared_tong_raises(self):
+        # Checked first, so no caller can mount a tmux server into a shared container.
+        for tmux in ("/tmp/tmux-1000/default,4242,3", None):
+            with self.assertRaisesRegex(ValueError, "only allowed on a 'session' tong"):
+                self._tmux_argv(lifecycle="shared", tmux=tmux)
+
     def test_anvil_option_value_reads_name_and_network(self):
         self.assertEqual(tongs.anvil_option_value(ANVIL_ARGV, "--name"), "claude-proj")
         self.assertEqual(tongs.anvil_option_value(ANVIL_ARGV, "--network"), "opencode-net")

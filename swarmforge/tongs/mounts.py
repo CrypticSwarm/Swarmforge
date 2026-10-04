@@ -7,8 +7,9 @@ judged by the same rules whichever asks.
 """
 
 import posixpath
+import re
 
-from .model import SOCKET_MOUNT, TMUX_MOUNT
+from .model import SESSION_HANDLE_ENV, SOCKET_MOUNT, TMUX_MOUNT
 from .secrets import SECRET_FIFO_DIR, SECRET_INJECT_SHELL, partition_secret_env
 
 
@@ -21,6 +22,14 @@ TMUX_MOUNT_TARGET = "/run/swarmforge-tmux"
 
 # An allowlist, so an unvetted mount option cannot reach the daemon.
 MOUNT_MODES = ("ro", "rw")
+
+# What tmux creates (mode 0700) under $TMUX_TMPDIR or /tmp for each user's sockets.
+_TMUX_SOCKET_DIR_RE = re.compile(r"tmux-[0-9]+")
+_DECIMAL_RE = re.compile(r"[0-9]+")
+_TMUX_PANE_RE = re.compile(r"%[0-9]+")
+
+# The env the launcher sets on a tmux-socket tong; a definition never supplies it.
+TMUX_LAUNCHER_ENV = ("TMUX", "TMUX_PANE", SESSION_HANDLE_ENV)
 
 
 def _has_socket_mount(defn):
@@ -262,6 +271,74 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
         specs.append(spec)
         placed.append((mount, destination))
     return specs
+
+
+def resolve_tmux_socket(tmux):
+    """The host directory a `tmux-socket` mount binds, and the tong's own `TMUX`.
+
+    `tmux` is the launcher's raw `$TMUX`, `<socket-path>,<server-pid>,<session-id>`,
+    and this is the one place it is parsed. Returns
+    `(host_dir, socket_path, container_tmux)`: the socket's parent directory, the
+    socket's host path, and the same value re-pointed at the socket's name under
+    `TMUX_MOUNT_TARGET`, so a stock tmux client in the tong reaches the host
+    server with no flags.
+
+    Raises `ValueError` unless the value has exactly three comma-separated fields,
+    the pid and session id are decimal, and the socket path is a normalized
+    absolute path with no `:` (docker's `-v` separator), `,` (tmux reads the path
+    up to the first one), or whitespace. The socket must also sit directly in
+    tmux's own per-user directory (`tmux-<uid>`): binding a `-S` socket's parent
+    could hand the tong an arbitrary host directory, such as a home directory.
+    """
+    fields = tmux.rsplit(",", 2) if isinstance(tmux, str) else []
+    if len(fields) != 3:
+        raise ValueError(
+            "$TMUX %r is not '<socket-path>,<server-pid>,<session-id>'" % (tmux,))
+    path, pid, session = fields
+    if not (_DECIMAL_RE.fullmatch(pid) and _DECIMAL_RE.fullmatch(session)):
+        raise ValueError(
+            "$TMUX %r: the server pid and session id must be decimal numbers" % (tmux,))
+    if not path.startswith("/") or normalize_mount_target(path) != path:
+        raise ValueError(
+            "$TMUX %r: socket path %r is not a normalized absolute path" % (tmux, path))
+    if any(char in ":," or char.isspace() for char in path):
+        raise ValueError(
+            "$TMUX %r: socket path %r contains ':', ',' or whitespace" % (tmux, path))
+    host_dir, socket_name = posixpath.split(path)
+    if not _TMUX_SOCKET_DIR_RE.fullmatch(posixpath.basename(host_dir)):
+        raise ValueError(
+            "$TMUX %r: socket %r is not in tmux's default per-user socket directory "
+            "(tmux-<uid> under $TMUX_TMPDIR or /tmp); a socket at a custom -S path "
+            "is refused, since its whole directory would be mounted" % (tmux, path))
+    return (host_dir, path,
+            "%s/%s,%s,%s" % (TMUX_MOUNT_TARGET, socket_name, pid, session))
+
+
+def check_tmux_pane(pane):
+    """The launcher's `$TMUX_PANE` (`%<digits>`), or `ValueError` if it is not one."""
+    if not isinstance(pane, str) or not _TMUX_PANE_RE.fullmatch(pane):
+        raise ValueError("$TMUX_PANE %r is not a tmux pane id ('%%<number>')" % (pane,))
+    return pane
+
+
+def tmux_secret_env_error(defn):
+    """Why a `tmux-socket` definition's secret env is refused, or None if it is fine.
+
+    The launcher owns `TMUX_LAUNCHER_ENV` on a tong that mounts `tmux-socket` and
+    replaces a plain value the definition gives one of them, but a secret value is
+    exported by the FIFO wrapper after docker's `-e` values and so would win.
+    Refusing a secret reference there keeps the launcher's values the ones the
+    tong runs with.
+    """
+    env = defn.get("env")
+    if not _has_tmux_mount(defn) or not isinstance(env, dict):
+        return None
+    owned = [name for name in TMUX_LAUNCHER_ENV if name in partition_secret_env(env)[1]]
+    if not owned:
+        return None
+    return ("env %s: the launcher sets %s on a tong that mounts '%s', so the "
+            "definition may not make them secret references"
+            % (", ".join(owned), ", ".join(TMUX_LAUNCHER_ENV), TMUX_MOUNT))
 
 
 def workspace_mount_placements(defn, socket_path=DEFAULT_DOCKER_SOCKET):

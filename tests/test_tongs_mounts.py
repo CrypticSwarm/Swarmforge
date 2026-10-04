@@ -269,5 +269,66 @@ class MountSpecTests(unittest.TestCase):
             tongs.tong_mount_specs({"mounts": [123]}, "/ws")
 
 
+class TmuxSocketTests(unittest.TestCase):
+    """Resolving the launcher's `$TMUX` into the directory to bind and the tong's `TMUX`."""
+
+    def test_resolves_the_directory_and_rewrites_the_value(self):
+        self.assertEqual(
+            tongs.resolve_tmux_socket("/tmp/tmux-1000/default,4242,3"),
+            ("/tmp/tmux-1000", "/tmp/tmux-1000/default",
+             "/run/swarmforge-tmux/default,4242,3"),
+        )
+
+    def test_honors_a_tmux_tmpdir_and_a_named_server(self):
+        self.assertEqual(
+            tongs.resolve_tmux_socket("/run/user/1000/tmux-1000/work,1,0"),
+            ("/run/user/1000/tmux-1000", "/run/user/1000/tmux-1000/work",
+             "/run/swarmforge-tmux/work,1,0"),
+        )
+
+    def test_relative_or_unnormalized_path_refused(self):
+        for value in ("tmux-1000/default,1,0", "/tmp/tmux-1000/../tmux-1000/default,1,0",
+                      "/tmp/tmux-1000/,1,0", "//tmux-1000/default,1,0"):
+            with self.assertRaisesRegex(ValueError, "normalized absolute path"):
+                tongs.resolve_tmux_socket(value)
+
+    def test_wrong_field_count_refused(self):
+        for value in ("", "/tmp/tmux-1000/default", "/tmp/tmux-1000/default,1"):
+            with self.assertRaisesRegex(ValueError, "<socket-path>,<server-pid>,<session-id>"):
+                tongs.resolve_tmux_socket(value)
+        with self.assertRaises(ValueError):
+            tongs.resolve_tmux_socket(None)
+
+    def test_extra_field_refused(self):
+        # Split from the right, an extra field ends up in the path as a comma.
+        with self.assertRaisesRegex(ValueError, "contains"):
+            tongs.resolve_tmux_socket("/tmp/tmux-1000/default,9,1,0")
+
+    def test_non_decimal_pid_or_session_refused(self):
+        for value in ("/tmp/tmux-1000/default,abc,0", "/tmp/tmux-1000/default,1,$0",
+                      "/tmp/tmux-1000/default,,0", "/tmp/tmux-1000/default,1, 0"):
+            with self.assertRaisesRegex(ValueError, "decimal"):
+                tongs.resolve_tmux_socket(value)
+
+    def test_colon_or_whitespace_in_path_refused(self):
+        for value in ("/tmp/tmux-1000/a:b,1,0", "/tmp/tmux-1000/a b,1,0",
+                      "/tmp/tmux-1000/a\tb,1,0"):
+            with self.assertRaisesRegex(ValueError, "contains"):
+                tongs.resolve_tmux_socket(value)
+
+    def test_socket_outside_tmuxs_own_directory_refused(self):
+        # Binding a -S socket's parent could mount an arbitrary host directory.
+        for value in ("/home/me/my.sock,1,0", "/tmp/default,1,0", "/default,1,0",
+                      "/tmp/tmux-me/default,1,0", "/tmp/tmux-1000/sub/default,1,0"):
+            with self.assertRaisesRegex(ValueError, "default per-user socket directory"):
+                tongs.resolve_tmux_socket(value)
+
+    def test_pane_id_checked(self):
+        self.assertEqual(tongs.check_tmux_pane("%12"), "%12")
+        for pane in ("12", "%", "%1a", " %1", "%1\n", None):
+            with self.assertRaisesRegex(ValueError, "pane id"):
+                tongs.check_tmux_pane(pane)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
