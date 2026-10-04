@@ -181,6 +181,23 @@ class ValidationTests(unittest.TestCase):
         errors = tongs.validate_tong("t", self._base(mounts=["docker-socket:/run/d.sock"]))
         self.assertTrue(any("only the 'workspace' mount takes a target path" in e for e in errors))
 
+    def test_tmux_socket_mount_accepted_read_only(self):
+        for mount in ("tmux-socket", "tmux-socket:ro"):
+            self.assertEqual(tongs.validate_tong("t", self._base(mounts=[mount])), [], mount)
+
+    def test_tmux_socket_mount_rw_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["tmux-socket:rw"]))
+        self.assertTrue(any("always read-only" in e for e in errors), errors)
+
+    def test_tmux_socket_mount_target_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["tmux-socket:/tmux"]))
+        self.assertTrue(any("only the 'workspace' mount takes a target path" in e for e in errors))
+
+    def test_target_overlapping_the_tmux_mount_rejected(self):
+        errors = tongs.validate_tong(
+            "t", self._base(mounts=["workspace:/run", "tmux-socket"]))
+        self.assertTrue(any("overlaps /run/swarmforge-tmux" in e for e in errors), errors)
+
     def test_extra_aliases_accepted_on_network_facing_kinds(self):
         # A client matching a certificate CN dials the dotted name, not the canonical alias.
         defn = self._base(interface={
