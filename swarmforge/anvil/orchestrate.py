@@ -152,11 +152,12 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
 
     Once the argv is assembled, any existing container of the same name is removed
     so a stale or stopped one is replaced cleanly -- but a definition the argv
-    builder refuses removes nothing, since it started nothing. If anything fails
-    after the container starts -- a docker error, a delivery timeout, or a Ctrl-C --
-    the container is removed before re-raising, so a half-configured `shared` tong
-    (stamped with its config-hash label) is not reused on the next session despite
-    missing its secret.
+    builder refuses removes nothing here, since it started nothing (a `session`
+    tong's name is recorded before this runs, so the launch's teardown still
+    removes it). If anything fails after the container starts -- a docker error,
+    a delivery timeout, or a Ctrl-C -- the container is removed before
+    re-raising, so a half-configured `shared` tong (stamped with its config-hash
+    label) is not reused on the next session despite missing its secret.
     """
     plan = tongs.plan_tong_secrets(defn.get("env"), resolver)
     plain_env = plan["env"]
@@ -356,10 +357,11 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     joined_shared_networks = []
     anvil_multi = False
     mcp_dir = None
+    # Each resource is recorded before it is created: an interrupt can land mid-create.
     try:
         if plan["create"]:
-            docker.ensure_network(plan["create"])
             created_network = plan["create"]
+            docker.ensure_network(plan["create"])
 
         ready_checks = []  # (name, defn, alias, container, probe_network)
         for name in sorted(merged):
@@ -367,22 +369,22 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             alias = tongs.canonical_alias(name, defn)
             if defn.get("lifecycle") == "session":
                 container = tongs.session_container_name(session_id, name)
+                started_sessions.append(container)
                 _start_one_tong(
                     docker, name, defn,
                     container=container, network=plan["network"], alias=alias,
                     resolver=resolver, workspace=opts.workspace,
                     label_hash=tongs.config_hash(defn), make_channel=make_channel,
                 )
-                started_sessions.append(container)
                 probe_network = plan["network"]
             else:
                 scope = org_token if merged[name]["source"] == tongs.ORG else None
                 container = tongs.shared_container_name(name, scope=scope)
                 if scope:
                     tong_network = tongs.shared_network_name(scope)
-                    docker.ensure_network(tong_network)
                     if tong_network not in joined_shared_networks:
                         joined_shared_networks.append(tong_network)
+                    docker.ensure_network(tong_network)
                     probe_network = tong_network
                 else:
                     tong_network = base_network
@@ -401,10 +403,10 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                 # Reached only over its own org network, never the session fabric.
                 continue
             container = tongs.shared_container_name(name)
+            connected_shared.append((plan["network"], container))
             # A stale endpoint from a hard-killed session would fail the connect.
             docker.network_disconnect(plan["network"], container)
             docker.network_connect(plan["network"], container, aliases=aliases)
-            connected_shared.append((plan["network"], container))
 
         # A scoped shared tong lives only on its org network, so probe where the anvil dials.
         for name, defn, alias, container, probe_network in ready_checks:

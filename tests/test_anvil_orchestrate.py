@@ -778,6 +778,33 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn(("rm_force", "claude-myproject"), docker.calls)
         self.assertIn(("network_rm", net), docker.calls)
 
+    def test_tong_whose_docker_run_is_cut_short_is_removed(self):
+        # The daemon may have started it before the client was killed.
+        docker = FakeDocker()
+        container = "claude-myproject-tong-pg"
+
+        def cut_short(argv):
+            docker.calls.append(("run_detached", container))
+            raise launcher.TerminationSignal(signal.SIGTERM)
+
+        docker.run_detached = cut_short
+        with self.assertRaises(launcher.TerminationSignal):
+            self._run(docker, _merged("pg", SESSION_PORT, source=tongs.REPO))
+        started = docker.calls.index(("run_detached", container))
+        self.assertIn(("rm_force", container), docker.calls[started:])
+
+    def test_network_whose_create_is_cut_short_is_removed(self):
+        docker = FakeDocker()
+        net = tongs.session_network_name("claude-myproject")
+
+        def cut_short(name):
+            raise launcher.TerminationSignal(signal.SIGHUP)
+
+        docker.ensure_network = cut_short
+        with self.assertRaises(launcher.TerminationSignal):
+            self._run(docker, _merged("pg", SESSION_PORT, source=tongs.REPO))
+        self.assertIn(("network_rm", net), docker.calls)
+
     def test_session_tong_without_anvil_name_raises_before_any_docker_call(self):
         docker = FakeDocker()
         anvil = ["docker", "run", "-it", "--rm", "--network", "opencode-net", "img"]
