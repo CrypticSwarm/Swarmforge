@@ -38,6 +38,9 @@ TMUX_MOUNT = "tmux-socket"
 # A container cannot re-share a bind mount, so a broker needs the workspace's host path.
 WORKSPACE_HOST_ENV = "SWARMFORGE_WORKSPACE_HOST_PATH"
 
+# A tmux-socket tong's handle on the session it serves: the anvil's `--name`.
+SESSION_HANDLE_ENV = "SWARMFORGE_SESSION_HANDLE"
+
 
 def workspace_key(workspace):
     """The key a checkout's approvals and volumes are stored under: its path, symlinks resolved."""
