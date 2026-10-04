@@ -98,6 +98,14 @@ class PrivilegeSummaryTests(unittest.TestCase):
         self.assertEqual([v["name"] for v in summary["volumes"]], ["ok"])
         self.assertEqual(summary["mounts"], defn["mounts"])
 
+    def test_summary_reports_tmux_socket_access(self):
+        defn = def_of(GITHUB_TONG)
+        self.assertFalse(tongs.privilege_summary(defn)["tmux"])
+        defn["mounts"] = ["tmux-socket:ro"]
+        summary = tongs.privilege_summary(defn)
+        self.assertTrue(summary["tmux"])
+        self.assertFalse(summary["socket"])
+
 
 class ApprovalKeyingTests(unittest.TestCase):
     def setUp(self):

@@ -80,7 +80,11 @@ def unsupported_tong_reasons(merged):
         reuses the container (a `session` tong is the right home for a
         per-workspace mount);
       * a workspace-sourced `shared` tong that mounts a `volume` -- its volume
-        is scoped to one checkout but its container is not.
+        is scoped to one checkout but its container is not;
+      * a `shared` tong that mounts the `tmux-socket` -- the same container
+        outlives the session and is reused by later ones, so it would carry one
+        session's tmux server, and its pinning to that session's pane, into the
+        next.
 
     A refused tong is reported rather than started half-wired. Returns a list of
     human-readable reason strings (empty == every discovered tong is startable).
@@ -109,6 +113,12 @@ def unsupported_tong_reasons(merged):
                 "sessions in other checkouts, so it would leak this checkout's "
                 "data into theirs (make it a 'session' tong)" % name
             )
+        if defn.get("lifecycle") == "shared" and tongs.mounts_word(defn, tongs.TMUX_MOUNT):
+            reasons.append(
+                "tong '%s' is a 'shared' tong that mounts the tmux socket; a shared "
+                "container outlives the session and is reused by later ones, so it "
+                "would carry one session's tmux server into the next" % name
+            )
     return reasons
 
 
@@ -133,7 +143,8 @@ def ensure_mcp_harness_supported(merged, harness):
 
 
 def _start_one_tong(docker, name, defn, *, container, network, alias,
-                    resolver, workspace, label_hash, make_channel, volume_scope):
+                    resolver, workspace, label_hash, make_channel, volume_scope,
+                    tmux=None, tmux_pane=None, session_handle=None):
     """Start one tong container detached, delivering any secret env over a FIFO.
 
     Resolves the definition's secret references through `resolver` and splits the
@@ -147,6 +158,9 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     secrets are present in the environment before the real process starts, while
     the bytes live only in docker's API stream and the container kernel's pipe
     buffer -- never `-e`, argv, or disk.
+
+    `tmux`, `tmux_pane`, and `session_handle` reach `tongs.tong_run_argv`, which
+    uses them only for a tong that mounts `tmux-socket`.
 
     Once the argv is assembled, any existing container of the same name is removed
     so a stale or stopped one is replaced cleanly -- but a definition the argv
@@ -174,6 +188,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
                 container_name=container, network=network, alias=alias,
                 env=plain_env, label_hash=label_hash, workspace=workspace,
                 extra_mount_specs=git_dir_specs, volume_scope=volume_scope,
+                tmux=tmux, tmux_pane=tmux_pane, session_handle=session_handle,
             )
         except ValueError as exc:
             raise OrchestrationError("tong '%s': %s" % (name, exc))
@@ -197,6 +212,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
             env=plain_env, label_hash=label_hash, workspace=workspace,
             secret_channel=True, entrypoint=entrypoint, command=command,
             extra_mount_specs=git_dir_specs, volume_scope=volume_scope,
+            tmux=tmux, tmux_pane=tmux_pane, session_handle=session_handle,
         )
     except ValueError as exc:
         raise OrchestrationError("tong '%s': %s" % (name, exc))
@@ -312,10 +328,17 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     tongs are left running. Teardown runs inside the caller's `teardown_guard()`,
     which keeps signals from cutting it short; the default guards nothing.
 
+    A `session` tong that mounts `tmux-socket` is handed the launcher's
+    `opts.tmux`/`opts.tmux_pane` and the session handle; both values are checked
+    before anything starts.
+
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
-    becomes ready (the anvil does not run against a half-up environment) or a
-    `session` tong is discovered with no anvil `--name` to key the session by, and
-    `SecretResolutionError` if a secret reference cannot be resolved.
+    becomes ready (the anvil does not run against a half-up environment), a
+    `session` tong is discovered with no anvil `--name` to key the session by, or
+    a tong mounts `tmux-socket` while the launcher is outside tmux, its `$TMUX`
+    or `$TMUX_PANE` is malformed, or the definition makes one of the names the
+    launcher sets a secret reference, and `SecretResolutionError` if a secret
+    reference cannot be resolved.
     """
     ensure_mcp_harness_supported(merged, opts.harness)
     resolver = make_secret_resolver(providers or {})
@@ -330,6 +353,28 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
         raise OrchestrationError(
             "session tongs require the anvil '--name' as a session handle"
         )
+
+    tmux_names = [
+        name for name in sorted(merged)
+        if tongs.mounts_word(merged[name]["definition"], tongs.TMUX_MOUNT)
+    ]
+    for name in tmux_names:
+        # Validation refuses this too; a secret here would override the launcher's values.
+        owned_secret = tongs.tmux_secret_env_error(merged[name]["definition"])
+        if owned_secret:
+            raise OrchestrationError("tong '%s': %s" % (name, owned_secret))
+    if tmux_names:
+        if not opts.tmux:
+            raise OrchestrationError(
+                "tong(s) %s mount '%s', so the launcher must be started from inside "
+                "a tmux pane ($TMUX is unset)" % (", ".join(tmux_names), tongs.TMUX_MOUNT)
+            )
+        try:
+            tongs.resolve_tmux_socket(opts.tmux)
+            if opts.tmux_pane:
+                tongs.check_tmux_pane(opts.tmux_pane)
+        except ValueError as exc:
+            raise OrchestrationError("tong(s) %s: %s" % (", ".join(tmux_names), exc))
 
     # No org layer means no token, and every shared tong keeps its global unscoped name.
     org_tongs_dir = dict(opts.layer_dirs).get(tongs.ORG)
@@ -379,6 +424,7 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                     resolver=resolver, workspace=opts.workspace,
                     label_hash=tongs.config_hash(defn), make_channel=make_channel,
                     volume_scope=volume_scopes[name],
+                    tmux=opts.tmux, tmux_pane=opts.tmux_pane, session_handle=session_id,
                 )
                 probe_network = plan["network"]
             else:
