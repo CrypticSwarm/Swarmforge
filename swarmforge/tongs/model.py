@@ -5,7 +5,8 @@ every other module can depend on it. It holds the constant sets the launcher
 dispatches on (layers, lifecycles, interface kinds, readiness modes), the docker
 labels it stamps, and the pure resolution of a definition's `readiness:` block
 and `resources.gpus` request.
-`warn` lives here too, so the one `tongs: ` stderr prefix has a single home.
+`warn` lives here too, so the one `tongs: ` stderr prefix has a single home, with
+`printable` beside it for echoing definition-sourced text to the terminal.
 """
 
 import re
@@ -36,6 +37,23 @@ WORKSPACE_HOST_ENV = "SWARMFORGE_WORKSPACE_HOST_PATH"
 
 def warn(message):
     print("tongs: %s" % message, file=sys.stderr)
+
+
+def printable(text):
+    """`text` with every non-printable character replaced by its Python escape.
+
+    For echoing untrusted text to a terminal. Control characters (C0 including
+    ESC, CR, newline and tab; DEL; C1), bidi overrides, zero-width and other
+    format characters, and every space but U+0020 come back as visible escapes
+    such as `\\x1b` or `\\u202e`, so nothing returned can move the cursor,
+    restyle, break a line, or override the text direction. Everything Python
+    counts as printable passes through unchanged, non-ASCII letters included;
+    a few of those are blank or confusable, so lookalikes are not caught.
+    """
+    return "".join(
+        ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii")
+        for ch in text
+    )
 
 
 # `True` is an `int`, so a bare isinstance check would accept `port: true`.

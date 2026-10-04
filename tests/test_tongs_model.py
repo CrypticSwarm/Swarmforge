@@ -21,6 +21,22 @@ from swarmforge import tongs
 from tongs_fixtures import VOLUME_TONG, def_of
 
 
+class PrintableTests(unittest.TestCase):
+    def test_controls_and_invisible_characters_become_escapes(self):
+        self.assertEqual(
+            tongs.printable("\x1b[2K\r\n\t\b\x7f\x9b\u202e\u2066\u200b\u00a0"),
+            "\\x1b[2K\\r\\n\\t\\x08\\x7f\\x9b\\u202e\\u2066\\u200b\\xa0",
+        )
+
+    def test_printable_text_is_unchanged(self):
+        for text in ("", "registry/img:1.0 @sha256:abc", "naïve 日本 Ωmega", "back\\slash"):
+            self.assertEqual(tongs.printable(text), text)
+
+    def test_output_is_printable_for_every_code_point(self):
+        every = "".join(chr(cp) for cp in range(0x110000))
+        self.assertTrue(tongs.printable(every).isprintable())
+
+
 class ReadinessTests(unittest.TestCase):
     def test_parse_duration_units(self):
         self.assertEqual(tongs.parse_duration("30s"), 30.0)

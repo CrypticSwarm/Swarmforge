@@ -28,7 +28,9 @@ def render_privilege_summary(name, summary):
     privileges actually requested are shown, and docker-socket access -- the
     broadest grant, since it is full control of the host's docker -- is always
     called out explicitly so it cannot be approved unseen, as is a GPU request,
-    which grants the host's GPU devices.
+    which grants the host's GPU devices. Every line passes through
+    `tongs.printable`, so a definition value cannot move the cursor, erase, or
+    forge a line of this block.
     """
     lines = ["Workspace tong %r requests approval:" % name]
     lines.append("  image:    %s" % (summary.get("image") or "(none declared)"))
@@ -46,7 +48,7 @@ def render_privilege_summary(name, summary):
         lines.append("  docker socket: full host docker control")
     if summary.get("gpus") is not None:
         lines.append("  gpus:     %s (host GPU access)" % summary["gpus"])
-    return "\n".join(lines)
+    return "\n".join(tongs.printable(line) for line in lines)
 
 
 def _prompt_yes_no(question, out, inp):
