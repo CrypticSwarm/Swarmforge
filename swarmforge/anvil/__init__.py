@@ -136,6 +136,7 @@ from .errors import OrchestrationError, TerminationSignal
 from .orchestrate import (
     MCP_CONFIG_CONTAINER_PATH,
     MCP_FILE_ENV,
+    check_tmux_socket_dir,
     ensure_mcp_harness_supported,
     exec_anvil,
     run_with_tongs,
@@ -167,6 +168,7 @@ __all__ = [
     "TerminationSignal",
     "MCP_CONFIG_CONTAINER_PATH",
     "MCP_FILE_ENV",
+    "check_tmux_socket_dir",
     "ensure_mcp_harness_supported",
     "exec_anvil",
     "run_with_tongs",
