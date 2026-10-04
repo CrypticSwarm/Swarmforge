@@ -73,6 +73,20 @@ class PrivilegeSummaryTests(unittest.TestCase):
         defn["resources"] = {"gpus": 0}
         self.assertEqual(tongs.privilege_summary(defn)["gpus"], 0)
 
+    def test_summary_names_each_declared_volume(self):
+        defn = def_of(GITHUB_TONG)
+        defn["mounts"] = ["workspace:ro", "volume:models:/a", "volume:cache:/c:ro"]
+        self.assertEqual(tongs.privilege_summary(defn)["volumes"], ["models", "cache"])
+        self.assertEqual(tongs.privilege_summary(def_of(GITHUB_TONG))["volumes"], [])
+
+    def test_summary_tolerates_malformed_mounts(self):
+        # The gate runs before validation, which refuses these on its own.
+        defn = def_of(GITHUB_TONG)
+        defn["mounts"] = ["volume:bad_name:/a", "volume:v", 7, "/etc:/etc", "volume:ok:/b"]
+        summary = tongs.privilege_summary(defn)
+        self.assertEqual(summary["volumes"], ["ok"])
+        self.assertEqual(summary["mounts"], defn["mounts"])
+
 
 class ApprovalKeyingTests(unittest.TestCase):
     def setUp(self):

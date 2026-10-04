@@ -58,10 +58,19 @@ class RenderPrivilegeSummaryTests(unittest.TestCase):
                 text = launcher.render_privilege_summary("github", tongs.privilege_summary(defn))
                 self.assertNotIn("gpus", text)
 
+    def test_calls_out_a_volume_as_persistent(self):
+        defn = dict(WORKSPACE_TONG, mounts=["volume:models:/models"])
+        text = launcher.render_privilege_summary("cache", tongs.privilege_summary(defn))
+        self.assertIn("volume:models:/models", text)
+        self.assertIn(
+            "  volumes:  models (persistent: outlives the tong and reuses any data left by "
+            "an earlier definition or checkout at this path)", text.splitlines())
+
     def test_omits_unrequested_sections(self):
         defn = {"image": "x", "interface": {"kind": "none"}, "resources": {"memory": "1g"}}
         text = launcher.render_privilege_summary("x", tongs.privilege_summary(defn))
         self.assertNotIn("secrets:", text)
+        self.assertNotIn("volumes:", text)
         self.assertNotIn("docker socket", text)
         self.assertNotIn("gpus", text)
 

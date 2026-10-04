@@ -41,6 +41,11 @@ def render_privilege_summary(name, summary):
     mounts = summary.get("mounts") or []
     if mounts:
         lines.append("  mounts:   %s" % ", ".join(str(m) for m in mounts))
+    volumes = summary.get("volumes") or []
+    if volumes:
+        lines.append("  volumes:  %s (persistent: outlives the tong and reuses any data "
+                     "left by an earlier definition or checkout at this path)"
+                     % ", ".join(volumes))
     networks = summary.get("networks") or []
     if networks:
         lines.append("  networks: %s" % ", ".join(str(n) for n in networks))

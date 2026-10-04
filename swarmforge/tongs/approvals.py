@@ -12,7 +12,7 @@ import json
 import os
 
 from .model import WORKSPACE
-from .mounts import _has_socket_mount
+from .mounts import _has_socket_mount, mount_volume_name
 from .secrets import find_secret_refs
 
 
@@ -32,14 +32,16 @@ def privilege_summary(defn):
     """Structured summary of what a definition asks for, for the approval gate.
 
     Gathers the privileges a reviewer must see before approving a
-    workspace-sourced tong: image, secret references, mounts, networks,
-    docker-socket access, and host GPU access. Rendering and prompting are the
-    caller's job; this just assembles the facts.
+    workspace-sourced tong: image, secret references, mounts (and the
+    persistent volumes among them), networks, docker-socket access, and host
+    GPU access. Rendering and prompting are the caller's job; this just
+    assembles the facts.
     """
     return {
         "image": defn.get("image"),
         "secrets": [{"provider": p, "ref": r} for p, r in find_secret_refs(defn)],
         "mounts": list(defn.get("mounts") or []),
+        "volumes": _declared_volumes(defn),
         "networks": list(defn.get("networks") or []),
         "socket": _has_socket_mount(defn),
         "gpus": _requested_gpus(defn),
@@ -54,6 +56,26 @@ def _requested_gpus(defn):
     """
     resources = defn.get("resources")
     return resources.get("gpus") if isinstance(resources, dict) else None
+
+
+def _declared_volumes(defn):
+    """Names of the volumes a definition's well-formed `volume:` mounts declare.
+
+    The gate runs before validation, so a malformed entry is skipped here rather
+    than raised: it is still listed among the raw mounts, and validation refuses
+    it before anything starts.
+    """
+    volumes = []
+    for mount in defn.get("mounts") or []:
+        if not isinstance(mount, str):
+            continue
+        try:
+            volume = mount_volume_name(mount)
+        except ValueError:
+            continue
+        if volume:
+            volumes.append(volume)
+    return volumes
 
 
 def is_workspace_sourced(source_layer):
