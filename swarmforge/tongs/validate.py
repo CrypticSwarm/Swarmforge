@@ -22,6 +22,7 @@ from .model import (
 )
 from .mounts import (
     mount_destination,
+    mount_mode_error,
     mount_target_error,
     overlapping_mount_error,
     parse_mount,
@@ -156,12 +157,13 @@ def validate_tong(name, defn):
                 err("mount entries must be strings, got %r" % (mount,))
                 continue
             try:
-                word, volume, target, _ = parse_mount(mount)
+                word, volume, target, mode = parse_mount(mount)
                 destination = mount_destination(word, target)
             except ValueError as exc:
                 err(str(exc))
                 continue
-            reason = mount_target_error(mount, word, target, destination, reserved)
+            reason = (mount_target_error(mount, word, target, destination, reserved)
+                      or mount_mode_error(mount, word, mode))
             if reason is None:
                 reason = overlapping_mount_error(mount, destination, volume, placed)
             if reason:
