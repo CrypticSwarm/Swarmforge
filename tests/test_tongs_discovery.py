@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests for swarmforge.tongs.discovery. Run: python3 tests/test_tongs_discovery.py"""
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -121,6 +123,18 @@ class DiscoveryTests(unittest.TestCase):
             loaded = tongs.load_tong_dir(tmp)
             self.assertEqual(sorted(loaded), ["build-tools"])
             self.assertEqual(loaded["build-tools"]["mounts"], ["docker-socket", "workspace:ro"])
+
+    def test_skip_warning_escapes_the_file_name(self):
+        # Printed ahead of the approval prompt, so it must not leave terminal state behind.
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "x\x1b[8m.yaml"), "w") as f:
+                f.write("not yaml\n")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(tongs.load_tong_dir(tmp), {})
+        self.assertIn("skipping", err.getvalue())
+        self.assertIn("x\\x1b[8m.yaml", err.getvalue())
+        self.assertNotIn("\x1b", err.getvalue())
 
     def test_discover_returns_layer_mappings_in_order(self):
         with tempfile.TemporaryDirectory() as tmp:
