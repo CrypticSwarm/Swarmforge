@@ -6,6 +6,8 @@ import json
 import os
 import shutil
 import signal
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -278,6 +280,11 @@ SESSION_PORT = {
     "interface": {"kind": "port", "port": 5432},
     "readiness": {"mode": "none"},
 }
+
+# These tests' `$TMUX` names no real socket; the on-disk check has tests of its own.
+def _skip_tmux_dir_check(host_dir, socket_path):
+    return None
+
 
 SESSION_TMUX = {
     "lifecycle": "session",
@@ -842,7 +849,8 @@ class RunWithTongsTests(unittest.TestCase):
             )
         self.assertEqual(docker.calls, [])  # nothing created => nothing to tear down
 
-    def _run_tmux(self, docker, tmux, tmux_pane=None, workspace=None):
+    def _run_tmux(self, docker, tmux, tmux_pane=None, workspace=None,
+                  check_tmux_dir=_skip_tmux_dir_check):
         merged = {
             "pg": {"source": tongs.REPO, "definition": SESSION_PORT},
             "spawner": {"source": tongs.REPO, "definition": SESSION_TMUX},
@@ -850,7 +858,8 @@ class RunWithTongsTests(unittest.TestCase):
         return launcher.run_with_tongs(
             merged, ANVIL_ARGV,
             _opts(workspace=workspace, tmux=tmux, tmux_pane=tmux_pane),
-            docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
+            docker=docker, check_tmux_dir=check_tmux_dir,
+            sleep=lambda _s: None, monotonic=_Clock(),
         )
 
     def test_tmux_tong_outside_tmux_raises_before_any_docker_call(self):
@@ -878,6 +887,7 @@ class RunWithTongsTests(unittest.TestCase):
             _merged("spawner", defn, source=tongs.REPO), ANVIL_ARGV,
             _opts(tmux="/tmp/tmux-1000/default,4242,3", tmux_pane="%7"),
             docker=docker, providers=ECHO_PROVIDERS, make_channel=channels,
+            check_tmux_dir=_skip_tmux_dir_check,
             sleep=lambda _s: None, monotonic=_Clock(),
         )
         self.assertEqual(channels.payloads, ["export TOKEN='s3cr3t'\n"])
@@ -931,9 +941,27 @@ class RunWithTongsTests(unittest.TestCase):
             launcher.run_with_tongs(
                 _merged("spawner", shared, source=tongs.REPO), ANVIL_ARGV,
                 _opts(tmux="/tmp/tmux-1000/default,4242,3"),
-                docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
+                docker=docker, check_tmux_dir=_skip_tmux_dir_check,
+                sleep=lambda _s: None, monotonic=_Clock(),
             )
         self.assertEqual(docker.run_argvs, [])
+
+    def test_tmux_socket_dir_checked_on_disk_before_any_docker_call(self):
+        tmux_dir, socket_path = _tmux_socket_dir(_tmux_test_dir(self))
+        tmux = "%s,4242,3" % socket_path
+        os.chmod(tmux_dir, 0o755)
+        docker = FakeDocker()
+        with self.assertRaisesRegex(launcher.OrchestrationError,
+                                    "tong\\(s\\) spawner: .*open to group or others"):
+            self._run_tmux(docker, tmux=tmux, check_tmux_dir=launcher.check_tmux_socket_dir)
+        self.assertEqual(docker.calls, [])
+
+        os.chmod(tmux_dir, 0o700)
+        docker = FakeDocker()
+        self._run_tmux(docker, tmux=tmux, check_tmux_dir=launcher.check_tmux_socket_dir)
+        spawner = next(argv for argv in docker.run_argvs
+                       if "claude-myproject-tong-spawner" in argv)
+        self.assertIn("%s:/run/swarmforge-tmux:ro" % tmux_dir, spawner)
 
     # --- Per-org isolation of `shared` tongs --------------------------------
 
@@ -1026,6 +1054,111 @@ class RunWithTongsTests(unittest.TestCase):
         with self.assertRaises(launcher.OrchestrationError):
             self._run_org(docker, merged, self._ACME, anvil=anvil)
         self.assertEqual(docker.calls, [])
+
+
+def _tmux_test_dir(test):
+    """A fresh directory under a short root the ancestor rule accepts, or skip `test`.
+
+    Kept off TMPDIR: a long one overflows AF_UNIX's socket path limit at bind(),
+    and a group-writable one fails `check_tmux_socket_dir`'s ancestor rule.
+    """
+    root = os.path.realpath("/tmp")
+    probe = root
+    while True:
+        try:
+            probe_stat = os.lstat(probe)
+        except OSError:
+            test.skipTest("%s is missing on this host" % probe)
+        mode = probe_stat.st_mode
+        if (not stat.S_ISDIR(mode) or probe_stat.st_uid not in (0, os.getuid())
+                or (mode & (stat.S_IWGRP | stat.S_IWOTH) and not mode & stat.S_ISVTX)):
+            test.skipTest("%s fails the tmux ancestor rule on this host" % probe)
+        if os.path.dirname(probe) == probe:
+            break
+        probe = os.path.dirname(probe)
+    path = tempfile.mkdtemp(dir=root)
+    test.addCleanup(shutil.rmtree, path)
+    return path
+
+
+def _tmux_socket_dir(parent):
+    """A `tmux-<n>` directory at 0700 holding a bound socket, as tmux leaves it."""
+    tmux_dir = os.path.join(os.path.realpath(parent), "tmux-%d" % os.getuid())
+    os.mkdir(tmux_dir, 0o700)
+    os.chmod(tmux_dir, 0o700)
+    socket_path = os.path.join(tmux_dir, "default")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(socket_path)
+    server.close()
+    return tmux_dir, socket_path
+
+
+class TmuxSocketDirCheckTests(unittest.TestCase):
+    """The on-disk check of the socket directory a tmux-socket tong is bound."""
+
+    def setUp(self):
+        self.tmp = _tmux_test_dir(self)
+        self.tmux_dir, self.socket_path = _tmux_socket_dir(self.tmp)
+
+    def _check(self, host_dir=None, socket_path=None, uid=None):
+        launcher.check_tmux_socket_dir(
+            host_dir or self.tmux_dir, socket_path or self.socket_path, uid=uid)
+
+    def test_tmuxs_own_directory_accepted(self):
+        self._check()
+
+    def test_writable_non_sticky_ancestor_refused(self):
+        # Another user could swap tmux-<uid> for a symlink between the check and the bind.
+        for mode in (0o777, 0o775, 0o757):
+            parent = tempfile.mkdtemp(dir=self.tmp)
+            tmux_dir, socket_path = _tmux_socket_dir(parent)
+            os.chmod(parent, mode)
+            with self.assertRaisesRegex(launcher.OrchestrationError,
+                                        "writable by group or others without the sticky bit"):
+                self._check(tmux_dir, socket_path)
+
+    def test_sticky_world_writable_ancestor_accepted(self):
+        parent = tempfile.mkdtemp(dir=self.tmp)
+        tmux_dir, socket_path = _tmux_socket_dir(parent)
+        os.chmod(parent, 0o1777)
+        self._check(tmux_dir, socket_path)
+
+    def test_symlinked_directory_refused(self):
+        link_parent = os.path.join(os.path.realpath(self.tmp), "elsewhere")
+        os.mkdir(link_parent)
+        link = os.path.join(link_parent, os.path.basename(self.tmux_dir))
+        os.symlink(self.tmux_dir, link)
+        with self.assertRaisesRegex(launcher.OrchestrationError, "symlink"):
+            self._check(link, os.path.join(link, "default"))
+
+    def test_directory_open_to_group_or_others_refused(self):
+        for mode in (0o755, 0o750, 0o701):
+            os.chmod(self.tmux_dir, mode)
+            with self.assertRaisesRegex(launcher.OrchestrationError, "open to group or others"):
+                self._check()
+
+    def test_directory_owned_by_another_uid_refused(self):
+        with self.assertRaisesRegex(launcher.OrchestrationError, "owned by uid"):
+            self._check(uid=os.getuid() + 1)
+
+    def test_regular_file_in_place_of_the_socket_refused(self):
+        os.unlink(self.socket_path)
+        with open(self.socket_path, "w") as handle:
+            handle.write("")
+        with self.assertRaisesRegex(launcher.OrchestrationError, "is not a socket"):
+            self._check()
+
+    def test_missing_socket_refused(self):
+        os.unlink(self.socket_path)
+        with self.assertRaisesRegex(launcher.OrchestrationError, "cannot inspect the tmux socket:"):
+            self._check()
+
+    def test_regular_file_in_place_of_the_directory_refused(self):
+        not_a_dir = os.path.join(os.path.realpath(self.tmp), "tmux-0")
+        with open(not_a_dir, "w") as handle:
+            handle.write("")
+        with self.assertRaisesRegex(launcher.OrchestrationError, "not a directory"):
+            self._check(not_a_dir, os.path.join(not_a_dir, "default"))
 
 
 class WorkspaceGitDirSpecTests(unittest.TestCase):
