@@ -125,6 +125,7 @@ def tong_run_argv(
     entrypoint=None,
     command=None,
     extra_mount_specs=None,
+    volume_scope=None,
 ):
     """Full `docker run -d` argv that starts one tong container.
 
@@ -158,6 +159,9 @@ def tong_run_argv(
     outside the definition (today the git-dir mounts that ride along with a
     `workspace` mount -- see swarmforge.anvil); they are appended after the
     definition's own mounts, mirroring how the Makefile orders the anvil's.
+
+    `volume_scope` is the `(class, path)` pair the orchestrator picked for the
+    tong's `volume:` mounts from the layer it came from (see `tong_volume_name`).
     """
     if entrypoint is None and command is None:
         entrypoint, command = declared_run_override(defn)
@@ -180,7 +184,8 @@ def tong_run_argv(
         effective_env.setdefault(WORKSPACE_HOST_ENV, workspace)
     for key in sorted(effective_env):
         argv += ["-e", "%s=%s" % (key, effective_env[key])]
-    for spec in tong_mount_specs(defn, workspace, socket_path=socket_path):
+    for spec in tong_mount_specs(defn, workspace, socket_path=socket_path,
+                                 tong_name=name, volume_scope=volume_scope):
         argv += ["-v", spec]
     for spec in extra_mount_specs or []:
         argv += ["-v", spec]

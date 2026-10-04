@@ -179,7 +179,40 @@ class ValidationTests(unittest.TestCase):
     def test_socket_mount_target_rejected(self):
         # A docker client looks for the socket at its host path, so it cannot move.
         errors = tongs.validate_tong("t", self._base(mounts=["docker-socket:/run/d.sock"]))
-        self.assertTrue(any("only the 'workspace' mount takes a target path" in e for e in errors))
+        self.assertTrue(any(
+            "only the 'workspace' and 'volume' mounts take a target path" in e for e in errors
+        ))
+
+    def test_volume_mount_accepted(self):
+        for mount in ("volume:models:/root/.ollama", "volume:models:/data:ro"):
+            self.assertEqual(tongs.validate_tong("t", self._base(mounts=[mount])), [], mount)
+
+    def test_malformed_volume_mount_rejected(self):
+        for mount, message in (
+            ("volume:my_models:/data", "volume:<name>:/target"),
+            ("volume:/data", "volume:<name>:/target"),
+            ("volume:models", "needs an absolute target path"),
+            ("volume:models:/", "not a usable target path"),
+        ):
+            errors = tongs.validate_tong("t", self._base(mounts=[mount]))
+            self.assertTrue(any(message in e for e in errors), (mount, errors))
+
+    def test_volume_target_overlapping_the_tongs_wiring_or_mounts_rejected(self):
+        secret = self._base(mounts=["volume:v:/run"])
+        secret["env"] = {"TOKEN": "${secret:op:op://Work/t}"}
+        for defn in (
+            secret,
+            self._base(mounts=["docker-socket", "volume:v:/var/run"]),
+            self._base(mounts=["workspace", "volume:v:/workspace/.cache"]),
+            self._base(mounts=["volume:a:/data", "volume:b:/data/sub"]),
+        ):
+            errors = tongs.validate_tong("t", defn)
+            self.assertTrue(any("overlaps" in e for e in errors), defn["mounts"])
+
+    def test_one_volume_mounted_twice_rejected(self):
+        errors = tongs.validate_tong(
+            "t", self._base(mounts=["volume:models:/a", "volume:models:/b:ro"]))
+        self.assertTrue(any("already mounted" in e for e in errors), errors)
 
     def test_extra_aliases_accepted_on_network_facing_kinds(self):
         # A client matching a certificate CN dials the dotted name, not the canonical alias.

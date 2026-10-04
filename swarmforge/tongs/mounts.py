@@ -1,24 +1,48 @@
-"""The `mounts:` magic words and the docker bind specs they turn into.
+"""The `mounts:` magic words and the docker `-v` specs they turn into.
 
 A definition never names a raw host path: it asks for a mount by word, and this
 module decides where that lands inside the container and what `-v` value docker
-is given. Validation and argv assembly both come through here, so a mount is
-judged by the same rules whichever asks.
+is given: a host path the launcher knows, or a named volume it names. Validation
+and argv assembly both come through here, so a mount is judged by the same rules
+whichever asks.
 """
 
+import hashlib
+import json
 import posixpath
+import re
+
+from swarmforge.names import sanitize_token
 
 from .model import SOCKET_MOUNT
 from .secrets import SECRET_FIFO_DIR, SECRET_INJECT_SHELL, partition_secret_env
 
 
 WORKSPACE_MOUNT = "workspace"
-MOUNT_WORDS = (WORKSPACE_MOUNT, SOCKET_MOUNT)
+VOLUME_MOUNT = "volume"
+MOUNT_WORDS = (WORKSPACE_MOUNT, SOCKET_MOUNT, VOLUME_MOUNT)
+TARGETED_MOUNT_WORDS = (WORKSPACE_MOUNT, VOLUME_MOUNT)
 DEFAULT_WORKSPACE_MOUNT_TARGET = "/workspace"
 DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
 
 # An allowlist, so an unvetted mount option cannot reach the daemon.
 MOUNT_MODES = ("ro", "rw")
+
+VOLUME_NAME_PREFIX = "swarmforge-volume"
+
+# 128 bits, so no definition can search its way onto another scope's volume.
+VOLUME_DIGEST_LENGTH = 32
+
+ORG_VOLUME_SCOPE = "org"
+WORKSPACE_VOLUME_SCOPE = "workspace"
+LOCAL_VOLUME_SCOPE = "local"
+
+# No `_`, so the last `_` of a docker volume name splits the volume back off.
+VOLUME_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*")
+
+# With the hint cap, keeps a docker volume name far below a 255-byte directory name.
+VOLUME_NAME_MAX_LENGTH = 64
+VOLUME_HINT_LIMIT = 32
 
 
 def _has_socket_mount(defn):
@@ -55,14 +79,33 @@ def parse_mount(mount, words=MOUNT_WORDS):
     path naming where the container sees the mount, and an optional access mode,
     which is always last -- so `workspace`, `workspace:ro`, `workspace:/work` and
     `workspace:/work:ro` are all valid. `target`/`mode` are None when not declared;
-    the caller supplies the default target for its magic word.
+    the caller supplies the default target for its magic word. The `volume` word
+    is spelled `volume:<name>:/target[:mode]`: its name comes first and its target
+    is required, since a named volume has no natural place to land. The name is
+    left out of the tuple and read with `mount_volume_name`.
 
     The word is checked against `words` before the rest of the entry, since a mount
     nobody recognizes has no meaningful target or mode; narrow that set to accept
     fewer words, never widen it to accept a raw host path. Raises `ValueError` for
     an unaccepted word, a field that is neither an absolute path nor a mode, a mode
-    that is not last, more than one target, or a target resolving to the root.
+    that is not last, more than one target, a target resolving to the root, or a
+    volume mount whose name is malformed or whose target is missing.
     """
+    word, _, target, mode = _split_mount(mount, words)
+    return word, target, mode
+
+
+def mount_volume_name(mount):
+    """The name a `volume:<name>:...` entry declares, or None for any other word.
+
+    Judged by the same grammar as `parse_mount`, so it raises `ValueError` for
+    exactly the entries that does.
+    """
+    return _split_mount(mount, MOUNT_WORDS)[1]
+
+
+def _split_mount(mount, words):
+    """`(word, volume name, target, mode)` for a `mounts:` entry; see `parse_mount`."""
     fields = mount.split(":")
     word, fields = fields[0], fields[1:]
     if word not in words:
@@ -76,6 +119,20 @@ def parse_mount(mount, words=MOUNT_WORDS):
             "unknown mount %r (expected %s)"
             % (mount, " or ".join(repr(known) for known in words))
         )
+    volume = None
+    if word == VOLUME_MOUNT:
+        if not fields or not VOLUME_NAME_RE.fullmatch(fields[0]):
+            raise ValueError(
+                "mount %r: a volume mount is spelled volume:<name>:/target[:mode], "
+                "with a name of letters, digits, '.' and '-' that starts with a "
+                "letter or digit" % (mount,)
+            )
+        if len(fields[0]) > VOLUME_NAME_MAX_LENGTH:
+            raise ValueError(
+                "mount %r: a volume name is at most %d characters"
+                % (mount, VOLUME_NAME_MAX_LENGTH)
+            )
+        volume, fields = fields[0], fields[1:]
     target = None
     mode = None
     for index, field in enumerate(fields):
@@ -105,7 +162,9 @@ def parse_mount(mount, words=MOUNT_WORDS):
                 "mount %r: %r is neither an absolute target path nor an access "
                 "mode (%s)" % (mount, field, "/".join(MOUNT_MODES))
             )
-    return word, target, mode
+    if word == VOLUME_MOUNT and target is None:
+        raise ValueError("mount %r: a volume mount needs an absolute target path" % (mount,))
+    return word, volume, target, mode
 
 
 def reserved_mount_targets(defn, socket_path=DEFAULT_DOCKER_SOCKET):
@@ -133,21 +192,24 @@ def mount_destination(word, target, socket_path=DEFAULT_DOCKER_SOCKET):
 
     The declared target when there is one, otherwise the word's default: /workspace
     for the workspace, its own host path for the socket (that is where a docker
-    client looks for it). Raises `ValueError` for any other word, so a magic word
+    client looks for it). A volume has no default, so it needs its target. Raises
+    `ValueError` for a targetless volume and for any other word, so a magic word
     added without a default cannot inherit the socket's.
     """
     if word == WORKSPACE_MOUNT:
         return normalize_mount_target(target or DEFAULT_WORKSPACE_MOUNT_TARGET)
     if word == SOCKET_MOUNT:
         return normalize_mount_target(socket_path)
+    if word == VOLUME_MOUNT and target is not None:
+        return normalize_mount_target(target)
     raise ValueError("mount %r has no destination" % (word,))
 
 
 def mount_target_error(mount, word, target, destination, reserved):
     """Why a mount's target is unusable, or None if it is fine.
 
-    Two rules beyond the grammar: only `workspace` takes a target, and no mount may
-    land on one of the `reserved` destinations (`{path: why}`, from
+    Two rules beyond the grammar: only `workspace` and `volume` take a target, and
+    no mount may land on one of the `reserved` destinations (`{path: why}`, from
     `reserved_mount_targets`) -- docker layers overlapping mounts, which either
     buries the tong's wiring or has docker create a mountpoint inside the user's
     workspace on the host. `destination` is where the mount actually lands
@@ -155,10 +217,10 @@ def mount_target_error(mount, word, target, destination, reserved):
     Validation and argv assembly both ask this, so both give the same verdict and
     the same message for one `reserved` map.
     """
-    if word != WORKSPACE_MOUNT:
+    if word not in TARGETED_MOUNT_WORDS:
         if target is not None:
-            return ("mount %r: only the '%s' mount takes a target path"
-                    % (mount, WORKSPACE_MOUNT))
+            return ("mount %r: only the %s mounts take a target path"
+                    % (mount, " and ".join(repr(w) for w in TARGETED_MOUNT_WORDS)))
         # The socket lands on its own reserved path by construction.
         return None
     for path, why in sorted(reserved.items()):
@@ -170,27 +232,61 @@ def mount_target_error(mount, word, target, destination, reserved):
 def overlapping_mount_error(mount, destination, placed):
     """Why a mount collides with one already placed, or None if it is clear.
 
-    `placed` is the `(mount, destination)` pairs accepted so far. Docker refuses two
-    binds onto one destination outright, and creates the inner mountpoint of nested
-    ones inside the outer bind -- inside the user's workspace, for a workspace bind.
+    `placed` is the `(mount, destination)` pairs accepted so far, each entry one
+    `parse_mount` accepted, as `mount` is. Docker refuses two binds onto one
+    destination outright, and creates the inner mountpoint of nested ones inside
+    the outer bind -- inside the user's workspace, for a workspace bind. One volume
+    is mounted once: a second target for the same data, perhaps with another
+    access mode, is far likelier a mistake than a need.
     """
+    volume = mount_volume_name(mount)
     for other, other_destination in placed:
         if _targets_overlap(destination, other_destination):
             return ("mount %r: %s overlaps mount %r at %s"
                     % (mount, destination, other, other_destination))
+        if volume is not None and mount_volume_name(other) == volume:
+            return "mount %r: volume %r is already mounted by %r" % (mount, volume, other)
     return None
 
 
-def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET):
+def tong_volume_name(tong_name, volume, scope):
+    """The docker named volume behind one tong's `volume:<volume>` mount.
+
+    `swarmforge-volume-[<hint>-]<digest>_<volume>`. The digest is the volume's
+    identity: the first `VOLUME_DIGEST_LENGTH` hex digits of a SHA-256 over the
+    scope and the raw tong name, where `scope` is a `(class, path)` pair -- an
+    `ORG_VOLUME_SCOPE` or `WORKSPACE_VOLUME_SCOPE` with its canonical directory,
+    or `(LOCAL_VOLUME_SCOPE, None)` for this machine's own layers. Two tongs
+    share a volume only from one scope under exactly one name. The hint is the
+    tong name sanitized for docker and cut to `VOLUME_HINT_LIMIT`, there to be
+    read in `docker volume ls`; it decides nothing, since sanitizing can turn two
+    names into one. Volume names
+    exclude `_` and the digest has a fixed width, so the last `_` splits the
+    volume back off.
+    """
+    scope_class, scope_path = scope
+    key = json.dumps([scope_class, scope_path, tong_name])
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:VOLUME_DIGEST_LENGTH]
+    hint = sanitize_token(tong_name)[:VOLUME_HINT_LIMIT].rstrip("-_.")
+    parts = [VOLUME_NAME_PREFIX] + ([hint] if hint else []) + [digest]
+    return "%s_%s" % ("-".join(parts), volume)
+
+
+def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
+                     tong_name=None, volume_scope=None):
     """Concrete docker `-v` specs for a tong's `mounts:` magic words.
 
     Returns the list of `-v` *values* (the orchestrator pairs each with a `-v`
     flag). `workspace[:/target][:mode]` mounts the session workspace, at
     /workspace unless the definition names another target; `docker-socket[:mode]`
-    bind-mounts the host docker socket onto the same path it has on the host.
+    bind-mounts the host docker socket onto the same path it has on the host;
+    `volume:<name>:/target[:mode]` mounts the named volume
+    `tong_volume_name(tong_name, name, volume_scope)`, which docker creates on
+    first use and never removes with the container.
     Raises `ValueError` for a non-string entry, a malformed mount, an unusable or
-    colliding destination, or a `workspace` mount when no workspace path is known
-    -- a definition never names a raw host path, so anything else is a mistake that
+    colliding destination, a `workspace` mount when no workspace path is known, or
+    a `volume` mount without a `tong_name` and `volume_scope` to name it by -- a
+    definition never names a raw host path, so anything else is a mistake that
     should stop the launch.
     """
     specs = []
@@ -211,6 +307,11 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET):
             source = workspace
         elif word == SOCKET_MOUNT:
             source = socket_path
+        elif word == VOLUME_MOUNT:
+            if not tong_name or volume_scope is None:
+                raise ValueError(
+                    "mount %r needs the tong's name and scope to name its volume" % (mount,))
+            source = tong_volume_name(tong_name, mount_volume_name(mount), volume_scope)
         else:
             # Unreachable via `parse_mount`; a new word must not inherit the socket bind.
             raise ValueError("mount %r has no docker spec" % (mount,))
