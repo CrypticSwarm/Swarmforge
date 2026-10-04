@@ -64,5 +64,63 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(mode, "none")
 
 
+class GpuRequestTests(unittest.TestCase):
+    def test_parse_gpus_none_is_not_requested(self):
+        self.assertIsNone(tongs.parse_gpus(None))
+
+    def test_parse_gpus_accepts_all_and_positive_counts(self):
+        self.assertEqual(tongs.parse_gpus("all"), "all")
+        self.assertEqual(tongs.parse_gpus(2), "2")
+        self.assertEqual(tongs.parse_gpus("2"), "2")
+
+    def test_parse_gpus_accepts_device_selectors_verbatim(self):
+        for selector in ("device=0", "device=GPU-3a8f-11ee", '"device=0"',
+                         '"device=0,1"', '"device=GPU-3a8f,MIG-7c2e"', "device=GPU-1:0"):
+            with self.subTest(selector=selector):
+                self.assertEqual(tongs.parse_gpus(selector), selector)
+
+    def test_parse_gpus_rejects_non_positive_and_non_count_types(self):
+        for bad in (True, False, 0, -1, 1.5, ["all"], {"count": 1}):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                tongs.parse_gpus(bad)
+
+    def test_parse_gpus_rejects_counts_docker_would_not_read_as_positive(self):
+        # int() accepts several of these; docker's Atoi does not.
+        for bad in ("0", "00", "-1", "+1", "1_0", "\u0663", " 2", ""):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                tongs.parse_gpus(bad)
+
+    def test_parse_gpus_rejects_docker_keys_beyond_device(self):
+        for bad in ("count=2", "driver=cdi,device=vendor.com/class=x",
+                    "capabilities=compute", "options=x", '"device=0",driver=nvidia',
+                    "ALL", " all", "device=", '"device=0,"', "device=-0"):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                tongs.parse_gpus(bad)
+
+    def test_parse_gpus_rejects_control_characters(self):
+        for bad in ("\x1b[1A\x1b[2K", "all\x1b[2K", "device=0\r"):
+            with self.subTest(value=bad), self.assertRaises(ValueError) as caught:
+                tongs.parse_gpus(bad)
+            self.assertNotIn("\x1b", str(caught.exception))
+
+    def test_parse_gpus_unquoted_device_list_hints_at_the_quoting(self):
+        with self.assertRaisesRegex(ValueError, "double quotes") as caught:
+            tongs.parse_gpus("device=0,1")
+        self.assertIn("""gpus: '"device=0,1"'""", str(caught.exception))
+
+    def test_parse_gpus_caps_the_count(self):
+        limit = tongs.GPU_COUNT_MAX
+        self.assertEqual(tongs.parse_gpus(limit), str(limit))
+        self.assertEqual(tongs.parse_gpus(str(limit)), str(limit))
+        for bad in (limit + 1, str(limit + 1), 10**30, "99999999999999999999"):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                tongs.parse_gpus(bad)
+
+    def test_parse_gpus_matches_the_whole_value(self):
+        for bad in ("all\n", "2\n", "device=0\n", '"device=0,1"\n', "device=0,1\n"):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                tongs.parse_gpus(bad)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

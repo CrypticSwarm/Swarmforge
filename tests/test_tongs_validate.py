@@ -229,6 +229,20 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(any("memory" in e for e in errors))
         self.assertEqual(tongs.validate_tong("t", self._base(resources={"memory": "512m"})), [])
 
+    def test_resources_gpus_accepts_all_a_count_or_a_device_selector(self):
+        for gpus in ("all", 2, "2", "device=0", '"device=0,1"'):
+            with self.subTest(gpus=gpus):
+                self.assertEqual(
+                    tongs.validate_tong("t", self._base(resources={"gpus": gpus})), []
+                )
+
+    def test_resources_gpus_rejects_unusable_requests(self):
+        for gpus in (True, 0, -2, 1.5, "", "  ", "0", ["all"], "count=2",
+                     "driver=cdi,device=x", "device=0,1", "all\x1b[2K"):
+            with self.subTest(gpus=gpus):
+                errors = tongs.validate_tong("t", self._base(resources={"gpus": gpus}))
+                self.assertTrue(any("resources.gpus" in e for e in errors), errors)
+
     def test_volume_requires_volume_mountpoint_and_readiness_mode(self):
         errors = tongs.validate_tong("t", {"lifecycle": "session", "image": "x", "interface": {"kind": "volume"}})
         joined = " ".join(errors)

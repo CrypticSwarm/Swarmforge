@@ -80,6 +80,22 @@ class DockerArgvTests(unittest.TestCase):
     def test_resource_flags_memory(self):
         self.assertEqual(tongs.tong_resource_flags({"resources": {"memory": "512m"}}), ["--memory", "512m"])
 
+    def test_resource_flags_gpus_passed_through_verbatim(self):
+        for declared, flag in (("all", "all"), (2, "2"), ('"device=0,1"', '"device=0,1"')):
+            with self.subTest(gpus=declared):
+                self.assertEqual(
+                    tongs.tong_resource_flags({"resources": {"gpus": declared}}),
+                    ["--gpus", flag],
+                )
+
+    def test_resource_flags_memory_and_gpus_together(self):
+        flags = tongs.tong_resource_flags({"resources": {"memory": "8g", "gpus": "all"}})
+        self.assertEqual(flags, ["--memory", "8g", "--gpus", "all"])
+
+    def test_resource_flags_unusable_gpus_raises(self):
+        with self.assertRaises(ValueError):
+            tongs.tong_resource_flags({"resources": {"gpus": 0}})
+
     def test_resource_flags_absent_is_empty(self):
         self.assertEqual(tongs.tong_resource_flags({}), [])
 
@@ -147,6 +163,17 @@ class DockerArgvTests(unittest.TestCase):
         self.assertIn("/ws:/workspace:ro", argv)
         self.assertIn("--memory", argv)
         self.assertEqual(argv[argv.index("--memory") + 1], "256m")
+
+    def test_run_argv_gpus_precede_the_image(self):
+        defn = def_of(PORT_TONG)
+        defn["resources"] = {"gpus": "all"}
+        argv = tongs.tong_run_argv(
+            "pg", defn, container_name="ctr-pg", network="net", alias="pg",
+        )
+        flag = argv.index("--gpus")
+        self.assertEqual(argv[flag + 1], "all")
+        self.assertLess(flag, argv.index("postgres:16"))
+        self.assertEqual(argv[-1], "postgres:16")
 
     def test_run_argv_mount_target_is_workspace_unless_declared(self):
         def argv_for(mounts):

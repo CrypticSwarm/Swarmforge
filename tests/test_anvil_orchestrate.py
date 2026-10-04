@@ -368,6 +368,19 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn(("rm_force", "swarmforge-shared-ollama"), docker.calls)
         self.assertEqual(len(docker.run_argvs), 1)
 
+    def test_shared_tong_recreated_with_gpus_when_a_request_is_added(self):
+        states = {"swarmforge-shared-ollama":
+                  {"running": True, "label": tongs.config_hash(SHARED_OLLAMA)}}
+        docker = FakeDocker(states=states)
+        defn = dict(SHARED_OLLAMA, resources={"gpus": "all"})
+        self._run(docker, _merged("ollama", defn, source=tongs.REPO))
+        self.assertIn(("rm_force", "swarmforge-shared-ollama"), docker.calls)
+        self.assertEqual(len(docker.run_argvs), 1)
+        started = docker.run_argvs[0]
+        flag = started.index("--gpus")
+        self.assertEqual(started[flag + 1], "all")
+        self.assertLess(flag, started.index("ollama/ollama"))
+
     def test_shared_tong_recreated_when_absent(self):
         # rm_force clears any stopped leftover before the fresh start.
         docker = FakeDocker()
