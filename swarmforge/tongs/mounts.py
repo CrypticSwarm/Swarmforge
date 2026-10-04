@@ -14,16 +14,18 @@ import re
 
 from swarmforge.names import canonical_path, name_hint
 
-from .model import ORG, REPO, SOCKET_MOUNT, USER, WORKSPACE, workspace_key
+from .model import ORG, REPO, SOCKET_MOUNT, TMUX_MOUNT, USER, WORKSPACE, workspace_key
 from .secrets import SECRET_FIFO_DIR, SECRET_INJECT_SHELL, partition_secret_env
 
 
 WORKSPACE_MOUNT = "workspace"
 VOLUME_MOUNT = "volume"
-MOUNT_WORDS = (WORKSPACE_MOUNT, SOCKET_MOUNT, VOLUME_MOUNT)
+MOUNT_WORDS = (WORKSPACE_MOUNT, SOCKET_MOUNT, VOLUME_MOUNT, TMUX_MOUNT)
 TARGETED_MOUNT_WORDS = (WORKSPACE_MOUNT, VOLUME_MOUNT)
 DEFAULT_WORKSPACE_MOUNT_TARGET = "/workspace"
 DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock"
+# Fixed, so validation never depends on the host; beside, not under, the secret tmpfs.
+TMUX_MOUNT_TARGET = "/run/swarmforge-tmux"
 
 # An allowlist, so an unvetted mount option cannot reach the daemon.
 MOUNT_MODES = ("ro", "rw")
@@ -162,7 +164,8 @@ def reserved_mount_targets(defn, socket_path=DEFAULT_DOCKER_SOCKET):
     Derived from the definition, since each only exists for the tongs that ask for
     it: the secret-delivery tmpfs (and the shell whose wrapper creates and reads
     the FIFO on it) come with secret references, the docker socket with a
-    `docker-socket` mount. `mount_target_error`
+    `docker-socket` mount, the tmux socket directory with a `tmux-socket` mount.
+    `mount_target_error`
     compares destinations against this map, as written -- a target that reaches one
     of these only through a symlink inside the image is not something it can see.
     """
@@ -173,6 +176,8 @@ def reserved_mount_targets(defn, socket_path=DEFAULT_DOCKER_SOCKET):
         paths[SECRET_INJECT_SHELL] = "the shell the secret wrapper execs"
     if mounts_word(defn, SOCKET_MOUNT):
         paths[socket_path] = "where the docker socket is mounted"
+    if mounts_word(defn, TMUX_MOUNT):
+        paths[TMUX_MOUNT_TARGET] = "where the tmux socket directory is mounted"
     return paths
 
 
@@ -181,8 +186,10 @@ def mount_destination(word, target, socket_path=DEFAULT_DOCKER_SOCKET):
 
     The declared target when there is one, otherwise the word's default: /workspace
     for the workspace, its own host path for the socket (that is where a docker
-    client looks for it); a volume has none. Raises `ValueError` for a targetless
-    volume and any other word, so a new word cannot inherit the socket's default.
+    client looks for it), and `TMUX_MOUNT_TARGET` for the tmux socket directory
+    (the tong's `TMUX` names the socket there); a volume has none. Raises
+    `ValueError` for a targetless volume and any other word, so a new word
+    cannot inherit the socket's default.
     """
     if word == WORKSPACE_MOUNT:
         return normalize_mount_target(target or DEFAULT_WORKSPACE_MOUNT_TARGET)
@@ -190,6 +197,8 @@ def mount_destination(word, target, socket_path=DEFAULT_DOCKER_SOCKET):
         return normalize_mount_target(socket_path)
     if word == VOLUME_MOUNT and target is not None:
         return normalize_mount_target(target)
+    if word == TMUX_MOUNT:
+        return TMUX_MOUNT_TARGET
     raise ValueError("mount %r has no destination" % (word,))
 
 
@@ -209,11 +218,25 @@ def mount_target_error(mount, word, target, destination, reserved):
         if target is not None:
             return ("mount %r: only the %s mounts take a target path"
                     % (mount, " and ".join(repr(w) for w in TARGETED_MOUNT_WORDS)))
-        # The socket lands on its own reserved path by construction.
+        # Each socket lands on its own reserved path by construction.
         return None
     for path, why in sorted(reserved.items()):
         if _targets_overlap(destination, path):
             return "mount %r: %s overlaps %s, %s" % (mount, destination, path, why)
+    return None
+
+
+def mount_mode_error(mount, word, mode):
+    """Why a mount's access mode is refused, or None if it is fine.
+
+    `tmux-socket` is read-only whatever it declares. A tmux client only needs
+    `connect()` on the socket, which a read-only bind allows; a writable bind of
+    the socket directory would let the tong replace the socket the host's own
+    tmux clients dial. Validation and argv assembly both ask this, like
+    `mount_target_error`, so both refuse `tmux-socket:rw` with one message.
+    """
+    if word == TMUX_MOUNT and mode == "rw":
+        return "mount %r: the '%s' mount is always read-only" % (mount, TMUX_MOUNT)
     return None
 
 
@@ -269,7 +292,8 @@ def volume_scope(layer, org_tongs_dir=None, workspace=None):
 
 
 def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
-                     tong_name=None, volume_scope=None, extra_mount_specs=()):
+                     tong_name=None, volume_scope=None, extra_mount_specs=(),
+                     tmux_socket_dir=None):
     """Concrete docker `-v` specs for a tong's `mounts:` magic words.
 
     Returns the list of `-v` *values* (the orchestrator pairs each with a `-v`
@@ -280,12 +304,16 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
     `tong_volume_name(tong_name, name, volume_scope)`, which docker creates on
     first use and the launcher never removes. A volume may not overlap one of
     `extra_mount_specs` (see `tong_run_argv`), or docker would leave their
-    mountpoints inside it.
+    mountpoints inside it. `tmux-socket[:ro]` bind-mounts `tmux_socket_dir` --
+    the host directory holding the launcher's tmux socket, from
+    `resolve_tmux_socket` -- read-only at `TMUX_MOUNT_TARGET`. The directory
+    rather than the socket, because tmux deletes and recreates the socket when
+    its server restarts.
     Raises `ValueError` for a non-string entry, a malformed mount, an unusable or
-    colliding destination, a `workspace` mount when no workspace path is known, or
-    a `volume` mount without a `tong_name` and `volume_scope` to name it by -- a
-    definition never names a raw host path, so anything else is a mistake that
-    should stop the launch.
+    colliding destination, a refused access mode, a `workspace` or `tmux-socket`
+    mount when no host source for it is known, or a `volume` mount without a
+    `tong_name` and `volume_scope` to name it by -- a definition never names a raw
+    host path, so anything else is a mistake that should stop the launch.
     """
     specs = []
     reserved = reserved_mount_targets(defn, socket_path)
@@ -296,6 +324,7 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
         word, volume, target, mode = parse_mount(mount)
         destination = mount_destination(word, target, socket_path)
         reason = (mount_target_error(mount, word, target, destination, reserved)
+                  or mount_mode_error(mount, word, mode)
                   or overlapping_mount_error(mount, destination, volume, placed))
         if reason:
             raise ValueError(reason)
@@ -317,6 +346,12 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
                     raise ValueError(
                         "mount %r: %s overlaps %s, which is mounted alongside the "
                         "workspace" % (mount, destination, extra_destination))
+        elif word == TMUX_MOUNT:
+            if not tmux_socket_dir:
+                raise ValueError(
+                    "mount '%s' requested but no tmux socket directory is known" % TMUX_MOUNT)
+            source = tmux_socket_dir
+            mode = "ro"
         else:
             # Unreachable via `parse_mount`; a new word must not inherit the socket bind.
             raise ValueError("mount %r has no docker spec" % (mount,))
