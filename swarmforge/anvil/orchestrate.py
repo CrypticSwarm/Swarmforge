@@ -31,14 +31,14 @@ from .readiness import wait_ready
 from .secretchan import SecretChannel, make_secret_resolver
 
 
-def _mounts_workspace(defn):
-    """True if a tong's `mounts:` request the session workspace.
+def _mounts_word(defn, word):
+    """True if a tong's `mounts:` request the magic `word`.
 
-    The magic word may carry a target and/or a mode (e.g. `workspace:/code:ro`),
+    The word may carry a name, a target and/or a mode (e.g. `workspace:/code:ro`),
     so compare only the word before the first colon.
     """
     for mount in defn.get("mounts") or []:
-        if isinstance(mount, str) and mount.split(":", 1)[0] == tongs.WORKSPACE_MOUNT:
+        if isinstance(mount, str) and mount.split(":", 1)[0] == word:
             return True
     return False
 
@@ -90,7 +90,11 @@ def unsupported_tong_reasons(merged):
         long-lived container reused across sessions, so binding one session's
         workspace into it would expose that workspace to every later session that
         reuses the container (a `session` tong is the right home for a
-        per-workspace mount).
+        per-workspace mount);
+      * a workspace-sourced `shared` tong that mounts a `volume` -- the volume
+        is scoped to one checkout (see `_volume_scopes`) but the container is
+        not, so a session in another checkout shipping the same definition would
+        reuse it, volume and all.
 
     A refused tong is reported rather than started half-wired. Returns a list of
     human-readable reason strings (empty == every discovered tong is startable).
@@ -104,13 +108,45 @@ def unsupported_tong_reasons(merged):
                 "tong '%s' has a 'volume' interface, which this launcher does not "
                 "wire up" % name
             )
-        if defn.get("lifecycle") == "shared" and _mounts_workspace(defn):
+        if defn.get("lifecycle") == "shared" and _mounts_word(defn, tongs.WORKSPACE_MOUNT):
             reasons.append(
                 "tong '%s' is a 'shared' tong that mounts the workspace; a shared "
                 "container is reused across sessions, so it would leak one "
                 "session's workspace into the next" % name
             )
+        if (defn.get("lifecycle") == "shared"
+                and tongs.is_workspace_sourced(merged[name]["source"])
+                and _mounts_word(defn, tongs.VOLUME_MOUNT)):
+            reasons.append(
+                "tong '%s' is a workspace 'shared' tong that mounts a volume; its "
+                "volume belongs to this checkout but its container is reused by "
+                "sessions in other checkouts, so it would leak this checkout's "
+                "data into theirs (make it a 'session' tong)" % name
+            )
     return reasons
+
+
+def _volume_scopes(merged, org_tongs_dir, workspace):
+    """The scope naming each tong's volumes: `{name: (class, path) or None}`.
+
+    A volume is partitioned like the trust of the layer its tong came from (see
+    `tongs.volume_scope`): an org tong's by its org's tongs directory, a
+    workspace tong's by the checkout's top level, and the user and repo layers'
+    by this machine. None for a tong that mounts no volume. Raises
+    `OrchestrationError` for a volume with no directory to scope it by, before
+    anything starts, rather than letting it fall back to the local scope.
+    """
+    scopes = {}
+    for name in sorted(merged):
+        scopes[name] = None
+        if not _mounts_word(merged[name]["definition"], tongs.VOLUME_MOUNT):
+            continue
+        try:
+            scopes[name] = tongs.volume_scope(
+                merged[name]["source"], org_tongs_dir=org_tongs_dir, workspace=workspace)
+        except ValueError as exc:
+            raise OrchestrationError("tong '%s': %s" % (name, exc))
+    return scopes
 
 
 def ensure_mcp_harness_supported(merged, harness):
@@ -134,7 +170,7 @@ def ensure_mcp_harness_supported(merged, harness):
 
 
 def _start_one_tong(docker, name, defn, *, container, network, alias,
-                    resolver, workspace, label_hash, make_channel):
+                    resolver, workspace, label_hash, make_channel, volume_scope):
     """Start one tong container detached, delivering any secret env over a FIFO.
 
     Resolves the definition's secret references through `resolver` and splits the
@@ -175,7 +211,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
                 name, defn,
                 container_name=container, network=network, alias=alias,
                 env=plain_env, label_hash=label_hash, workspace=workspace,
-                extra_mount_specs=git_dir_specs,
+                extra_mount_specs=git_dir_specs, volume_scope=volume_scope,
             )
         except ValueError as exc:
             raise OrchestrationError("tong '%s': %s" % (name, exc))
@@ -198,7 +234,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
             container_name=container, network=network, alias=alias,
             env=plain_env, label_hash=label_hash, workspace=workspace,
             secret_channel=True, entrypoint=entrypoint, command=command,
-            extra_mount_specs=git_dir_specs,
+            extra_mount_specs=git_dir_specs, volume_scope=volume_scope,
         )
     except ValueError as exc:
         raise OrchestrationError("tong '%s': %s" % (name, exc))
@@ -212,7 +248,8 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
 
 
 def _ensure_shared_tong(docker, name, defn, *, container, network, alias,
-                        resolver, workspace, label_hash, make_channel):
+                        resolver, workspace, label_hash, make_channel,
+                        volume_scope):
     """Start a `shared` tong, or reuse the running one, recreating it if stale.
 
     A `shared` tong is one long-lived container keyed by `shared_container_name`.
@@ -223,6 +260,8 @@ def _ensure_shared_tong(docker, name, defn, *, container, network, alias,
     so the same long-lived container is reused across sessions while the
     definition is stable -- and deciding to reuse one never runs a secret-provider
     CLI, so a rotated secret behind an unchanged reference does not churn it.
+    The recreated container mounts the same named volumes, so a tong's
+    persistent state outlives it.
     """
     state = docker.inspect_state(container)
     if state and state["running"] and state["label"] == label_hash:
@@ -231,7 +270,7 @@ def _ensure_shared_tong(docker, name, defn, *, container, network, alias,
         docker, name, defn,
         container=container, network=network, alias=alias,
         resolver=resolver, workspace=workspace, label_hash=label_hash,
-        make_channel=make_channel,
+        make_channel=make_channel, volume_scope=volume_scope,
     )
 
 
@@ -309,11 +348,14 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
 
     On exit -- including SIGINT -- the `session` tongs and the per-session network
     are torn down (and the connected `shared` tongs disconnected) while the
-    long-lived `shared` tongs are left running.
+    long-lived `shared` tongs are left running. No tong's named volumes are ever
+    removed: they are the state a tong keeps between containers.
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
     becomes ready (the anvil does not run against a half-up environment) or a
-    `session` tong is discovered with no anvil `--name` to key the session by, and
+    `session` tong is discovered with no anvil `--name` to key the session by, or
+    a tong mounts a volume with no directory to scope it by (an org tong with no
+    org tongs directory, a workspace tong with no workspace path), and
     `SecretResolutionError` if a secret reference cannot be resolved.
     """
     ensure_mcp_harness_supported(merged, opts.harness)
@@ -331,7 +373,8 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
         )
 
     # No org layer means no token, and every shared tong keeps its global unscoped name.
-    org_token = tongs.org_scope_token(dict(opts.layer_dirs).get(tongs.ORG))
+    org_tongs_dir = dict(opts.layer_dirs).get(tongs.ORG)
+    org_token = tongs.org_scope_token(org_tongs_dir)
     has_org_shared = bool(org_token) and any(
         merged[name]["definition"].get("lifecycle") != "session"
         and merged[name]["source"] == tongs.ORG
@@ -342,6 +385,8 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             "org-scoped shared tongs require the anvil '--name' as a handle to "
             "join their isolated network"
         )
+
+    volume_scopes = _volume_scopes(merged, org_tongs_dir, opts.workspace)
 
     plan = tongs.plan_network(merged, base_network, session_id)
     injection = tongs.plan_injection(merged, opts.harness)
@@ -368,6 +413,7 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                     container=container, network=plan["network"], alias=alias,
                     resolver=resolver, workspace=opts.workspace,
                     label_hash=tongs.config_hash(defn), make_channel=make_channel,
+                    volume_scope=volume_scopes[name],
                 )
                 started_sessions.append(container)
                 probe_network = plan["network"]
@@ -388,6 +434,7 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                     container=container, network=tong_network, alias=alias,
                     resolver=resolver, workspace=opts.workspace,
                     label_hash=tongs.config_hash(defn), make_channel=make_channel,
+                    volume_scope=volume_scopes[name],
                 )
             ready_checks.append((name, defn, alias, container, probe_network))
 

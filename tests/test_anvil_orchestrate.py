@@ -104,6 +104,30 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
             })
         ))
 
+    def test_workspace_shared_tong_with_a_volume_refused(self):
+        # Its container is shared by every checkout while its volume belongs to one.
+        defn = {
+            "lifecycle": "shared", "image": "x", "mounts": ["volume:v:/data"],
+            "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+        }
+        reasons = launcher.unsupported_tong_reasons(_merged("t", defn))
+        self.assertTrue(
+            any("workspace 'shared' tong that mounts a volume" in r for r in reasons), reasons
+        )
+
+    def test_volume_allowed_where_container_and_volume_scope_agree(self):
+        shared = {
+            "lifecycle": "shared", "image": "x", "mounts": ["volume:v:/data"],
+            "interface": {"kind": "none"}, "readiness": {"mode": "none"},
+        }
+        for source in (tongs.USER, tongs.ORG, tongs.REPO):
+            self.assertEqual(
+                launcher.unsupported_tong_reasons(_merged("t", shared, source=source)),
+                [], source,
+            )
+        session = dict(shared, lifecycle="session")
+        self.assertEqual(launcher.unsupported_tong_reasons(_merged("t", session)), [])
+
     def test_workspace_refusal_is_shared_scoped(self):
         # A `session` tong is torn down with the anvil, so it cannot leak.
         self.assertEqual(
@@ -857,6 +881,105 @@ class RunWithTongsTests(unittest.TestCase):
         with self.assertRaises(launcher.OrchestrationError):
             self._run_org(docker, merged, self._ACME, anvil=anvil)
         self.assertEqual(docker.calls, [])
+
+
+SESSION_VOLUME = {
+    "lifecycle": "session",
+    "image": "model-cache",
+    "mounts": ["volume:models:/models"],
+    "interface": {"kind": "none"},
+    "readiness": {"mode": "none"},
+}
+
+
+def _mounted(argv):
+    return [argv[i + 1] for i, part in enumerate(argv) if part == "-v"]
+
+
+class VolumeScopeTests(unittest.TestCase):
+    """A tong's named volumes are scoped by the layer it came from, and kept."""
+
+    _ACME = "/orgs/acme/.swarmforge/tongs"
+
+    def _run(self, docker, merged, workspace=None, org_dir=None, anvil=None):
+        layer_dirs = [(tongs.ORG, org_dir)] if org_dir else []
+        opts = launcher.LauncherOptions(
+            layer_dirs=layer_dirs, workspace=workspace, approvals=None,
+            providers=None, harness="opencode", anvil_image="anvil:img", no_prompt=False,
+        )
+        return launcher.run_with_tongs(
+            merged, anvil or ANVIL_ARGV, opts,
+            docker=docker, sleep=lambda _s: None, monotonic=_Clock(),
+        )
+
+    def test_user_and_repo_tong_volumes_share_the_local_scope(self):
+        local = [tongs.tong_volume_name("cache", "models", (tongs.LOCAL_VOLUME_SCOPE, None))
+                 + ":/models"]
+        for source in (tongs.USER, tongs.REPO):
+            docker = FakeDocker()
+            self._run(docker, _merged("cache", SESSION_VOLUME, source=source),
+                      workspace="/home/me/proj")
+            self.assertEqual(_mounted(docker.run_argvs[0]), local, source)
+
+    def test_org_tong_volume_scoped_by_its_org_on_either_lifecycle(self):
+        org = [tongs.tong_volume_name("cache", "models", (tongs.ORG_VOLUME_SCOPE, self._ACME))
+               + ":/models"]
+        shared = dict(SESSION_VOLUME, lifecycle="shared")
+        for defn in (SESSION_VOLUME, shared):
+            docker = FakeDocker()
+            self._run(docker, _merged("cache", defn, source=tongs.ORG), org_dir=self._ACME)
+            self.assertEqual(_mounted(docker.run_argvs[0]), org, defn["lifecycle"])
+
+    def test_workspace_tong_volume_scoped_by_its_checkout(self):
+        mounted = []
+        for workspace in ("/home/me/proj", "/home/me/fork"):
+            docker = FakeDocker()
+            self._run(docker, _merged("cache", SESSION_VOLUME), workspace=workspace)
+            mounted.append(_mounted(docker.run_argvs[0]))
+        scope = (tongs.WORKSPACE_VOLUME_SCOPE, os.path.realpath("/home/me/proj"))
+        self.assertEqual(mounted[0], [tongs.tong_volume_name("cache", "models", scope)
+                                      + ":/models"])
+        self.assertNotEqual(mounted[0], mounted[1])
+
+    def test_workspace_tong_volume_without_a_workspace_path_starts_nothing(self):
+        docker = FakeDocker()
+        with self.assertRaisesRegex(launcher.OrchestrationError, "tong 'cache'.*workspace"):
+            self._run(docker, _merged("cache", SESSION_VOLUME))
+        self.assertEqual(docker.calls, [])
+
+    def test_org_tong_volume_without_an_org_directory_starts_nothing(self):
+        docker = FakeDocker()
+        with self.assertRaisesRegex(launcher.OrchestrationError, "tong 'cache'.*org"):
+            self._run(docker, _merged("cache", SESSION_VOLUME, source=tongs.ORG))
+        self.assertEqual(docker.calls, [])
+
+    def test_workspace_tong_without_a_volume_needs_no_workspace_path(self):
+        docker = FakeDocker()
+        self.assertEqual(self._run(docker, _merged("pg", SESSION_PORT)), 0)
+
+    def test_recreated_shared_tong_mounts_the_same_volume(self):
+        # A changed definition recreates the container, never the volume.
+        defn = dict(SESSION_VOLUME, lifecycle="shared")
+        states = {"swarmforge-shared-cache": {"running": True, "label": "stale"}}
+        docker = FakeDocker(states=states)
+        self._run(docker, _merged("cache", defn, source=tongs.REPO))
+        self.assertIn(("rm_force", "swarmforge-shared-cache"), docker.calls)
+        self.assertEqual(
+            _mounted(docker.run_argvs[0]),
+            [tongs.tong_volume_name("cache", "models", (tongs.LOCAL_VOLUME_SCOPE, None))
+             + ":/models"],
+        )
+
+    def test_teardown_only_force_removes_the_container_and_network(self):
+        # No volume step: a named volume outlives `docker rm` of its container.
+        docker = FakeDocker()
+        self._run(docker, _merged("cache", SESSION_VOLUME, source=tongs.REPO))
+        teardown = docker.calls[[c[0] for c in docker.calls].index("run_foreground_multi") + 1:]
+        self.assertEqual(teardown, [
+            ("rm_force", "claude-myproject-tong-cache"),
+            ("rm_force", "claude-myproject"),
+            ("network_rm", tongs.session_network_name("claude-myproject")),
+        ])
 
 
 class WorkspaceGitDirSpecTests(unittest.TestCase):

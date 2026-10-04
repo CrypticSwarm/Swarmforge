@@ -129,6 +129,7 @@ from .mounts import (
     reserved_mount_targets,
     tong_mount_specs,
     tong_volume_name,
+    volume_scope,
     workspace_mount_placements,
 )
 from .network import SESSION_NET_PREFIX, plan_network, session_network_name
@@ -238,6 +239,7 @@ __all__ = [
     "reserved_mount_targets",
     "tong_mount_specs",
     "tong_volume_name",
+    "volume_scope",
     "workspace_mount_placements",
     "SESSION_NET_PREFIX",
     "plan_network",

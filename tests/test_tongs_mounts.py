@@ -3,6 +3,7 @@
 
 import os
 import sys
+import tempfile
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -185,6 +186,35 @@ class MountGrammarTests(unittest.TestCase):
                           (tongs.WORKSPACE_VOLUME_SCOPE, "/home/me/proj"))
         }
         self.assertEqual(len(names), 5)
+
+    def test_volume_scope_follows_the_layer(self):
+        self.assertEqual(tongs.volume_scope(tongs.USER), LOCAL)
+        self.assertEqual(tongs.volume_scope(tongs.REPO, "/o/tongs", "/ws"), LOCAL)
+        self.assertEqual(
+            tongs.volume_scope(tongs.ORG, org_tongs_dir="/orgs//acme/./tongs/"),
+            (tongs.ORG_VOLUME_SCOPE, "/orgs/acme/tongs"),
+        )
+        with self.assertRaisesRegex(ValueError, "org tongs directory"):
+            tongs.volume_scope(tongs.ORG, workspace="/ws")
+        with self.assertRaisesRegex(ValueError, "workspace path"):
+            tongs.volume_scope(tongs.WORKSPACE, org_tongs_dir="/o/tongs")
+        with self.assertRaisesRegex(ValueError, "unknown layer"):
+            tongs.volume_scope("elsewhere")
+
+    def test_volume_scope_resolves_a_symlinked_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = os.path.join(tmp, "checkout")
+            os.mkdir(checkout)
+            link = os.path.join(tmp, "link")
+            os.symlink(checkout, link)
+            self.assertEqual(
+                tongs.volume_scope(tongs.WORKSPACE, workspace=link),
+                tongs.volume_scope(tongs.WORKSPACE, workspace=checkout),
+            )
+            self.assertEqual(
+                tongs.volume_scope(tongs.WORKSPACE, workspace=link)[1],
+                os.path.realpath(checkout),
+            )
 
     def test_mount_target_error_names_the_mount_and_the_reason(self):
         reserved = {"/run/x": "where the launcher delivers this tong's secrets"}
