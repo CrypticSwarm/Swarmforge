@@ -154,25 +154,19 @@ def tong_run_argv(
     non-secret values from `plan_tong_secrets`) is passed as `-e` in sorted order;
     resolved secret values never appear here -- they arrive over the in-container
     FIFO instead.
-    A socket-holding `session` tong -- a broker that mounts `docker-socket`, or a
-    tong that mounts `tmux-socket` -- additionally receives
-    `SWARMFORGE_WORKSPACE_HOST_PATH` so the workers it spawns can be given the
-    session workspace; a tong that sets that name itself keeps its own value. A
-    `shared` socket tong does not get it -- its container is reused across
+    A `session` tong that mounts `docker-socket` (a broker) or `tmux-socket` also
+    receives `SWARMFORGE_WORKSPACE_HOST_PATH` so the workers it spawns can be
+    given the session workspace; a tong that sets that name itself keeps its own
+    value. A `shared` tong does not get it -- its container is reused across
     sessions, so a per-session workspace path would be stale (and a leak) for
     later ones.
 
-    A `tmux-socket` tong is pointed at the launcher's tmux server: `tmux_server`
-    (from `resolve_tmux_server`) gives the mount's host source and the tong's
-    `TMUX` and `TMUX_PANE`, and `session_handle` its `SWARMFORGE_SESSION_HANDLE`.
-    These describe the host and the session, which a definition cannot know, so
-    they replace a plain value its `env:` sets for those names -- and a name the
-    launcher has no value for is dropped rather than left to the definition. A
-    secret reference on one of them would arrive over the FIFO after these and
-    win, so validation refuses it (see `tmux_secret_env_error`). Raises
-    `ValueError` for any mount `tong_mount_specs` refuses, which includes a
-    `tmux-socket` mount with no `tmux_server`. A tong without the mount gets none
-    of them, whatever is passed.
+    Only a `tmux-socket` tong uses `tmux_server` (from `resolve_tmux_server`) and
+    `session_handle`: they give its mount source and `TMUX_LAUNCHER_ENV`, which
+    describe the host and session a definition cannot know, so they replace any
+    plain value its `env:` sets and drop one the launcher lacks. Raises
+    `ValueError` for any mount `tong_mount_specs` refuses, including a
+    `tmux-socket` mount with no `tmux_server`.
 
     When the tong has secret env, the launcher passes `secret_channel=True` (which
     mounts a tmpfs at `SECRET_FIFO_DIR` for the wrapper's FIFO), `entrypoint`

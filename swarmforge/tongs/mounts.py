@@ -40,7 +40,7 @@ TMUX_MOUNT_TARGET = "/run/swarmforge-tmux"
 # An allowlist, so an unvetted mount option cannot reach the daemon.
 MOUNT_MODES = ("ro", "rw")
 
-# Mounts that bind one session's host state, so a reused `shared` container would leak it.
+# Mount words that bind one session's host state, and what each binds.
 SESSION_ONLY_MOUNTS = {WORKSPACE_MOUNT: "workspace", TMUX_MOUNT: "tmux socket"}
 
 # What tmux creates (mode 0700) under $TMUX_TMPDIR or /tmp for each user's sockets.
@@ -193,9 +193,9 @@ def reserved_mount_targets(defn, socket_path=DEFAULT_DOCKER_SOCKET):
     it: the secret-delivery tmpfs (and the shell whose wrapper creates and reads
     the FIFO on it) come with secret references, the docker socket with a
     `docker-socket` mount, the tmux socket directory with a `tmux-socket` mount.
-    `mount_target_error`
-    compares destinations against this map, as written -- a target that reaches one
-    of these only through a symlink inside the image is not something it can see.
+    `mount_target_error` compares destinations against this map, as written -- a
+    target that reaches one of these only through a symlink inside the image is
+    not something it can see.
     """
     paths = {}
     env = defn.get("env")
@@ -239,8 +239,6 @@ def mount_target_error(mount, word, target, destination, reserved):
     buries the tong's wiring or has docker create a mountpoint inside the user's
     workspace on the host. `destination` is where the mount actually lands
     (`mount_destination`), so a default target is judged like a declared one.
-    Validation and argv assembly both ask this, so both give the same verdict and
-    the same message for one `reserved` map.
     """
     if word not in TARGETED_MOUNT_WORDS:
         if target is not None:
@@ -260,8 +258,7 @@ def mount_mode_error(mount, word, mode):
     `tmux-socket` is read-only whatever it declares. A tmux client only needs
     `connect()` on the socket, which a read-only bind allows; a writable bind of
     the socket directory would let the tong replace the socket the host's own
-    tmux clients dial. Validation and argv assembly both ask this, like
-    `mount_target_error`, so both refuse `tmux-socket:rw` with one message.
+    tmux clients dial.
     """
     if word == TMUX_MOUNT and mode == "rw":
         return "mount %r: the '%s' mount is always read-only" % (mount, TMUX_MOUNT)
@@ -271,9 +268,9 @@ def mount_mode_error(mount, word, mode):
 def mount_lifecycle_error(mount, word, lifecycle):
     """Why a mount is refused for the tong's lifecycle, or None if it is fine.
 
-    A `SESSION_ONLY_MOUNTS` word binds one session's host state, and a `shared`
-    container is reused by later sessions, so it would carry that binding into
-    them. Validation refuses a missing or unknown lifecycle on its own.
+    A `shared` container is reused by later sessions, so a `SESSION_ONLY_MOUNTS`
+    word would carry one session's binding into the next. A missing or unknown
+    lifecycle is left to validation.
     """
     if word in SESSION_ONLY_MOUNTS and lifecycle == "shared":
         what = SESSION_ONLY_MOUNTS[word]
@@ -337,13 +334,9 @@ def volume_scope(layer, org_tongs_dir=None, workspace=None):
 def checked_mounts(defn, socket_path=DEFAULT_DOCKER_SOCKET):
     """Each `mounts:` entry judged by every mount rule, as a `CheckedMount`.
 
-    Validation and argv assembly both walk a definition's mounts through here, so
-    they accept and refuse the same entries with the same message. An entry is
-    refused for not being a string, failing `parse_mount`, or any of
-    `mount_target_error`, `mount_mode_error`, `mount_lifecycle_error` and
-    `overlapping_mount_error`; a refused entry has `error` set (and `word` and
-    `destination` None when it never parsed) and is not placed, so later entries
-    are judged for overlap against the accepted ones only.
+    A refused entry has `error` set (and `word` and `destination` None if it never
+    parsed) and is not placed, so later entries are checked for overlap against
+    the accepted ones only.
     """
     reserved = reserved_mount_targets(defn, socket_path)
     lifecycle = defn.get("lifecycle")
@@ -390,10 +383,9 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
     first use and the launcher never removes. A volume may not overlap one of
     `extra_mount_specs` (see `tong_run_argv`), or docker would leave their
     mountpoints inside it. `tmux-socket[:ro]` bind-mounts `tmux_socket_dir` --
-    the host directory holding the launcher's tmux socket, from
-    `resolve_tmux_server` -- read-only at `TMUX_MOUNT_TARGET`. The directory
-    rather than the socket, because tmux deletes and recreates the socket when
-    its server restarts.
+    the host directory holding the launcher's tmux socket -- read-only at
+    `TMUX_MOUNT_TARGET`. The directory rather than the socket, because tmux
+    recreates the socket when its server restarts.
     Raises `ValueError` for any entry `checked_mounts` refuses, a volume
     overlapping one of `extra_mount_specs`, a `workspace` or `tmux-socket` mount
     when no host source for it is known, or a `volume` mount without a
@@ -441,21 +433,15 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
 def resolve_tmux_server(tmux, tmux_pane=None):
     """The launcher's tmux server as a `tmux-socket` tong reaches it, a `TmuxServer`.
 
-    `tmux` and `tmux_pane` are the launcher's raw `$TMUX` and `$TMUX_PANE`, and
-    this is the one place they are parsed. `$TMUX` is
-    `<socket-path>,<server-pid>,<session-id>`; the result holds the socket's parent
-    directory (what the mount binds), the socket's host path, and the tong's env:
-    `TMUX` re-pointed at the socket's name under `TMUX_MOUNT_TARGET`, so a stock
-    tmux client in the tong reaches the host server with no flags, and `TMUX_PANE`
-    as given (None when it is unset).
+    `tmux` is the launcher's raw `$TMUX` (`<socket-path>,<server-pid>,<session-id>`)
+    and `tmux_pane` its `$TMUX_PANE`. The tong's `TMUX` names the same socket under
+    `TMUX_MOUNT_TARGET`, so a stock tmux client reaches the host server.
 
-    Raises `ValueError` when `tmux` is unset, or unless it has exactly three
-    comma-separated fields, the pid and session id are decimal, and the socket path
-    is a normalized absolute path with no `:` (docker's `-v` separator), `,` (tmux
-    reads the path up to the first one), or whitespace. The socket must also sit
-    directly in tmux's own per-user directory (`tmux-<uid>`): binding a `-S`
-    socket's parent could hand the tong an arbitrary host directory, such as a home
-    directory. A set `tmux_pane` must be a pane id (`%<digits>`).
+    Raises `ValueError` when `tmux` is unset or malformed, or `tmux_pane` is set
+    and not `%<digits>`. The socket path must be normalized and absolute, free of
+    `:` (docker's `-v` separator), `,` (tmux's field separator) and whitespace,
+    and sit directly in tmux's per-user `tmux-<uid>` directory: binding a `-S`
+    socket's parent could expose any host directory.
     """
     if not tmux:
         raise ValueError("the launcher is not running inside tmux ($TMUX is unset)")
@@ -488,11 +474,9 @@ def resolve_tmux_server(tmux, tmux_pane=None):
 def tmux_secret_env_error(defn):
     """Why a `tmux-socket` definition's secret env is refused, or None if it is fine.
 
-    The launcher owns `TMUX_LAUNCHER_ENV` on a tong that mounts `tmux-socket` and
-    replaces a plain value the definition gives one of them, but a secret value is
-    exported by the FIFO wrapper after docker's `-e` values and so would win.
-    Refusing a secret reference there keeps the launcher's values the ones the
-    tong runs with.
+    The launcher sets `TMUX_LAUNCHER_ENV` on a `tmux-socket` tong, but the FIFO
+    wrapper exports secrets after docker's `-e` values, so a secret reference would
+    override the launcher's value.
     """
     env = defn.get("env")
     if not mounts_word(defn, TMUX_MOUNT) or not isinstance(env, dict):
