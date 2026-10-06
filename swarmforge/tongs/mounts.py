@@ -68,6 +68,9 @@ VOLUME_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]*")
 VOLUME_NAME_MAX_LENGTH = 64
 VOLUME_HINT_LIMIT = 32
 
+# `env` holds the tong's `TMUX` and `TMUX_PANE`, the pane None outside a pane.
+TmuxServer = collections.namedtuple("TmuxServer", ["host_dir", "socket_path", "env"])
+
 
 def mounts_word(defn, word):
     """True if a tong's `mounts:` request the magic `word`.
@@ -368,7 +371,7 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
     `extra_mount_specs` (see `tong_run_argv`), or docker would leave their
     mountpoints inside it. `tmux-socket[:ro]` bind-mounts `tmux_socket_dir` --
     the host directory holding the launcher's tmux socket, from
-    `resolve_tmux_socket` -- read-only at `TMUX_MOUNT_TARGET`. The directory
+    `resolve_tmux_server` -- read-only at `TMUX_MOUNT_TARGET`. The directory
     rather than the socket, because tmux deletes and recreates the socket when
     its server restarts.
     Raises `ValueError` for any entry `checked_mounts` refuses, a volume
@@ -415,23 +418,27 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
     return specs
 
 
-def resolve_tmux_socket(tmux):
-    """The host directory a `tmux-socket` mount binds, and the tong's own `TMUX`.
+def resolve_tmux_server(tmux, tmux_pane=None):
+    """The launcher's tmux server as a `tmux-socket` tong reaches it, a `TmuxServer`.
 
-    `tmux` is the launcher's raw `$TMUX`, `<socket-path>,<server-pid>,<session-id>`,
-    and this is the one place it is parsed. Returns
-    `(host_dir, socket_path, container_tmux)`: the socket's parent directory, the
-    socket's host path, and the same value re-pointed at the socket's name under
-    `TMUX_MOUNT_TARGET`, so a stock tmux client in the tong reaches the host
-    server with no flags.
+    `tmux` and `tmux_pane` are the launcher's raw `$TMUX` and `$TMUX_PANE`, and
+    this is the one place they are parsed. `$TMUX` is
+    `<socket-path>,<server-pid>,<session-id>`; the result holds the socket's parent
+    directory (what the mount binds), the socket's host path, and the tong's env:
+    `TMUX` re-pointed at the socket's name under `TMUX_MOUNT_TARGET`, so a stock
+    tmux client in the tong reaches the host server with no flags, and `TMUX_PANE`
+    as given (None when it is unset).
 
-    Raises `ValueError` unless the value has exactly three comma-separated fields,
-    the pid and session id are decimal, and the socket path is a normalized
-    absolute path with no `:` (docker's `-v` separator), `,` (tmux reads the path
-    up to the first one), or whitespace. The socket must also sit directly in
-    tmux's own per-user directory (`tmux-<uid>`): binding a `-S` socket's parent
-    could hand the tong an arbitrary host directory, such as a home directory.
+    Raises `ValueError` when `tmux` is unset, or unless it has exactly three
+    comma-separated fields, the pid and session id are decimal, and the socket path
+    is a normalized absolute path with no `:` (docker's `-v` separator), `,` (tmux
+    reads the path up to the first one), or whitespace. The socket must also sit
+    directly in tmux's own per-user directory (`tmux-<uid>`): binding a `-S`
+    socket's parent could hand the tong an arbitrary host directory, such as a home
+    directory. A set `tmux_pane` must be a pane id (`%<digits>`).
     """
+    if not tmux:
+        raise ValueError("the launcher is not running inside tmux ($TMUX is unset)")
     fields = tmux.rsplit(",", 2) if isinstance(tmux, str) else []
     if len(fields) != 3:
         raise ValueError(
@@ -452,15 +459,10 @@ def resolve_tmux_socket(tmux):
             "$TMUX %r: socket %r is not in tmux's default per-user socket directory "
             "(tmux-<uid> under $TMUX_TMPDIR or /tmp); a socket at a custom -S path "
             "is refused, since its whole directory would be mounted" % (tmux, path))
-    return (host_dir, path,
-            "%s/%s,%s,%s" % (TMUX_MOUNT_TARGET, socket_name, pid, session))
-
-
-def check_tmux_pane(pane):
-    """The launcher's `$TMUX_PANE` (`%<digits>`), or `ValueError` if it is not one."""
-    if not isinstance(pane, str) or not _TMUX_PANE_RE.fullmatch(pane):
-        raise ValueError("$TMUX_PANE %r is not a tmux pane id ('%%<number>')" % (pane,))
-    return pane
+    if tmux_pane and not (isinstance(tmux_pane, str) and _TMUX_PANE_RE.fullmatch(tmux_pane)):
+        raise ValueError("$TMUX_PANE %r is not a tmux pane id ('%%<number>')" % (tmux_pane,))
+    container_tmux = "%s/%s,%s,%s" % (TMUX_MOUNT_TARGET, socket_name, pid, session)
+    return TmuxServer(host_dir, path, {"TMUX": container_tmux, "TMUX_PANE": tmux_pane or None})
 
 
 def tmux_secret_env_error(defn):
