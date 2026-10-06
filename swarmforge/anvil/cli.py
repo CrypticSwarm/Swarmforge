@@ -8,8 +8,7 @@ launch to the orchestrator. Every failure the launcher reports is mapped to a
 process exit code here.
 
 While the orchestrator runs, SIGHUP and SIGTERM unwind it through its teardown
-the way Ctrl-C does, so closing the terminal or pane a session runs in does not
-leave its `session` tongs running.
+the way Ctrl-C does.
 """
 
 import collections
@@ -210,10 +209,9 @@ class _TerminationTrap:
 def _termination_signals_raise():
     """Install a `_TerminationTrap` on SIGHUP/SIGTERM for the duration; yields it.
 
-    Python's default action for both kills the process without running any
-    `finally`, which is where the orchestrator tears down. A signal already
-    ignored on entry -- under `nohup`, say -- stays ignored. The previous
-    handlers are put back on the way out, so the process is left as it was found.
+    Python's default action for both skips every `finally`, where the
+    orchestrator tears down. A signal ignored on entry (`nohup`) stays ignored,
+    and the previous handlers are put back on the way out.
     """
     trap = _TerminationTrap()
     previous = {}
@@ -310,7 +308,7 @@ def main(argv):
                 tongs.warn(str(exc))
                 return 1
             except KeyboardInterrupt:
-                # 128 + SIGINT, even if a HUP/TERM followed; shared tongs stay running by design.
+                # 128 + SIGINT, even if a HUP/TERM followed.
                 return 130
             if trap.received is not None:
                 return 128 + trap.received

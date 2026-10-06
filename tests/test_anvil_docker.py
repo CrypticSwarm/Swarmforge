@@ -208,7 +208,6 @@ class DockerCLITests(unittest.TestCase):
                          (None, ""))
 
 
-# Stands in for the anvil client: reports readiness, and each signal it survives, on a FIFO.
 # Unbuffered writes: a handler writing into a buffered file mid-write raises "reentrant call".
 _ANVIL_STANDIN = r"""
 import os, signal, sys, time

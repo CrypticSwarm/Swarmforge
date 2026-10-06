@@ -152,12 +152,11 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
 
     Once the argv is assembled, any existing container of the same name is removed
     so a stale or stopped one is replaced cleanly -- but a definition the argv
-    builder refuses removes nothing here, since it started nothing (a `session`
-    tong's name is recorded before this runs, so the launch's teardown still
-    removes it). If anything fails after the container starts -- a docker error,
-    a delivery timeout, or a Ctrl-C -- the container is removed before
-    re-raising, so a half-configured `shared` tong (stamped with its config-hash
-    label) is not reused on the next session despite missing its secret.
+    builder refuses removes nothing here, since it started nothing (teardown still
+    removes a `session` tong by name). If anything fails after the container
+    starts -- a docker error, a delivery timeout, or a Ctrl-C -- the container is
+    removed before re-raising, so a half-configured `shared` tong (stamped with its
+    config-hash label) is not reused on the next session despite missing its secret.
     """
     plan = tongs.plan_tong_secrets(defn.get("env"), resolver)
     plain_env = plan["env"]
@@ -309,12 +308,11 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     vars and, for `mcp` tongs, the per-harness MCP config -- and the anvil runs
     in the foreground.
 
-    On exit -- including SIGINT, and SIGHUP/SIGTERM once the caller has made them
-    raise (`cli.main` does) -- the `session` tongs and the per-session network
-    are torn down (and the connected `shared` tongs disconnected) while the
-    long-lived `shared` tongs are left running. The teardown runs inside
-    `teardown_guard()`, a context manager the caller supplies to hold off its
-    own signals until teardown has finished; the default guards nothing.
+    On exit -- including SIGINT, and SIGHUP/SIGTERM once `cli.main` makes them
+    raise -- the `session` tongs and the per-session network are torn down (and
+    the connected `shared` tongs disconnected) while the long-lived `shared`
+    tongs are left running. Teardown runs inside the caller's `teardown_guard()`,
+    which keeps signals from cutting it short; the default guards nothing.
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
     becomes ready (the anvil does not run against a half-up environment) or a
@@ -357,7 +355,7 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     joined_shared_networks = []
     anvil_multi = False
     mcp_dir = None
-    # Each resource is recorded before it is created: an interrupt can land mid-create.
+    # Recorded before creation: an interrupt can land mid-create.
     try:
         if plan["create"]:
             created_network = plan["create"]

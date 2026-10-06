@@ -41,12 +41,12 @@ missing/stopped/stale one is (re)started, and it is left running afterwards. A
 `session` tong is per-session: when any exists the launcher creates a per-session
 network, starts the `session` tongs on it under their canonical aliases, connects
 each network-facing `shared` tong to it, and joins the anvil to it (plus the base
-`NETWORK=` network). On exit -- including SIGINT, and the SIGHUP a closing
-terminal or tmux pane sends, or a SIGTERM -- the `session` tongs and the
-per-session network are torn down (and the connected `shared` tongs disconnected)
-while the long-lived `shared` tongs keep running. A `port` tong's reachability is
-injected into the anvil as environment; an `mcp` tong's as generated MCP config
-(see "MCP config"); a `none` tong has no anvil-facing surface.
+`NETWORK=` network). On exit -- including SIGINT, SIGHUP, and SIGTERM -- the
+`session` tongs and the per-session network are torn down (and the connected
+`shared` tongs disconnected) while the long-lived `shared` tongs keep running. A
+`port` tong's reachability is injected into the anvil as environment; an `mcp`
+tong's as generated MCP config (see "MCP config"); a `none` tong has no
+anvil-facing surface.
 
 A tong's secret references are resolved on the host (see "Secret delivery") and
 handed to the tong as environment, so the launcher starts `shared` and `session`

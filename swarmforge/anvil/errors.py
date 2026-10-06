@@ -1,11 +1,10 @@
-"""The launch failures and interruptions raised from more than one launcher module.
+"""The launch failures and interruptions more than one launcher module needs.
 
 Every other error the launcher raises is defined by the module that raises it.
-`OrchestrationError` has two sources -- the secret channel, when a tong never
-takes delivery of its secrets, and the orchestrator, when a tong cannot be
-started or made ready -- and `TerminationSignal` is raised by the entry point's
-signal handler but caught by the docker seam as well, so both sit on their own
-and none of those modules has to import another.
+These two cross modules: `OrchestrationError` is raised by both the secret
+channel and the orchestrator, and `TerminationSignal` is raised by the entry
+point but caught by the docker seam. Keeping them here means none of those
+modules imports another.
 """
 
 
@@ -14,10 +13,9 @@ class OrchestrationError(Exception):
 
 
 class TerminationSignal(BaseException):
-    """SIGHUP or SIGTERM arrived mid-launch; unwinds through teardown like Ctrl-C.
+    """SIGHUP or SIGTERM `signum` arrived mid-launch; unwinds through teardown.
 
-    A `BaseException`, as `KeyboardInterrupt` is, so no `except Exception` on the
-    way out swallows it. `signum` is the signal that was received.
+    A `BaseException`, like `KeyboardInterrupt`, so no `except Exception` swallows it.
     """
 
     def __init__(self, signum):
