@@ -63,10 +63,9 @@ def parse_args(argv, environ=None):
 
     Returns ``(options, anvil_cmd)`` where ``options`` is a ``LauncherOptions``
     (its ``layer_dirs`` ordered by canonical precedence, only the layers that
-    were given) and ``anvil_cmd`` is the argv after ``--``. The options' ``tmux``
-    and ``tmux_pane`` come from ``TMUX``/``TMUX_PANE`` in ``environ`` (the
-    process environment by default), unvalidated -- only a ``tmux-socket`` tong
-    uses them, and the orchestrator checks them then. Raises ``UsageError``
+    were given) and ``anvil_cmd`` is the argv after ``--``. ``tmux`` and
+    ``tmux_pane`` are read unvalidated from ``environ`` (the process environment
+    by default); the orchestrator checks them. Raises ``UsageError``
     if the separator is missing, the command is empty, or an option is malformed.
     """
     environ = os.environ if environ is None else environ

@@ -94,13 +94,13 @@ First-run approval
 ------------------
 The user, org, and Swarmforge-repo layers are installed deliberately and are
 trusted. The workspace is any repo you happened to clone, so a workspace-sourced
-tong -- which may request secrets, host mounts, the docker socket, or the
-launcher's tmux server -- is gated: before the anvil starts, the launcher prints
-the privilege summary and asks the user to approve it. Approval is keyed by
-workspace path + tong name + a hash of the merged definition (so any change
-re-prompts) and persists in the user-layer store passed as `--approvals`. The
-scripted `--no-prompt` mode fails closed (refusing the run) rather than
-auto-approving an unapproved tong.
+tong -- which may request secrets, host mounts, the docker socket, the
+launcher's tmux server, or host GPUs -- is gated: before the anvil starts, the
+launcher prints the privilege summary and asks the user to approve it. Approval
+is keyed by workspace path + tong name + a hash of the merged definition (so any
+change re-prompts) and persists in the user-layer store passed as
+`--approvals`. The scripted `--no-prompt` mode fails closed (refusing the run)
+rather than auto-approving an unapproved tong.
 
 Passthrough invariant
 ---------------------

@@ -78,9 +78,6 @@ def unsupported_tong_reasons(merged):
       * a workspace-sourced `shared` tong that mounts a `volume` -- its volume
         is scoped to one checkout but its container is not.
 
-    (A `shared` tong that mounts one session's state is a definition error,
-    refused by validation through `tongs.mount_lifecycle_error`.)
-
     A refused tong is reported rather than started half-wired. Returns a list of
     human-readable reason strings (empty == every discovered tong is startable).
     """
@@ -116,19 +113,14 @@ def _lstat(path, what):
 def check_tmux_socket_dir(host_dir, socket_path, uid=None):
     """Refuse a tmux socket directory that is not plainly the launcher's own.
 
-    `host_dir` and `socket_path` come from a `$TMUX` that `tongs.resolve_tmux_server`
-    already accepted, which judged only the spelling. Here the host itself is
-    checked, since the whole directory is bound into the tong: it must be reached
-    with no symlink in any component (docker follows one, binding wherever it
-    points), be a real directory owned by `uid` (the launcher's own by default)
-    with no group or other permission bits -- tmux creates it 0700 -- and hold
-    `socket_path` as a socket.
-
-    Every directory above it, up to `/`, must pass OpenSSH's StrictModes rule:
-    owned by root or `uid`, and not writable by group or others unless sticky
-    (as `/tmp` is). Otherwise another local user could swap the directory for a
-    symlink between this check and docker's bind. Raises `OrchestrationError`
-    when any of this fails.
+    `tongs.resolve_tmux_server` judged only the spelling of `host_dir` and
+    `socket_path`; this checks the host, since the whole directory is bound into
+    the tong. It must be reached through no symlink (docker would bind the
+    target), be a directory owned by `uid` (the launcher's by default) with no
+    group or other bits, and hold `socket_path` as a socket. Every ancestor must
+    pass OpenSSH's StrictModes rule -- owned by root or `uid`, not writable by
+    group or others unless sticky -- so no other user can swap in a symlink
+    before docker binds it. Raises `OrchestrationError` otherwise.
     """
     uid = os.getuid() if uid is None else uid
     if os.path.realpath(host_dir) != host_dir:
@@ -205,8 +197,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     the bytes live only in docker's API stream and the container kernel's pipe
     buffer -- never `-e`, argv, or disk.
 
-    `tmux_server` and `session_handle` reach `tongs.tong_run_argv`, which uses
-    them only for a tong that mounts `tmux-socket`.
+    `tmux_server` and `session_handle` pass through to `tongs.tong_run_argv`.
 
     Once the argv is assembled, any existing container of the same name is removed
     so a stale or stopped one is replaced cleanly -- but a definition the argv
@@ -369,19 +360,14 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     tongs are left running. Teardown runs inside the caller's `teardown_guard()`,
     which keeps signals from cutting it short; the default guards nothing.
 
-    When a tong mounts `tmux-socket`, the launcher's `opts.tmux`/`opts.tmux_pane`
-    are resolved once (`tongs.resolve_tmux_server`) and the socket directory
-    checked on disk (through `check_tmux_dir`, `check_tmux_socket_dir` unless a
-    test injects another) before anything starts; each such tong is handed the
-    result and the session handle.
+    When a tong mounts `tmux-socket`, `opts.tmux`/`opts.tmux_pane` are resolved
+    once and checked on disk by `check_tmux_dir` before anything starts.
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
     becomes ready (the anvil does not run against a half-up environment), a
     `session` tong is discovered with no anvil `--name` to key the session by, or
-    a tong mounts `tmux-socket` while the launcher is outside tmux, its `$TMUX`
-    or `$TMUX_PANE` is malformed, or its socket directory fails
-    `check_tmux_socket_dir`, and `SecretResolutionError` if a secret reference
-    cannot be resolved.
+    the launcher's tmux server fails those checks, and `SecretResolutionError` if
+    a secret reference cannot be resolved.
     """
     ensure_mcp_harness_supported(merged, opts.harness)
     resolver = make_secret_resolver(providers or {})
