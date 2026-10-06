@@ -214,6 +214,18 @@ class ValidationTests(unittest.TestCase):
             "t", self._base(mounts=["volume:models:/a", "volume:models:/b:ro"]))
         self.assertTrue(any("already mounted" in e for e in errors), errors)
 
+    def test_shared_tong_may_not_mount_session_state(self):
+        # A shared container is reused across sessions, so it would leak one into the next.
+        for mount, what in (("workspace:ro", "workspace"), ("workspace:/code:ro", "workspace"),
+                            ("tmux-socket", "tmux socket"), ("tmux-socket:ro", "tmux socket")):
+            errors = tongs.validate_tong("t", self._base(lifecycle="shared", mounts=[mount]))
+            self.assertTrue(
+                any("'shared' tong may not mount the %s" % what in e for e in errors), errors)
+
+    def test_shared_tong_may_mount_the_docker_socket(self):
+        self.assertEqual(
+            tongs.validate_tong("t", self._base(lifecycle="shared", mounts=["docker-socket"])), [])
+
     def test_tmux_socket_mount_accepted_read_only(self):
         for mount in ("tmux-socket", "tmux-socket:ro"):
             self.assertEqual(tongs.validate_tong("t", self._base(mounts=[mount])), [], mount)

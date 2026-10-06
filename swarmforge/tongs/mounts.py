@@ -40,6 +40,9 @@ TMUX_MOUNT_TARGET = "/run/swarmforge-tmux"
 # An allowlist, so an unvetted mount option cannot reach the daemon.
 MOUNT_MODES = ("ro", "rw")
 
+# Mounts that bind one session's host state, so a reused `shared` container would leak it.
+SESSION_ONLY_MOUNTS = {WORKSPACE_MOUNT: "workspace", TMUX_MOUNT: "tmux socket"}
+
 # What tmux creates (mode 0700) under $TMUX_TMPDIR or /tmp for each user's sockets.
 _TMUX_SOCKET_DIR_RE = re.compile(r"tmux-[0-9]+")
 _DECIMAL_RE = re.compile(r"[0-9]+")
@@ -265,6 +268,21 @@ def mount_mode_error(mount, word, mode):
     return None
 
 
+def mount_lifecycle_error(mount, word, lifecycle):
+    """Why a mount is refused for the tong's lifecycle, or None if it is fine.
+
+    A `SESSION_ONLY_MOUNTS` word binds one session's host state, and a `shared`
+    container is reused by later sessions, so it would carry that binding into
+    them. Validation refuses a missing or unknown lifecycle on its own.
+    """
+    if word in SESSION_ONLY_MOUNTS and lifecycle == "shared":
+        what = SESSION_ONLY_MOUNTS[word]
+        return ("mount %r: a 'shared' tong may not mount the %s; its container is "
+                "reused across sessions, so it would carry one session's %s into "
+                "the next" % (mount, what, what))
+    return None
+
+
 def overlapping_mount_error(mount, destination, volume, placed):
     """Why a mount collides with one already placed, or None if it is clear.
 
@@ -322,12 +340,13 @@ def checked_mounts(defn, socket_path=DEFAULT_DOCKER_SOCKET):
     Validation and argv assembly both walk a definition's mounts through here, so
     they accept and refuse the same entries with the same message. An entry is
     refused for not being a string, failing `parse_mount`, or any of
-    `mount_target_error`, `mount_mode_error` and `overlapping_mount_error`; a
-    refused entry has `error` set (and `word` and `destination` None when it never
-    parsed) and is not placed, so later entries are judged for overlap against the
-    accepted ones only.
+    `mount_target_error`, `mount_mode_error`, `mount_lifecycle_error` and
+    `overlapping_mount_error`; a refused entry has `error` set (and `word` and
+    `destination` None when it never parsed) and is not placed, so later entries
+    are judged for overlap against the accepted ones only.
     """
     reserved = reserved_mount_targets(defn, socket_path)
+    lifecycle = defn.get("lifecycle")
     placed = []                          # (mount, destination, volume) already accepted
     for mount in defn.get("mounts") or []:
         if not isinstance(mount, str):
@@ -342,6 +361,7 @@ def checked_mounts(defn, socket_path=DEFAULT_DOCKER_SOCKET):
             continue
         error = (mount_target_error(mount, word, target, destination, reserved)
                  or mount_mode_error(mount, word, mode)
+                 or mount_lifecycle_error(mount, word, lifecycle)
                  or overlapping_mount_error(mount, destination, volume, placed))
         if not error:
             placed.append((mount, destination, volume))
