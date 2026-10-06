@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Unit tests for swarmforge.anvil.orchestrate. Run: python3 tests/test_anvil_orchestrate.py"""
 
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -741,6 +743,66 @@ class RunWithTongsTests(unittest.TestCase):
             self._run(docker, _merged("pg", SESSION_PORT, source=tongs.REPO))
         self.assertIn(("rm_force", "claude-myproject-tong-pg"), docker.calls)
         self.assertIn(("rm_force", "claude-myproject"), docker.calls)
+        self.assertIn(("network_rm", net), docker.calls)
+
+    def test_teardown_runs_inside_the_callers_guard(self):
+        docker = FakeDocker()
+        net = tongs.session_network_name("claude-myproject")
+
+        @contextlib.contextmanager
+        def guard():
+            docker.calls.append("guard-enter")
+            yield
+            docker.calls.append("guard-exit")
+
+        launcher.run_with_tongs(
+            _merged("pg", SESSION_PORT, source=tongs.REPO), ANVIL_ARGV, _opts(),
+            docker=docker, teardown_guard=guard, sleep=lambda _s: None, monotonic=_Clock(),
+        )
+        guarded = docker.calls[docker.calls.index("guard-enter"):]
+        self.assertEqual(guarded[-1], "guard-exit")
+        self.assertIn(("rm_force", "claude-myproject-tong-pg"), guarded)
+        self.assertIn(("network_rm", net), guarded)
+
+    def test_session_teardown_runs_on_termination_signal(self):
+        docker = FakeDocker()
+
+        def hang_up(argv, extra_networks, container):
+            raise launcher.TerminationSignal(signal.SIGHUP)
+
+        docker.run_foreground_multi = hang_up
+        net = tongs.session_network_name("claude-myproject")
+        with self.assertRaises(launcher.TerminationSignal):
+            self._run(docker, _merged("pg", SESSION_PORT, source=tongs.REPO))
+        self.assertIn(("rm_force", "claude-myproject-tong-pg"), docker.calls)
+        self.assertIn(("rm_force", "claude-myproject"), docker.calls)
+        self.assertIn(("network_rm", net), docker.calls)
+
+    def test_tong_whose_docker_run_is_cut_short_is_removed(self):
+        # The daemon may have started it before the client was killed.
+        docker = FakeDocker()
+        container = "claude-myproject-tong-pg"
+
+        def cut_short(argv):
+            docker.calls.append(("run_detached", container))
+            raise launcher.TerminationSignal(signal.SIGTERM)
+
+        docker.run_detached = cut_short
+        with self.assertRaises(launcher.TerminationSignal):
+            self._run(docker, _merged("pg", SESSION_PORT, source=tongs.REPO))
+        started = docker.calls.index(("run_detached", container))
+        self.assertIn(("rm_force", container), docker.calls[started:])
+
+    def test_network_whose_create_is_cut_short_is_removed(self):
+        docker = FakeDocker()
+        net = tongs.session_network_name("claude-myproject")
+
+        def cut_short(name):
+            raise launcher.TerminationSignal(signal.SIGHUP)
+
+        docker.ensure_network = cut_short
+        with self.assertRaises(launcher.TerminationSignal):
+            self._run(docker, _merged("pg", SESSION_PORT, source=tongs.REPO))
         self.assertIn(("network_rm", net), docker.calls)
 
     def test_session_tong_without_anvil_name_raises_before_any_docker_call(self):
