@@ -181,6 +181,43 @@ class ValidationTests(unittest.TestCase):
         errors = tongs.validate_tong("t", self._base(mounts=["docker-socket:/run/d.sock"]))
         self.assertTrue(any("only the 'workspace' mount takes a target path" in e for e in errors))
 
+    def test_tmux_socket_mount_accepted_read_only(self):
+        for mount in ("tmux-socket", "tmux-socket:ro"):
+            self.assertEqual(tongs.validate_tong("t", self._base(mounts=[mount])), [], mount)
+
+    def test_tmux_socket_mount_rw_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["tmux-socket:rw"]))
+        self.assertTrue(any("always read-only" in e for e in errors), errors)
+
+    def test_tmux_socket_mount_target_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["tmux-socket:/tmux"]))
+        self.assertTrue(any("only the 'workspace' mount takes a target path" in e for e in errors))
+
+    def test_tmux_launcher_env_as_a_secret_rejected(self):
+        # A FIFO-delivered secret is exported after `-e`, so it would beat the launcher.
+        for name in ("TMUX", "TMUX_PANE", "SWARMFORGE_SESSION_HANDLE"):
+            defn = self._base(mounts=["tmux-socket"], env={name: "${secret:op:r}"})
+            errors = tongs.validate_tong("t", defn)
+            self.assertTrue(
+                any("the launcher sets" in e and name in e for e in errors), (name, errors))
+
+    def test_tmux_launcher_env_plain_value_accepted(self):
+        defn = self._base(mounts=["tmux-socket"], env={"TMUX_PANE": "%1"})
+        self.assertEqual(tongs.validate_tong("t", defn), [])
+
+    def test_tmux_launcher_env_secret_accepted_without_the_mount(self):
+        defn = self._base(env={"TMUX": "${secret:op:r}"})
+        self.assertEqual(tongs.validate_tong("t", defn), [])
+
+    def test_unrelated_secret_on_a_tmux_tong_accepted(self):
+        defn = self._base(mounts=["tmux-socket"], env={"TOKEN": "${secret:op:r}"})
+        self.assertEqual(tongs.validate_tong("t", defn), [])
+
+    def test_target_overlapping_the_tmux_mount_rejected(self):
+        errors = tongs.validate_tong(
+            "t", self._base(mounts=["workspace:/run", "tmux-socket"]))
+        self.assertTrue(any("overlaps /run/swarmforge-tmux" in e for e in errors), errors)
+
     def test_extra_aliases_accepted_on_network_facing_kinds(self):
         # A client matching a certificate CN dials the dotted name, not the canonical alias.
         defn = self._base(interface={

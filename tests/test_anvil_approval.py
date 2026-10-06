@@ -51,6 +51,18 @@ class RenderPrivilegeSummaryTests(unittest.TestCase):
         text = launcher.render_privilege_summary("x", tongs.privilege_summary(defn))
         self.assertNotIn("secrets:", text)
         self.assertNotIn("docker socket", text)
+        self.assertNotIn("tmux socket", text)
+
+    def test_calls_out_tmux_socket_on_its_own_line(self):
+        defn = dict(WORKSPACE_TONG, mounts=["tmux-socket"])
+        lines = launcher.render_privilege_summary(
+            "spawner", tongs.privilege_summary(defn)
+        ).splitlines()
+        self.assertIn(
+            "  tmux socket: every tmux server in your socket directory -- any "
+            "command on the host as you (read-only does not limit this)",
+            lines,
+        )
 
 
 class GateTests(unittest.TestCase):

@@ -12,8 +12,21 @@ import os
 from swarmforge.names import canonical_path, dir_hint, path_token, sanitize_token
 
 from .mcp import _is_network_facing, _ordered_aliases
-from .model import LABEL_CONFIG_HASH, LABEL_TONG_NAME, WORKSPACE_HOST_ENV
-from .mounts import DEFAULT_DOCKER_SOCKET, _has_socket_mount, tong_mount_specs
+from .model import (
+    LABEL_CONFIG_HASH,
+    LABEL_TONG_NAME,
+    SESSION_HANDLE_ENV,
+    TMUX_MOUNT,
+    WORKSPACE_HOST_ENV,
+)
+from .mounts import (
+    DEFAULT_DOCKER_SOCKET,
+    _has_socket_mount,
+    _has_tmux_mount,
+    check_tmux_pane,
+    resolve_tmux_socket,
+    tong_mount_specs,
+)
 from .secrets import SECRET_FIFO_TMPFS, declared_run_override
 
 
@@ -120,6 +133,9 @@ def tong_run_argv(
     entrypoint=None,
     command=None,
     extra_mount_specs=None,
+    tmux=None,
+    tmux_pane=None,
+    session_handle=None,
 ):
     """Full `docker run -d` argv that starts one tong container.
 
@@ -133,11 +149,26 @@ def tong_run_argv(
     non-secret values from `plan_tong_secrets`) is passed as `-e` in sorted order;
     resolved secret values never appear here -- they arrive over the in-container
     FIFO instead.
-    A socket-holding (broker) `session` tong additionally receives
-    `SWARMFORGE_WORKSPACE_HOST_PATH` so it can bind-mount the session workspace into
-    the workers it spawns; a tong that sets that name itself keeps its own value. A
-    `shared` socket tong does not get it -- its container is reused across sessions,
-    so a per-session workspace path would be stale (and a leak) for later ones.
+    A socket-holding `session` tong -- a broker that mounts `docker-socket`, or a
+    tong that mounts `tmux-socket` -- additionally receives
+    `SWARMFORGE_WORKSPACE_HOST_PATH` so the workers it spawns can be given the
+    session workspace; a tong that sets that name itself keeps its own value. A
+    `shared` socket tong does not get it -- its container is reused across
+    sessions, so a per-session workspace path would be stale (and a leak) for
+    later ones.
+
+    A `tmux-socket` tong is pointed at the launcher's tmux server: `tmux` (the
+    launcher's raw `$TMUX`) becomes the mount's host source and the tong's `TMUX`
+    (see `resolve_tmux_socket`), `tmux_pane` its `TMUX_PANE`, and `session_handle`
+    its `SWARMFORGE_SESSION_HANDLE`. These describe the host and the session, which
+    a definition cannot know, so they replace a plain value its `env:` sets for
+    those names -- and a name the launcher has no value for is dropped rather than
+    left to the definition. A secret reference on one of them would arrive over
+    the FIFO after these and win, so validation refuses it (see
+    `tmux_secret_env_error`). Raises `ValueError` when the definition mounts
+    `tmux-socket` and is not a `session` tong, `tmux` is empty or malformed, or
+    `tmux_pane` is malformed. A tong without the mount gets none of them, whatever
+    is passed.
 
     When the tong has secret env, the launcher passes `secret_channel=True` (which
     mounts a tmpfs at `SECRET_FIFO_DIR` for the wrapper's FIFO), `entrypoint`
@@ -171,11 +202,32 @@ def tong_run_argv(
     if secret_channel:
         argv += ["--tmpfs", SECRET_FIFO_TMPFS]
     effective_env = dict(env or {})
-    if workspace and _has_socket_mount(defn) and defn.get("lifecycle") == "session":
+    tmux_socket_dir = None
+    if _has_tmux_mount(defn):
+        if defn.get("lifecycle") != "session":
+            raise ValueError(
+                "mount '%s' is only allowed on a 'session' tong; a shared container "
+                "would carry one session's tmux server into the next" % TMUX_MOUNT)
+        if not tmux:
+            raise ValueError(
+                "mount '%s' requested but the launcher is not running inside tmux "
+                "($TMUX is unset)" % TMUX_MOUNT)
+        tmux_socket_dir, _, effective_env["TMUX"] = resolve_tmux_socket(tmux)
+        launcher_env = {
+            "TMUX_PANE": check_tmux_pane(tmux_pane) if tmux_pane else None,
+            SESSION_HANDLE_ENV: session_handle,
+        }
+        for key, value in launcher_env.items():
+            effective_env.pop(key, None)
+            if value:
+                effective_env[key] = value
+    has_socket = _has_socket_mount(defn) or _has_tmux_mount(defn)
+    if workspace and has_socket and defn.get("lifecycle") == "session":
         effective_env.setdefault(WORKSPACE_HOST_ENV, workspace)
     for key in sorted(effective_env):
         argv += ["-e", "%s=%s" % (key, effective_env[key])]
-    for spec in tong_mount_specs(defn, workspace, socket_path=socket_path):
+    for spec in tong_mount_specs(defn, workspace, socket_path=socket_path,
+                                 tmux_socket_dir=tmux_socket_dir):
         argv += ["-v", spec]
     for spec in extra_mount_specs or []:
         argv += ["-v", spec]

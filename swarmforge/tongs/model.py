@@ -29,8 +29,14 @@ ENV_PREFIX = "SWARMFORGE_TONG"
 # The mount word granting docker control; here so every module spells it one way.
 SOCKET_MOUNT = "docker-socket"
 
+# The mount word granting the launcher's tmux server: host command execution, like the socket.
+TMUX_MOUNT = "tmux-socket"
+
 # A container cannot re-share a bind mount, so a broker needs the workspace's host path.
 WORKSPACE_HOST_ENV = "SWARMFORGE_WORKSPACE_HOST_PATH"
+
+# A tmux-socket tong's handle on the session it serves: the anvil's `--name`.
+SESSION_HANDLE_ENV = "SWARMFORGE_SESSION_HANDLE"
 
 
 def warn(message):

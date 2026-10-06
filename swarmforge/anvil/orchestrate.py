@@ -18,6 +18,7 @@ import contextlib
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import time
@@ -32,14 +33,14 @@ from .readiness import wait_ready
 from .secretchan import SecretChannel, make_secret_resolver
 
 
-def _mounts_workspace(defn):
-    """True if a tong's `mounts:` request the session workspace.
+def _mounts_word(defn, word):
+    """True if a tong's `mounts:` request the magic word `word`.
 
     The magic word may carry a target and/or a mode (e.g. `workspace:/code:ro`),
     so compare only the word before the first colon.
     """
     for mount in defn.get("mounts") or []:
-        if isinstance(mount, str) and mount.split(":", 1)[0] == tongs.WORKSPACE_MOUNT:
+        if isinstance(mount, str) and mount.split(":", 1)[0] == word:
             return True
     return False
 
@@ -91,7 +92,11 @@ def unsupported_tong_reasons(merged):
         long-lived container reused across sessions, so binding one session's
         workspace into it would expose that workspace to every later session that
         reuses the container (a `session` tong is the right home for a
-        per-workspace mount).
+        per-workspace mount);
+      * a `shared` tong that mounts the `tmux-socket` -- the same container
+        outlives the session and is reused by later ones, so it would carry one
+        session's tmux server, and its pinning to that session's pane, into the
+        next.
 
     A refused tong is reported rather than started half-wired. Returns a list of
     human-readable reason strings (empty == every discovered tong is startable).
@@ -105,13 +110,84 @@ def unsupported_tong_reasons(merged):
                 "tong '%s' has a 'volume' interface, which this launcher does not "
                 "wire up" % name
             )
-        if defn.get("lifecycle") == "shared" and _mounts_workspace(defn):
+        if defn.get("lifecycle") == "shared" and _mounts_word(defn, tongs.WORKSPACE_MOUNT):
             reasons.append(
                 "tong '%s' is a 'shared' tong that mounts the workspace; a shared "
                 "container is reused across sessions, so it would leak one "
                 "session's workspace into the next" % name
             )
+        if defn.get("lifecycle") == "shared" and _mounts_word(defn, tongs.TMUX_MOUNT):
+            reasons.append(
+                "tong '%s' is a 'shared' tong that mounts the tmux socket; a shared "
+                "container outlives the session and is reused by later ones, so it "
+                "would carry one session's tmux server into the next" % name
+            )
     return reasons
+
+
+def check_tmux_socket_dir(host_dir, socket_path, uid=None):
+    """Refuse a tmux socket directory that is not plainly the launcher's own.
+
+    `host_dir` and `socket_path` come from a `$TMUX` that `tongs.resolve_tmux_socket`
+    already accepted, which judged only the spelling. Here the host itself is
+    checked, since the whole directory is bound into the tong: it must be reached
+    with no symlink in any component (docker follows one, binding wherever it
+    points), be a real directory owned by `uid` (the launcher's own by default)
+    with no group or other permission bits -- tmux creates it 0700 -- and hold
+    `socket_path` as a socket.
+
+    Every directory above it, up to `/`, must pass OpenSSH's StrictModes rule:
+    owned by root or `uid`, and not writable by group or others unless sticky
+    (as `/tmp` is). Otherwise another local user could swap the directory for a
+    symlink between this check and docker's bind. Raises `OrchestrationError`
+    when any of this fails.
+    """
+    uid = os.getuid() if uid is None else uid
+    if os.path.realpath(host_dir) != host_dir:
+        raise OrchestrationError(
+            "tmux socket directory %s is reached through a symlink; docker would "
+            "bind whatever it points at" % host_dir)
+    try:
+        dir_stat = os.lstat(host_dir)
+    except OSError as exc:
+        raise OrchestrationError("cannot inspect the tmux socket directory: %s" % exc)
+    if not stat.S_ISDIR(dir_stat.st_mode):
+        raise OrchestrationError("tmux socket directory %s is not a directory" % host_dir)
+    if dir_stat.st_uid != uid:
+        raise OrchestrationError(
+            "tmux socket directory %s is owned by uid %d, not the launcher's uid %d"
+            % (host_dir, dir_stat.st_uid, uid))
+    if dir_stat.st_mode & 0o077:
+        raise OrchestrationError(
+            "tmux socket directory %s is open to group or others (mode %04o); "
+            "tmux creates it 0700" % (host_dir, stat.S_IMODE(dir_stat.st_mode)))
+    ancestor = os.path.dirname(host_dir)
+    while True:
+        try:
+            ancestor_stat = os.lstat(ancestor)
+        except OSError as exc:
+            raise OrchestrationError("cannot inspect %s above the tmux socket: %s"
+                                     % (ancestor, exc))
+        if ancestor_stat.st_uid not in (0, uid):
+            raise OrchestrationError(
+                "%s, above the tmux socket directory, is owned by uid %d, neither "
+                "root nor the launcher's uid %d" % (ancestor, ancestor_stat.st_uid, uid))
+        mode = ancestor_stat.st_mode
+        if mode & (stat.S_IWGRP | stat.S_IWOTH) and not mode & stat.S_ISVTX:
+            raise OrchestrationError(
+                "%s, above the tmux socket directory, is writable by group or others "
+                "without the sticky bit (mode %04o), so another user could swap the "
+                "directory before docker binds it" % (ancestor, stat.S_IMODE(mode)))
+        parent = os.path.dirname(ancestor)
+        if parent == ancestor:
+            break
+        ancestor = parent
+    try:
+        socket_stat = os.lstat(socket_path)
+    except OSError as exc:
+        raise OrchestrationError("cannot inspect the tmux socket: %s" % exc)
+    if not stat.S_ISSOCK(socket_stat.st_mode):
+        raise OrchestrationError("tmux socket %s is not a socket" % socket_path)
 
 
 def ensure_mcp_harness_supported(merged, harness):
@@ -135,7 +211,8 @@ def ensure_mcp_harness_supported(merged, harness):
 
 
 def _start_one_tong(docker, name, defn, *, container, network, alias,
-                    resolver, workspace, label_hash, make_channel):
+                    resolver, workspace, label_hash, make_channel,
+                    tmux=None, tmux_pane=None, session_handle=None):
     """Start one tong container detached, delivering any secret env over a FIFO.
 
     Resolves the definition's secret references through `resolver` and splits the
@@ -149,6 +226,9 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     secrets are present in the environment before the real process starts, while
     the bytes live only in docker's API stream and the container kernel's pipe
     buffer -- never `-e`, argv, or disk.
+
+    `tmux`, `tmux_pane`, and `session_handle` reach `tongs.tong_run_argv`, which
+    uses them only for a tong that mounts `tmux-socket`.
 
     Once the argv is assembled, any existing container of the same name is removed
     so a stale or stopped one is replaced cleanly -- but a definition the argv
@@ -177,6 +257,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
                 container_name=container, network=network, alias=alias,
                 env=plain_env, label_hash=label_hash, workspace=workspace,
                 extra_mount_specs=git_dir_specs,
+                tmux=tmux, tmux_pane=tmux_pane, session_handle=session_handle,
             )
         except ValueError as exc:
             raise OrchestrationError("tong '%s': %s" % (name, exc))
@@ -200,6 +281,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
             env=plain_env, label_hash=label_hash, workspace=workspace,
             secret_channel=True, entrypoint=entrypoint, command=command,
             extra_mount_specs=git_dir_specs,
+            tmux=tmux, tmux_pane=tmux_pane, session_handle=session_handle,
         )
     except ValueError as exc:
         raise OrchestrationError("tong '%s': %s" % (name, exc))
@@ -287,6 +369,7 @@ def _mcp_injection(mcp_config, harness, mcp_dir):
 
 def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                    make_channel=SecretChannel, teardown_guard=contextlib.nullcontext,
+                   check_tmux_dir=check_tmux_socket_dir,
                    sleep=time.sleep, monotonic=time.monotonic):
     """Start the discovered tongs, run the anvil, and tear down session state.
 
@@ -314,10 +397,19 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     tongs are left running. Teardown runs inside the caller's `teardown_guard()`,
     which keeps signals from cutting it short; the default guards nothing.
 
+    A `session` tong that mounts `tmux-socket` is handed the launcher's
+    `opts.tmux`/`opts.tmux_pane` and the session handle; both values, and the
+    socket directory on disk (through `check_tmux_dir`, `check_tmux_socket_dir`
+    unless a test injects another), are checked before anything starts.
+
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
-    becomes ready (the anvil does not run against a half-up environment) or a
-    `session` tong is discovered with no anvil `--name` to key the session by, and
-    `SecretResolutionError` if a secret reference cannot be resolved.
+    becomes ready (the anvil does not run against a half-up environment), a
+    `session` tong is discovered with no anvil `--name` to key the session by, or
+    a tong mounts `tmux-socket` while the launcher is outside tmux, its `$TMUX`
+    or `$TMUX_PANE` is malformed, its socket directory fails
+    `check_tmux_socket_dir`, or the definition makes one of the names the
+    launcher sets a secret reference, and `SecretResolutionError` if a secret
+    reference cannot be resolved.
     """
     ensure_mcp_harness_supported(merged, opts.harness)
     resolver = make_secret_resolver(providers or {})
@@ -332,6 +424,32 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
         raise OrchestrationError(
             "session tongs require the anvil '--name' as a session handle"
         )
+
+    tmux_names = [
+        name for name in sorted(merged)
+        if _mounts_word(merged[name]["definition"], tongs.TMUX_MOUNT)
+    ]
+    for name in tmux_names:
+        # Validation refuses this too; a secret here would override the launcher's values.
+        owned_secret = tongs.tmux_secret_env_error(merged[name]["definition"])
+        if owned_secret:
+            raise OrchestrationError("tong '%s': %s" % (name, owned_secret))
+    if tmux_names:
+        if not opts.tmux:
+            raise OrchestrationError(
+                "tong(s) %s mount '%s', so the launcher must be started from inside "
+                "a tmux pane ($TMUX is unset)" % (", ".join(tmux_names), tongs.TMUX_MOUNT)
+            )
+        try:
+            tmux_dir, tmux_socket_path, _ = tongs.resolve_tmux_socket(opts.tmux)
+            if opts.tmux_pane:
+                tongs.check_tmux_pane(opts.tmux_pane)
+        except ValueError as exc:
+            raise OrchestrationError("tong(s) %s: %s" % (", ".join(tmux_names), exc))
+        try:
+            check_tmux_dir(tmux_dir, tmux_socket_path)
+        except OrchestrationError as exc:
+            raise OrchestrationError("tong(s) %s: %s" % (", ".join(tmux_names), exc))
 
     # No org layer means no token, and every shared tong keeps its global unscoped name.
     org_token = tongs.org_scope_token(dict(opts.layer_dirs).get(tongs.ORG))
@@ -373,6 +491,7 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                     container=container, network=plan["network"], alias=alias,
                     resolver=resolver, workspace=opts.workspace,
                     label_hash=tongs.config_hash(defn), make_channel=make_channel,
+                    tmux=opts.tmux, tmux_pane=opts.tmux_pane, session_handle=session_id,
                 )
                 probe_network = plan["network"]
             else:

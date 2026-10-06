@@ -49,6 +49,14 @@ class PrivilegeSummaryTests(unittest.TestCase):
     def test_no_socket_without_mount(self):
         self.assertFalse(tongs.privilege_summary(def_of(GITHUB_TONG))["socket"])
 
+    def test_summary_reports_tmux_socket_access(self):
+        defn = def_of(GITHUB_TONG)
+        self.assertFalse(tongs.privilege_summary(defn)["tmux"])
+        defn["mounts"] = ["tmux-socket:ro"]
+        summary = tongs.privilege_summary(defn)
+        self.assertTrue(summary["tmux"])
+        self.assertFalse(summary["socket"])
+
 
 class ApprovalKeyingTests(unittest.TestCase):
     def setUp(self):

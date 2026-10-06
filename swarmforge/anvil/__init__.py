@@ -52,8 +52,8 @@ A tong's secret references are resolved on the host (see "Secret delivery") and
 handed to the tong as environment, so the launcher starts `shared` and `session`
 tongs reached over the network (`mcp`/`port`) or with no anvil-facing surface
 (`none`), with or without secrets. A `volume` interface, or a `shared` tong that
-mounts the workspace, is refused with a clear message rather than started
-half-wired.
+mounts the workspace or the tmux socket, is refused with a clear message rather
+than started half-wired.
 
 MCP config
 ----------
@@ -94,12 +94,13 @@ First-run approval
 ------------------
 The user, org, and Swarmforge-repo layers are installed deliberately and are
 trusted. The workspace is any repo you happened to clone, so a workspace-sourced
-tong -- which may request secrets, host mounts, or the docker socket -- is gated:
-before the anvil starts, the launcher prints the privilege summary and asks the
-user to approve it. Approval is keyed by workspace path + tong name + a hash of
-the merged definition (so any change re-prompts) and persists in the user-layer
-store passed as `--approvals`. The scripted `--no-prompt` mode fails closed
-(refusing the run) rather than auto-approving an unapproved tong.
+tong -- which may request secrets, host mounts, the docker socket, or the
+launcher's tmux server -- is gated: before the anvil starts, the launcher prints
+the privilege summary and asks the user to approve it. Approval is keyed by
+workspace path + tong name + a hash of the merged definition (so any change
+re-prompts) and persists in the user-layer store passed as `--approvals`. The
+scripted `--no-prompt` mode fails closed (refusing the run) rather than
+auto-approving an unapproved tong.
 
 Passthrough invariant
 ---------------------
@@ -135,6 +136,7 @@ from .errors import OrchestrationError, TerminationSignal
 from .orchestrate import (
     MCP_CONFIG_CONTAINER_PATH,
     MCP_FILE_ENV,
+    check_tmux_socket_dir,
     ensure_mcp_harness_supported,
     exec_anvil,
     run_with_tongs,
@@ -166,6 +168,7 @@ __all__ = [
     "TerminationSignal",
     "MCP_CONFIG_CONTAINER_PATH",
     "MCP_FILE_ENV",
+    "check_tmux_socket_dir",
     "ensure_mcp_harness_supported",
     "exec_anvil",
     "run_with_tongs",

@@ -21,10 +21,12 @@ from .model import (
 )
 from .mounts import (
     mount_destination,
+    mount_mode_error,
     mount_target_error,
     overlapping_mount_error,
     parse_mount,
     reserved_mount_targets,
+    tmux_secret_env_error,
 )
 from .secrets import ENV_NAME_RE, partition_secret_env
 
@@ -133,6 +135,9 @@ def validate_tong(name, defn):
         for secret_name in sorted(secret):
             if not ENV_NAME_RE.match(secret_name):
                 err("invalid secret env name %r (must be a valid identifier)" % secret_name)
+        owned_secret = tmux_secret_env_error(defn)
+        if owned_secret:
+            err(owned_secret)
 
     for argvish in ("entrypoint", "command"):
         value = defn.get(argvish)
@@ -155,12 +160,13 @@ def validate_tong(name, defn):
                 err("mount entries must be strings, got %r" % (mount,))
                 continue
             try:
-                word, target, _ = parse_mount(mount)
+                word, target, mode = parse_mount(mount)
                 destination = mount_destination(word, target)
             except ValueError as exc:
                 err(str(exc))
                 continue
-            reason = mount_target_error(mount, word, target, destination, reserved)
+            reason = (mount_target_error(mount, word, target, destination, reserved)
+                      or mount_mode_error(mount, word, mode))
             if reason is None:
                 reason = overlapping_mount_error(mount, destination, placed)
             if reason:

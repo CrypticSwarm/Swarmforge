@@ -154,7 +154,7 @@ The targets are in [Make targets](make-targets.md#ollama).
 | `SHELL` | Its basename picks which rc candidates are tried first. |
 | `PATH` | Only to warn when `~/.local/bin` is not on it. |
 
-The launcher reads `SWARMFORGE_USER_ASSETS_DIR` from its own environment too, as the fallback root for `approvals.json` and `secret-providers.yaml` when a call passes neither `--approvals` nor `--providers`.
+The launcher reads `SWARMFORGE_USER_ASSETS_DIR` from its own environment too, as the fallback root for `approvals.json` and `secret-providers.yaml` when a call passes neither `--approvals` nor `--providers`. It also reads `TMUX` and `TMUX_PANE`, which only a [`tmux-socket`](../tongs/definitions.md#mounts) tong uses; `make` passes both through unchanged.
 
 [`swarmforge clone` and `swarmforge init`](../cli.md) drop `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, and `GIT_NAMESPACE` from the environment they hand git, since `git -C` does not override them.
 
@@ -179,7 +179,10 @@ The launcher reads `SWARMFORGE_USER_ASSETS_DIR` from its own environment too, as
 | `SWARMFORGE_CONFIG_DEST` `SWARMFORGE_CONFIG_RESET` | the make variables, passed through | `swarmforge.harness.init`. |
 | `SWARMFORGE_TONG_MCP_FILE` | `/tmp/swarmforge-tong-mcp.json` | `swarmforge.harness.init`, as the generated MCP fragment to merge. Set only for a session with MCP tongs and a harness whose spec takes the path by environment variable; one that takes a flag gets the same mount on its command line. |
 | `SWARMFORGE_TONG_<NAME>_HOST` `_PORT` `_PATH` | the tong's alias and port, or its mountpoint | The agent. One set per `port` or `volume` [tong](../tongs/definitions.md#interface-kinds). |
-| `SWARMFORGE_WORKSPACE_HOST_PATH` | the workspace's path on the host | A socket-holding `session` [broker](../tongs/broker.md) tong. Never a `shared` tong, and never over a value the tong sets itself. |
+| `SWARMFORGE_WORKSPACE_HOST_PATH` | the workspace's path on the host | A `session` tong that mounts `docker-socket` (a [broker](../tongs/broker.md)) or [`tmux-socket`](../tongs/definitions.md#mounts). Never a `shared` tong, and never over a value the tong sets itself. |
+| `TMUX` | the launcher's `$TMUX`, with the socket re-pointed under `/run/swarmforge-tmux` | A `session` tong that mounts [`tmux-socket`](../tongs/definitions.md#mounts), so a stock `tmux` client reaches the host server. Replaces a plain value the definition sets; a secret reference there is refused at validation. |
+| `TMUX_PANE` | the launcher's `$TMUX_PANE` | The same tong, as tmux's default target — a default, not a restriction. Set only when the launcher has one; a plain value the definition sets is dropped either way, and a secret reference is refused. |
+| `SWARMFORGE_SESSION_HANDLE` | the anvil's container name (`--name`) | The same tong, as the session it serves. Replaces a plain value the definition sets; a secret reference there is refused at validation. |
 | `CLAUDE_CONFIG_DIR` | [the merged config dir](../harnesses/claude-code.md#the-config-directory) | `claude`, set by its `pre_exec` hook. |
 | `CLAUDE_SECURESTORAGE_CONFIG_DIR` | `/home/anvil/.claude` | `claude`, set by the same hook. |
 | `PYTHONPATH` | `/usr/local/lib/swarmforge` | Both lifecycle drivers, so the copied package imports. Dropped before the harness is exec'd. |

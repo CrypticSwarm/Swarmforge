@@ -2,10 +2,11 @@
 
 The user, org, and Swarmforge-repo layers are installed deliberately and are
 trusted. The workspace is any repo you happened to clone, so a workspace-sourced
-tong -- which may request secrets, host mounts, or the docker socket -- is gated:
-its privilege summary is rendered and the user is asked to approve it before the
-anvil starts. Approval is keyed by workspace path, tong name, and a hash of the
-merged definition, so any change re-prompts, and persists in the user layer.
+tong -- which may request secrets, host mounts, the docker socket, or the
+launcher's tmux server -- is gated: its privilege summary is rendered and the
+user is asked to approve it before the anvil starts. Approval is keyed by
+workspace path, tong name, and a hash of the merged definition, so any change
+re-prompts, and persists in the user layer.
 
 Deciding what a definition asks for and remembering the answer are the pure core's
 job; rendering the question and reading the reply are this module's.
@@ -24,9 +25,11 @@ def render_privilege_summary(name, summary):
     """Human-readable block describing what a workspace tong requests.
 
     `summary` is the structured output of `tongs.privilege_summary`. Only the
-    privileges actually requested are shown, and docker-socket access -- the
-    broadest grant, since it is full control of the host's docker -- is always
-    called out explicitly so it cannot be approved unseen.
+    privileges actually requested are shown, and the two broadest grants --
+    docker-socket access (full control of the host's docker) and tmux-socket
+    access (every tmux server in the user's socket directory, so any command on
+    the host) -- are always called out on their own lines so neither can be
+    approved unseen.
     """
     lines = ["Workspace tong %r requests approval:" % name]
     lines.append("  image:    %s" % (summary.get("image") or "(none declared)"))
@@ -42,6 +45,10 @@ def render_privilege_summary(name, summary):
         lines.append("  networks: %s" % ", ".join(str(n) for n in networks))
     if summary.get("socket"):
         lines.append("  docker socket: full host docker control")
+    if summary.get("tmux"):
+        lines.append(
+            "  tmux socket: every tmux server in your socket directory -- any "
+            "command on the host as you (read-only does not limit this)")
     return "\n".join(lines)
 
 
