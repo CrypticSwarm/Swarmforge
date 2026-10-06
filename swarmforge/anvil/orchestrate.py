@@ -75,17 +75,11 @@ def unsupported_tong_reasons(merged):
 
       * a `volume` interface -- a shared named volume has no consumer yet, so it
         is not wired into either container;
-      * a `shared` tong that mounts the `workspace` -- a `shared` tong is one
-        long-lived container reused across sessions, so binding one session's
-        workspace into it would expose that workspace to every later session that
-        reuses the container (a `session` tong is the right home for a
-        per-workspace mount);
       * a workspace-sourced `shared` tong that mounts a `volume` -- its volume
-        is scoped to one checkout but its container is not;
-      * a `shared` tong that mounts the `tmux-socket` -- the same container
-        outlives the session and is reused by later ones, so it would carry one
-        session's tmux server, and its pinning to that session's pane, into the
-        next.
+        is scoped to one checkout but its container is not.
+
+    (A `shared` tong that mounts one session's state is a definition error,
+    refused by validation through `tongs.mount_lifecycle_error`.)
 
     A refused tong is reported rather than started half-wired. Returns a list of
     human-readable reason strings (empty == every discovered tong is startable).
@@ -99,12 +93,6 @@ def unsupported_tong_reasons(merged):
                 "tong '%s' has a 'volume' interface, which this launcher does not "
                 "wire up" % name
             )
-        if defn.get("lifecycle") == "shared" and tongs.mounts_word(defn, tongs.WORKSPACE_MOUNT):
-            reasons.append(
-                "tong '%s' is a 'shared' tong that mounts the workspace; a shared "
-                "container is reused across sessions, so it would leak one "
-                "session's workspace into the next" % name
-            )
         if (defn.get("lifecycle") == "shared"
                 and tongs.is_workspace_sourced(merged[name]["source"])
                 and tongs.mounts_word(defn, tongs.VOLUME_MOUNT)):
@@ -113,12 +101,6 @@ def unsupported_tong_reasons(merged):
                 "volume belongs to this checkout but its container is reused by "
                 "sessions in other checkouts, so it would leak this checkout's "
                 "data into theirs (make it a 'session' tong)" % name
-            )
-        if defn.get("lifecycle") == "shared" and tongs.mounts_word(defn, tongs.TMUX_MOUNT):
-            reasons.append(
-                "tong '%s' is a 'shared' tong that mounts the tmux socket; a shared "
-                "container outlives the session and is reused by later ones, so it "
-                "would carry one session's tmux server into the next" % name
             )
     return reasons
 

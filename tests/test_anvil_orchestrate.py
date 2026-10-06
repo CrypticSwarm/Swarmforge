@@ -84,30 +84,6 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
             {"lifecycle": "session", "image": "x", "env": {"T": "${secret:op:r}"},
              "interface": {"kind": "port", "port": 5432}, "readiness": {"mode": "none"}}), [])
 
-    def test_shared_workspace_mount_refused_but_docker_socket_allowed(self):
-        # A shared workspace mount leaks the workspace across sessions.
-        self.assertTrue(any(
-            "workspace" in r for r in self._reasons({
-                "lifecycle": "shared", "image": "x", "mounts": ["workspace:ro"],
-                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
-            })
-        ))
-        self.assertEqual(
-            self._reasons({
-                "lifecycle": "shared", "image": "x", "mounts": ["docker-socket"],
-                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
-            }),
-            [],
-        )
-
-    def test_shared_workspace_refused_with_a_custom_mount_target(self):
-        self.assertTrue(any(
-            "workspace" in r for r in self._reasons({
-                "lifecycle": "shared", "image": "x", "mounts": ["workspace:/code:ro"],
-                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
-            })
-        ))
-
     def test_workspace_shared_tong_with_a_volume_refused(self):
         # Its container is shared by every checkout while its volume belongs to one.
         defn = {
@@ -131,14 +107,6 @@ class UnsupportedTongReasonsTests(unittest.TestCase):
             )
         session = dict(shared, lifecycle="session")
         self.assertEqual(launcher.unsupported_tong_reasons(_merged("t", session)), [])
-
-    def test_shared_tmux_socket_mount_refused(self):
-        for mount in ("tmux-socket", "tmux-socket:ro"):
-            reasons = self._reasons({
-                "lifecycle": "shared", "image": "x", "mounts": [mount],
-                "interface": {"kind": "none"}, "readiness": {"mode": "none"},
-            })
-            self.assertTrue(any("tmux socket" in r for r in reasons), mount)
 
     def test_session_tmux_socket_mount_startable(self):
         self.assertEqual(
@@ -959,7 +927,7 @@ class RunWithTongsTests(unittest.TestCase):
         docker = FakeDocker()
         shared = dict(SESSION_TMUX, lifecycle="shared")
         with self.assertRaisesRegex(launcher.OrchestrationError,
-                                    "only allowed on a 'session' tong"):
+                                    "'shared' tong may not mount the tmux socket"):
             launcher.run_with_tongs(
                 _merged("spawner", shared, source=tongs.REPO), ANVIL_ARGV,
                 _opts(tmux="/tmp/tmux-1000/default,4242,3"),

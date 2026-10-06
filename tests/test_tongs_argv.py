@@ -411,7 +411,7 @@ class DockerArgvTests(unittest.TestCase):
     def test_run_argv_tmux_mount_on_a_shared_tong_raises(self):
         # Checked first, so no caller can mount a tmux server into a shared container.
         for tmux in ("/tmp/tmux-1000/default,4242,3", None):
-            with self.assertRaisesRegex(ValueError, "only allowed on a 'session' tong"):
+            with self.assertRaisesRegex(ValueError, "'shared' tong may not mount the tmux socket"):
                 self._tmux_argv(lifecycle="shared", tmux=tmux)
 
     def test_anvil_option_value_reads_name_and_network(self):

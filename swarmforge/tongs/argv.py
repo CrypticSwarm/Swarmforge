@@ -170,8 +170,7 @@ def tong_run_argv(
     launcher has no value for is dropped rather than left to the definition. A
     secret reference on one of them would arrive over the FIFO after these and
     win, so validation refuses it (see `tmux_secret_env_error`). Raises
-    `ValueError` when the definition mounts `tmux-socket` and is not a `session`
-    tong, or for any mount `tong_mount_specs` refuses, which includes a
+    `ValueError` for any mount `tong_mount_specs` refuses, which includes a
     `tmux-socket` mount with no `tmux_server`. A tong without the mount gets none
     of them, whatever is passed.
 
@@ -210,10 +209,6 @@ def tong_run_argv(
         argv += ["--tmpfs", SECRET_FIFO_TMPFS]
     effective_env = dict(env or {})
     mounts_tmux = mounts_word(defn, TMUX_MOUNT)
-    if mounts_tmux and defn.get("lifecycle") != "session":
-        raise ValueError(
-            "mount '%s' is only allowed on a 'session' tong; a shared container "
-            "would carry one session's tmux server into the next" % TMUX_MOUNT)
     if mounts_tmux and tmux_server:
         launcher_env = dict(tmux_server.env, **{SESSION_HANDLE_ENV: session_handle})
         for key in TMUX_LAUNCHER_ENV:
