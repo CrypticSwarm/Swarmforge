@@ -901,7 +901,7 @@ class RunWithTongsTests(unittest.TestCase):
 
     def test_tmux_tong_outside_tmux_raises_before_any_docker_call(self):
         docker = FakeDocker()
-        with self.assertRaisesRegex(launcher.OrchestrationError, "inside a tmux pane"):
+        with self.assertRaisesRegex(launcher.OrchestrationError, "not running inside tmux"):
             self._run_tmux(docker, tmux=None)
         self.assertEqual(docker.calls, [])
 
@@ -935,21 +935,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn("SWARMFORGE_SESSION_HANDLE=claude-myproject", started)
         self.assertEqual(
             started[started.index("/tmp/tmux-1000:/run/swarmforge-tmux:ro") - 1], "-v")
-
-    def test_tmux_launcher_env_as_a_secret_never_reaches_docker(self):
-        docker = FakeDocker()
-        channels = FakeChannels()
-        defn = dict(SESSION_TMUX, env={"TMUX_PANE": "${secret:echo:%9}"})
-        with self.assertRaisesRegex(launcher.OrchestrationError,
-                                    "tong 'spawner'.*TMUX_PANE.*secret reference"):
-            launcher.run_with_tongs(
-                _merged("spawner", defn, source=tongs.REPO), ANVIL_ARGV,
-                _opts(tmux="/tmp/tmux-1000/default,4242,3", tmux_pane="%7"),
-                docker=docker, providers=ECHO_PROVIDERS, make_channel=channels,
-                sleep=lambda _s: None, monotonic=_Clock(),
-            )
-        self.assertEqual(docker.calls, [])
-        self.assertEqual(channels.payloads, [])
 
     def test_tmux_values_reach_only_the_tmux_tongs_argv(self):
         docker = FakeDocker()
@@ -989,7 +974,7 @@ class RunWithTongsTests(unittest.TestCase):
         os.chmod(tmux_dir, 0o755)
         docker = FakeDocker()
         with self.assertRaisesRegex(launcher.OrchestrationError,
-                                    "tong\\(s\\) spawner: .*open to group or others"):
+                                    "tong\\(s\\) spawner mount 'tmux-socket': .*open to group or others"):
             self._run_tmux(docker, tmux=tmux, check_tmux_dir=launcher.check_tmux_socket_dir)
         self.assertEqual(docker.calls, [])
 

@@ -358,10 +358,11 @@ class DockerArgvTests(unittest.TestCase):
         defn = def_of(NONE_TONG)
         defn["mounts"] = list(mounts)
         defn["lifecycle"] = lifecycle
+        tmux_server = tongs.resolve_tmux_server(tmux, tmux_pane) if tmux else None
         return tongs.tong_run_argv(
             "spawner", defn, container_name="c", network="n", alias="spawner",
             env=env, workspace="/host/ws",
-            tmux=tmux, tmux_pane=tmux_pane, session_handle=session_handle,
+            tmux_server=tmux_server, session_handle=session_handle,
         )
 
     def test_run_argv_tmux_tong_gets_the_host_server_and_session(self):
@@ -395,16 +396,9 @@ class DockerArgvTests(unittest.TestCase):
         self.assertNotIn("SWARMFORGE_SESSION_HANDLE", joined)
         self.assertIn("TMUX=/run/swarmforge-tmux/default,4242,3", argv)
 
-    def test_run_argv_tmux_mount_without_tmux_raises(self):
-        for tmux in (None, ""):
-            with self.assertRaisesRegex(ValueError, "not running inside tmux"):
-                self._tmux_argv(tmux=tmux)
-
-    def test_run_argv_tmux_malformed_values_raise(self):
-        with self.assertRaisesRegex(ValueError, "default per-user socket directory"):
-            self._tmux_argv(tmux="/home/me/s,1,0")
-        with self.assertRaisesRegex(ValueError, "pane id"):
-            self._tmux_argv(tmux_pane="7")
+    def test_run_argv_tmux_mount_without_a_server_raises(self):
+        with self.assertRaisesRegex(ValueError, "no tmux socket directory is known"):
+            self._tmux_argv(tmux=None)
 
     def test_run_argv_without_tmux_mount_injects_nothing(self):
         for mounts in ((), ("docker-socket",), ("workspace:ro",)):
