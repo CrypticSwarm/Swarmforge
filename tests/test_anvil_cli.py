@@ -535,8 +535,8 @@ class TerminationSignalTests(unittest.TestCase):
             finally:
                 with teardown_guard():
                     steps.append("first")
-                    self._deliver(signal.SIGTERM)
-                    self._deliver(signal.SIGHUP)
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    os.kill(os.getpid(), signal.SIGHUP)
                     steps.append("last")
         return fake_run
 
@@ -549,9 +549,9 @@ class TerminationSignalTests(unittest.TestCase):
         self.assertEqual(self._main_with_run(self._teardown_run(hang_up, steps)), 129)
         self.assertEqual(steps, ["first", "last"])
 
-    def test_signal_during_teardown_after_a_clean_exit_sets_the_exit_status(self):
+    def test_signal_during_teardown_after_a_clean_exit_is_ignored(self):
         steps = []
-        self.assertEqual(self._main_with_run(self._teardown_run(lambda: 0, steps)), 143)
+        self.assertEqual(self._main_with_run(self._teardown_run(lambda: 0, steps)), 0)
         self.assertEqual(steps, ["first", "last"])
 
     def test_signal_during_teardown_after_ctrl_c_keeps_the_ctrl_c_status(self):
@@ -563,29 +563,30 @@ class TerminationSignalTests(unittest.TestCase):
         self.assertEqual(self._main_with_run(self._teardown_run(ctrl_c, steps)), 130)
         self.assertEqual(steps, ["first", "last"])
 
-    def test_signal_during_teardown_after_an_error_skips_the_report(self):
+    def test_signal_during_teardown_after_an_error_keeps_the_report(self):
         steps = []
 
         def fail():
             raise launcher.OrchestrationError("tong 'shipper' did not become ready")
 
         with mock.patch.object(launcher.cli.tongs, "warn") as warn:
-            self.assertEqual(self._main_with_run(self._teardown_run(fail, steps)), 143)
-        warn.assert_not_called()
+            self.assertEqual(self._main_with_run(self._teardown_run(fail, steps)), 1)
+        warn.assert_called_once_with("tong 'shipper' did not become ready")
         self.assertEqual(steps, ["first", "last"])
 
-    def test_teardown_blocks_the_signals_then_restores_the_mask(self):
-        before = signal.pthread_sigmask(signal.SIG_BLOCK, [])
-        blocked = []
+    def test_teardown_ignores_the_signals_then_restores_the_trap(self):
+        during, after = {}, {}
 
         def fake_run(*args, teardown_guard, **kwargs):
             with teardown_guard():
-                blocked.extend(signal.pthread_sigmask(signal.SIG_BLOCK, []))
+                during.update(_handlers())
+            after.update(_handlers())
             return 0
 
         self.assertEqual(self._main_with_run(fake_run), 0)
-        self.assertTrue(set(_TERMINATION_SIGNALS) <= set(blocked))
-        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, []), before)
+        self.assertEqual(during, dict.fromkeys(_TERMINATION_SIGNALS, signal.SIG_IGN))
+        for signum in _TERMINATION_SIGNALS:
+            self.assertIsInstance(after[signum].__self__, launcher.cli._TerminationTrap)
 
     def test_signal_while_reporting_an_error_still_returns_its_code(self):
         def fake_run(*args, **kwargs):
@@ -600,10 +601,9 @@ class TerminationSignalTests(unittest.TestCase):
 
 # Teardown's real child shares the launcher's process group, as `docker rm -f` does.
 _TEARDOWN_CHILD = (
-    "import signal, sys, time\n"
+    "import sys\n"
     "print('tearing down', flush=True)\n"
-    "while not signal.sigpending():\n"
-    "    time.sleep(0.01)\n"
+    "sys.stdin.readline()\n"
     "open(sys.argv[1], 'w').close()\n"
 )
 
@@ -657,13 +657,14 @@ class RealTerminationSignalTests(unittest.TestCase):
             proc = subprocess.Popen(
                 [sys.executable, "-c", _SIGNALLED_LAUNCHER, REPO_ROOT, tongs_dir, marker,
                  mode, _TEARDOWN_CHILD],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-                start_new_session=True,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env, start_new_session=True,
             )
             try:
                 self.assertIn(proc.stdout.readline(), ("running\n", "tearing down\n"))
                 os.killpg(proc.pid, signum)
-                _, stderr = proc.communicate(timeout=30)
+                # Released only after the signal, which the child must have survived.
+                _, stderr = proc.communicate("done\n", timeout=30)
             finally:
                 if proc.poll() is None:
                     proc.kill()
@@ -679,13 +680,9 @@ class RealTerminationSignalTests(unittest.TestCase):
         self.assertEqual(
             self._signal_launcher("mid-run", signal.SIGTERM), (143, True, False, ""))
 
-    def test_group_sighup_during_teardown_spares_its_child_and_exits_129(self):
+    def test_group_sighup_during_teardown_spares_its_child(self):
         self.assertEqual(
-            self._signal_launcher("after-exit", signal.SIGHUP), (129, True, True, ""))
-
-    def test_group_sigterm_during_teardown_spares_its_child_and_exits_143(self):
-        self.assertEqual(
-            self._signal_launcher("after-exit", signal.SIGTERM), (143, True, True, ""))
+            self._signal_launcher("after-exit", signal.SIGHUP), (0, True, True, ""))
 
     def test_group_sighup_during_teardown_after_ctrl_c_exits_130(self):
         self.assertEqual(

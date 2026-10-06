@@ -169,10 +169,9 @@ _TERMINATION_SIGNALS = (signal.SIGHUP, signal.SIGTERM)
 class _TerminationTrap:
     """SIGHUP/SIGTERM handler that raises `TerminationSignal`, or only records it.
 
-    Only the first signal handled is taken and kept in `received`; any after
-    it is dropped. Outside `deferred` that one raises; inside it, it is only
-    recorded, and `main` turns it into the exit status once the run has
-    returned. SIGINT is left alone.
+    Only the first signal is kept in `received`; later ones are dropped. It
+    raises unless `deferred` is entering or leaving, when it is only recorded
+    for `main` to turn into the exit status. SIGINT is left alone.
     """
 
     def __init__(self):
@@ -188,25 +187,22 @@ class _TerminationTrap:
 
     @contextlib.contextmanager
     def deferred(self):
-        """Teardown guard: hold SIGHUP/SIGTERM off until the block has finished.
+        """Teardown guard: ignore SIGHUP/SIGTERM until the block has finished.
 
-        However the teardown was entered, both are blocked for its duration, and
-        teardown's docker children inherit the block. Closing a pane hangs up the
-        launcher's whole process group, so without it the in-flight `docker rm`
-        would die with the launcher's signal and its tong be left behind. On the
-        way out the mask is restored, and a signal held pending meanwhile is
-        handled then, to be recorded rather than raised. Held signals are
-        handled in signal-number order, not arrival order, so if both a TERM
-        and a HUP were held, the HUP is the one taken.
+        Ignored rather than blocked, because teardown's `docker` children
+        inherit it: a Go program clears an inherited signal mask but keeps an
+        inherited SIGHUP ignore, so a later hangup cannot cut a `docker rm`
+        short. Go does not keep SIGTERM ignored. A signal ignored here is lost.
         """
-        previous = signal.pthread_sigmask(signal.SIG_BLOCK, [])
+        self._deferring = True
+        trapped = [s for s in _TERMINATION_SIGNALS if signal.getsignal(s) == self.handle]
         try:
-            self._deferring = True
-            signal.pthread_sigmask(signal.SIG_BLOCK, _TERMINATION_SIGNALS)
+            for signum in trapped:
+                signal.signal(signum, signal.SIG_IGN)
             yield
         finally:
-            # Unblocking runs the pending handlers before it returns.
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            for signum in trapped:
+                signal.signal(signum, self.handle)
             self._deferring = False
 
 
