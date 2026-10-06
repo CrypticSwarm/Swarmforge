@@ -105,6 +105,14 @@ def unsupported_tong_reasons(merged):
     return reasons
 
 
+def _lstat(path, what):
+    """`os.lstat(path)`, or `OrchestrationError` naming `what` could not be inspected."""
+    try:
+        return os.lstat(path)
+    except OSError as exc:
+        raise OrchestrationError("cannot inspect %s: %s" % (what, exc))
+
+
 def check_tmux_socket_dir(host_dir, socket_path, uid=None):
     """Refuse a tmux socket directory that is not plainly the launcher's own.
 
@@ -127,10 +135,7 @@ def check_tmux_socket_dir(host_dir, socket_path, uid=None):
         raise OrchestrationError(
             "tmux socket directory %s is reached through a symlink; docker would "
             "bind whatever it points at" % host_dir)
-    try:
-        dir_stat = os.lstat(host_dir)
-    except OSError as exc:
-        raise OrchestrationError("cannot inspect the tmux socket directory: %s" % exc)
+    dir_stat = _lstat(host_dir, "the tmux socket directory")
     if not stat.S_ISDIR(dir_stat.st_mode):
         raise OrchestrationError("tmux socket directory %s is not a directory" % host_dir)
     if dir_stat.st_uid != uid:
@@ -143,11 +148,7 @@ def check_tmux_socket_dir(host_dir, socket_path, uid=None):
             "tmux creates it 0700" % (host_dir, stat.S_IMODE(dir_stat.st_mode)))
     ancestor = os.path.dirname(host_dir)
     while True:
-        try:
-            ancestor_stat = os.lstat(ancestor)
-        except OSError as exc:
-            raise OrchestrationError("cannot inspect %s above the tmux socket: %s"
-                                     % (ancestor, exc))
+        ancestor_stat = _lstat(ancestor, "%s above the tmux socket" % ancestor)
         if ancestor_stat.st_uid not in (0, uid):
             raise OrchestrationError(
                 "%s, above the tmux socket directory, is owned by uid %d, neither "
@@ -162,10 +163,7 @@ def check_tmux_socket_dir(host_dir, socket_path, uid=None):
         if parent == ancestor:
             break
         ancestor = parent
-    try:
-        socket_stat = os.lstat(socket_path)
-    except OSError as exc:
-        raise OrchestrationError("cannot inspect the tmux socket: %s" % exc)
+    socket_stat = _lstat(socket_path, "the tmux socket")
     if not stat.S_ISSOCK(socket_stat.st_mode):
         raise OrchestrationError("tmux socket %s is not a socket" % socket_path)
 
