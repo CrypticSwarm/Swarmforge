@@ -7,6 +7,7 @@ and argv assembly both come through here, so a mount is judged by the same rules
 whichever asks.
 """
 
+import collections
 import hashlib
 import json
 import posixpath
@@ -46,6 +47,10 @@ _TMUX_PANE_RE = re.compile(r"%[0-9]+")
 
 # The env the launcher sets on a tmux-socket tong; a definition never supplies it.
 TMUX_LAUNCHER_ENV = ("TMUX", "TMUX_PANE", SESSION_HANDLE_ENV)
+
+# One `mounts:` entry as `checked_mounts` judged it; `error` is None when it is accepted.
+CheckedMount = collections.namedtuple(
+    "CheckedMount", ["mount", "word", "volume", "target", "mode", "destination", "error"])
 
 VOLUME_NAME_PREFIX = "swarmforge-volume"
 
@@ -308,6 +313,46 @@ def volume_scope(layer, org_tongs_dir=None, workspace=None):
     raise ValueError("unknown layer %r has no volume scope" % (layer,))
 
 
+def checked_mounts(defn, socket_path=DEFAULT_DOCKER_SOCKET):
+    """Each `mounts:` entry judged by every mount rule, as a `CheckedMount`.
+
+    Validation and argv assembly both walk a definition's mounts through here, so
+    they accept and refuse the same entries with the same message. An entry is
+    refused for not being a string, failing `parse_mount`, or any of
+    `mount_target_error`, `mount_mode_error` and `overlapping_mount_error`; a
+    refused entry has `error` set (and `word` and `destination` None when it never
+    parsed) and is not placed, so later entries are judged for overlap against the
+    accepted ones only.
+    """
+    reserved = reserved_mount_targets(defn, socket_path)
+    placed = []                          # (mount, destination, volume) already accepted
+    for mount in defn.get("mounts") or []:
+        if not isinstance(mount, str):
+            yield CheckedMount(mount, None, None, None, None, None,
+                               "mount entries must be strings, got %r" % (mount,))
+            continue
+        try:
+            word, volume, target, mode = parse_mount(mount)
+            destination = mount_destination(word, target, socket_path)
+        except ValueError as exc:
+            yield CheckedMount(mount, None, None, None, None, None, str(exc))
+            continue
+        error = (mount_target_error(mount, word, target, destination, reserved)
+                 or mount_mode_error(mount, word, mode)
+                 or overlapping_mount_error(mount, destination, volume, placed))
+        if not error:
+            placed.append((mount, destination, volume))
+        yield CheckedMount(mount, word, volume, target, mode, destination, error)
+
+
+def _accepted_mounts(defn, socket_path):
+    """`checked_mounts`, raising `ValueError` at the first refused entry."""
+    for checked in checked_mounts(defn, socket_path):
+        if checked.error:
+            raise ValueError(checked.error)
+        yield checked
+
+
 def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
                      tong_name=None, volume_scope=None, extra_mount_specs=(),
                      tmux_socket_dir=None):
@@ -326,25 +371,16 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
     `resolve_tmux_socket` -- read-only at `TMUX_MOUNT_TARGET`. The directory
     rather than the socket, because tmux deletes and recreates the socket when
     its server restarts.
-    Raises `ValueError` for a non-string entry, a malformed mount, an unusable or
-    colliding destination, a refused access mode, a `workspace` or `tmux-socket`
-    mount when no host source for it is known, or a `volume` mount without a
+    Raises `ValueError` for any entry `checked_mounts` refuses, a volume
+    overlapping one of `extra_mount_specs`, a `workspace` or `tmux-socket` mount
+    when no host source for it is known, or a `volume` mount without a
     `tong_name` and `volume_scope` to name it by -- a definition never names a raw
     host path, so anything else is a mistake that should stop the launch.
     """
     specs = []
-    reserved = reserved_mount_targets(defn, socket_path)
-    placed = []                          # (mount, destination, volume) already emitted
-    for mount in defn.get("mounts") or []:
-        if not isinstance(mount, str):
-            raise ValueError("mount entries must be strings, got %r" % (mount,))
-        word, volume, target, mode = parse_mount(mount)
-        destination = mount_destination(word, target, socket_path)
-        reason = (mount_target_error(mount, word, target, destination, reserved)
-                  or mount_mode_error(mount, word, mode)
-                  or overlapping_mount_error(mount, destination, volume, placed))
-        if reason:
-            raise ValueError(reason)
+    for checked in _accepted_mounts(defn, socket_path):
+        mount, word, mode = checked.mount, checked.word, checked.mode
+        destination = checked.destination
         if word == WORKSPACE_MOUNT:
             if not workspace:
                 raise ValueError("mount 'workspace' requested but no workspace path is known")
@@ -355,7 +391,7 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
             if not tong_name or volume_scope is None:
                 raise ValueError(
                     "mount %r needs the tong's name and scope to name its volume" % (mount,))
-            source = tong_volume_name(tong_name, volume, volume_scope)
+            source = tong_volume_name(tong_name, checked.volume, volume_scope)
             for extra in extra_mount_specs:
                 # Ride-along sources never contain a colon; gitguard refuses those.
                 extra_destination = extra.split(":")[1]
@@ -376,7 +412,6 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
         if mode:
             spec += ":" + mode
         specs.append(spec)
-        placed.append((mount, destination, volume))
     return specs
 
 
@@ -456,14 +491,9 @@ def workspace_mount_placements(defn, socket_path=DEFAULT_DOCKER_SOCKET):
     (None when the entry names no mode -- docker's read-write default). The
     orchestrator asks this to place the git-dir mounts a workspace checkout
     needs beside the workspace bind (see swarmforge.anvil). Empty when the
-    definition mounts no workspace. Raises `ValueError` for a malformed
+    definition mounts no workspace. Raises `ValueError` for a refused
     entry, like `tong_mount_specs`.
     """
-    placements = []
-    for mount in defn.get("mounts") or []:
-        if not isinstance(mount, str):
-            raise ValueError("mount entries must be strings, got %r" % (mount,))
-        word, _, target, mode = parse_mount(mount)
-        if word == WORKSPACE_MOUNT:
-            placements.append((mount_destination(word, target, socket_path), mode))
-    return placements
+    return [(checked.destination, checked.mode)
+            for checked in _accepted_mounts(defn, socket_path)
+            if checked.word == WORKSPACE_MOUNT]

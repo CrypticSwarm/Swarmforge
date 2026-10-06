@@ -20,15 +20,7 @@ from .model import (
     parse_duration,
     parse_gpus,
 )
-from .mounts import (
-    mount_destination,
-    mount_mode_error,
-    mount_target_error,
-    overlapping_mount_error,
-    parse_mount,
-    reserved_mount_targets,
-    tmux_secret_env_error,
-)
+from .mounts import checked_mounts, tmux_secret_env_error
 from .secrets import ENV_NAME_RE, partition_secret_env
 
 
@@ -152,28 +144,10 @@ def validate_tong(name, defn):
         if value is not None and not isinstance(value, list):
             err("'%s' must be a list" % listish)
 
-    mounts = defn.get("mounts")
-    if isinstance(mounts, list):
-        reserved = reserved_mount_targets(defn)
-        placed = []                      # (mount, destination, volume) already accounted for
-        for mount in mounts:
-            if not isinstance(mount, str):
-                err("mount entries must be strings, got %r" % (mount,))
-                continue
-            try:
-                word, volume, target, mode = parse_mount(mount)
-                destination = mount_destination(word, target)
-            except ValueError as exc:
-                err(str(exc))
-                continue
-            reason = (mount_target_error(mount, word, target, destination, reserved)
-                      or mount_mode_error(mount, word, mode))
-            if reason is None:
-                reason = overlapping_mount_error(mount, destination, volume, placed)
-            if reason:
-                err(reason)
-                continue
-            placed.append((mount, destination, volume))
+    if isinstance(defn.get("mounts"), list):
+        for checked in checked_mounts(defn):
+            if checked.error:
+                err(checked.error)
 
     networks = defn.get("networks")
     if isinstance(networks, list):
