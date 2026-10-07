@@ -78,7 +78,7 @@ FROM debian:${DEBIAN_TAG} AS runtime-base
 
 ARG PYTHON_VERSION
 ARG NODE_MAJOR
-ARG PLAYWRIGHT_VERSION=1.60.0
+ARG PLAYWRIGHT_VERSION=1.63.0
 
 # /opt/ruby is root's, so gems go under the anvil home; its bin trails PATH so it shadows nothing root runs.
 ENV GEM_HOME=/home/anvil/.gem
