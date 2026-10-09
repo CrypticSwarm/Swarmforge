@@ -92,6 +92,13 @@ class MountGrammarTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not allowed here"):
             tongs.parse_mount("docker-socket", words=narrowed)
 
+    def test_mounts_word_compares_only_the_word(self):
+        defn = {"mounts": ["volume:workspace:/data", "docker-socket:ro", 7]}
+        self.assertTrue(tongs.mounts_word(defn, tongs.VOLUME_MOUNT))
+        self.assertTrue(tongs.mounts_word(defn, "docker-socket"))
+        self.assertFalse(tongs.mounts_word(defn, tongs.WORKSPACE_MOUNT))
+        self.assertFalse(tongs.mounts_word({}, tongs.WORKSPACE_MOUNT))
+
     def test_mount_destination_refuses_a_word_with_no_default(self):
         # A word without its own default must not inherit the socket's destination.
         with self.assertRaisesRegex(ValueError, "no destination"):

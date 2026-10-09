@@ -31,18 +31,6 @@ from .readiness import wait_ready
 from .secretchan import SecretChannel, make_secret_resolver
 
 
-def _mounts_word(defn, word):
-    """True if a tong's `mounts:` request the magic `word`.
-
-    The word may carry a name, a target and/or a mode (e.g. `workspace:/code:ro`),
-    so compare only the word before the first colon.
-    """
-    for mount in defn.get("mounts") or []:
-        if isinstance(mount, str) and mount.split(":", 1)[0] == word:
-            return True
-    return False
-
-
 def _workspace_git_dir_specs(defn, workspace, warn=None):
     """Git-dir mounts a workspace-mounting tong needs beyond the workspace bind.
 
@@ -108,7 +96,7 @@ def unsupported_tong_reasons(merged):
                 "tong '%s' has a 'volume' interface, which this launcher does not "
                 "wire up" % name
             )
-        if defn.get("lifecycle") == "shared" and _mounts_word(defn, tongs.WORKSPACE_MOUNT):
+        if defn.get("lifecycle") == "shared" and tongs.mounts_word(defn, tongs.WORKSPACE_MOUNT):
             reasons.append(
                 "tong '%s' is a 'shared' tong that mounts the workspace; a shared "
                 "container is reused across sessions, so it would leak one "
@@ -116,7 +104,7 @@ def unsupported_tong_reasons(merged):
             )
         if (defn.get("lifecycle") == "shared"
                 and tongs.is_workspace_sourced(merged[name]["source"])
-                and _mounts_word(defn, tongs.VOLUME_MOUNT)):
+                and tongs.mounts_word(defn, tongs.VOLUME_MOUNT)):
             reasons.append(
                 "tong '%s' is a workspace 'shared' tong that mounts a volume; its "
                 "volume belongs to this checkout but its container is reused by "
@@ -139,7 +127,7 @@ def _volume_scopes(merged, org_tongs_dir, workspace):
     scopes = {}
     for name in sorted(merged):
         scopes[name] = None
-        if not _mounts_word(merged[name]["definition"], tongs.VOLUME_MOUNT):
+        if not tongs.mounts_word(merged[name]["definition"], tongs.VOLUME_MOUNT):
             continue
         try:
             scopes[name] = tongs.volume_scope(

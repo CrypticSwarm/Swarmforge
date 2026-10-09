@@ -11,8 +11,8 @@ import hashlib
 import json
 import os
 
-from .model import WORKSPACE
-from .mounts import _has_socket_mount, mount_volume_name
+from .model import SOCKET_MOUNT, WORKSPACE
+from .mounts import mount_volume_name, mounts_word
 from .secrets import find_secret_refs
 
 
@@ -43,7 +43,7 @@ def privilege_summary(defn):
         "mounts": list(defn.get("mounts") or []),
         "volumes": _declared_volumes(defn),
         "networks": list(defn.get("networks") or []),
-        "socket": _has_socket_mount(defn),
+        "socket": mounts_word(defn, SOCKET_MOUNT),
         "gpus": _requested_gpus(defn),
     }
 

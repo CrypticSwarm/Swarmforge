@@ -46,9 +46,14 @@ VOLUME_NAME_MAX_LENGTH = 64
 VOLUME_HINT_LIMIT = 32
 
 
-def _has_socket_mount(defn):
+def mounts_word(defn, word):
+    """True if a tong's `mounts:` request the magic `word`.
+
+    The word may carry a name, a target and/or a mode (e.g. `workspace:/code:ro`),
+    so compare only the word before the first colon.
+    """
     for mount in defn.get("mounts") or []:
-        if isinstance(mount, str) and mount.split(":", 1)[0] == SOCKET_MOUNT:
+        if isinstance(mount, str) and mount.split(":", 1)[0] == word:
             return True
     return False
 
@@ -183,7 +188,7 @@ def reserved_mount_targets(defn, socket_path=DEFAULT_DOCKER_SOCKET):
     if isinstance(env, dict) and partition_secret_env(env)[1]:
         paths[SECRET_FIFO_DIR] = "the tmpfs where the launcher delivers this tong's secrets"
         paths[SECRET_INJECT_SHELL] = "the shell the secret wrapper execs"
-    if _has_socket_mount(defn):
+    if mounts_word(defn, SOCKET_MOUNT):
         paths[socket_path] = "where the docker socket is mounted"
     return paths
 
