@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Unit tests for swarmforge.tongs.model. Run: python3 tests/test_tongs_model.py"""
 
+import contextlib
+import io
 import os
 import sys
 import unittest
@@ -35,6 +37,12 @@ class PrintableTests(unittest.TestCase):
     def test_output_is_printable_for_every_code_point(self):
         every = "".join(chr(cp) for cp in range(0x110000))
         self.assertTrue(tongs.printable(every).isprintable())
+
+    def test_warn_escapes_its_message(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            tongs.warn("tong 'x\x1b[2K\napproved' is refused")
+        self.assertEqual(err.getvalue(), "tongs: tong 'x\\x1b[2K\\napproved' is refused\n")
 
 
 class ReadinessTests(unittest.TestCase):

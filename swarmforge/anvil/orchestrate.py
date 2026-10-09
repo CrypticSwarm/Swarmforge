@@ -18,7 +18,6 @@ import contextlib
 import json
 import os
 import shutil
-import sys
 import tempfile
 import time
 
@@ -201,8 +200,7 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
     try:
         git_dir_specs = _workspace_git_dir_specs(
             defn, workspace,
-            warn=lambda message: print("tong '%s': %s" % (name, message),
-                                       file=sys.stderr))
+            warn=lambda message: tongs.warn("tong '%s': %s" % (name, message)))
     except ValueError as exc:
         raise OrchestrationError("tong '%s': %s" % (name, exc))
 
