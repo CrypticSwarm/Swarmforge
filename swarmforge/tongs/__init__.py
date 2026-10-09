@@ -107,6 +107,7 @@ from .model import (
     printable,
     readiness_settings,
     warn,
+    workspace_key,
 )
 from .mounts import (
     DEFAULT_DOCKER_SOCKET,
@@ -219,6 +220,7 @@ __all__ = [
     "printable",
     "readiness_settings",
     "warn",
+    "workspace_key",
     "DEFAULT_DOCKER_SOCKET",
     "DEFAULT_WORKSPACE_MOUNT_TARGET",
     "LOCAL_VOLUME_SCOPE",

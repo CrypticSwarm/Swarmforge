@@ -9,13 +9,12 @@ whichever asks.
 
 import hashlib
 import json
-import os
 import posixpath
 import re
 
 from swarmforge.names import canonical_path, sanitize_token
 
-from .model import ORG, REPO, SOCKET_MOUNT, USER, WORKSPACE
+from .model import ORG, REPO, SOCKET_MOUNT, USER, WORKSPACE, workspace_key
 from .secrets import SECRET_FIFO_DIR, SECRET_INJECT_SHELL, partition_secret_env
 
 
@@ -267,24 +266,19 @@ def volume_scope(layer, org_tongs_dir=None, workspace=None):
 
     An org tong's volumes belong to its org's tongs directory (canonical, as
     `org_scope_token` reads it); a workspace tong's to the checkout's top level
-    `workspace` with symlinks resolved, so every session in that checkout, from
-    any subdirectory, shares them -- as does any later checkout at that path,
-    since the path is the key. The user and repo layers are this machine's own
+    `workspace`, keyed by `workspace_key` like its approvals, so every session in
+    that checkout, from any subdirectory, shares them -- as does any later
+    checkout at that path. The user and repo layers are this machine's own
     and share `(LOCAL_VOLUME_SCOPE, None)`, so a repo tong and the same-named
-    user tong it replaces in the merge use one volume. Raises `ValueError` for an org or
-    workspace tong with no directory to scope it by, rather than falling back to
-    the local scope, and for an unknown layer.
+    user tong it replaces in the merge use one volume. None for an org or
+    workspace tong with no directory to scope it by, which `tong_mount_specs`
+    refuses rather than falling back to the local scope. Raises `ValueError` for
+    an unknown layer.
     """
     if layer == ORG:
-        if not org_tongs_dir:
-            raise ValueError("an org tong's volume is scoped to its org, but no org "
-                             "tongs directory is known")
-        return (ORG_VOLUME_SCOPE, canonical_path(org_tongs_dir))
+        return (ORG_VOLUME_SCOPE, canonical_path(org_tongs_dir)) if org_tongs_dir else None
     if layer == WORKSPACE:
-        if not workspace:
-            raise ValueError("a workspace tong's volume is scoped to its checkout, but "
-                             "no workspace path is known")
-        return (WORKSPACE_VOLUME_SCOPE, os.path.realpath(workspace))
+        return (WORKSPACE_VOLUME_SCOPE, workspace_key(workspace)) if workspace else None
     if layer in (USER, REPO):
         return (LOCAL_VOLUME_SCOPE, None)
     raise ValueError("unknown layer %r has no volume scope" % (layer,))

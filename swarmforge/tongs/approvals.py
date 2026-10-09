@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 
-from .model import SOCKET_MOUNT, WORKSPACE
+from .model import SOCKET_MOUNT, WORKSPACE, workspace_key
 from .mounts import mounts_word, parse_mount
 from .secrets import find_secret_refs
 
@@ -109,7 +109,7 @@ def is_approved(approvals, workspace_path, name, defn):
     Fails closed (returns False) on a missing or malformed store entry rather
     than raising -- a hand-edited approvals.json must never crash the gate.
     """
-    entry = approvals.get(workspace_path)
+    entry = approvals.get(workspace_key(workspace_path))
     if not isinstance(entry, dict):
         return False
     return entry.get(name) == config_hash(defn)
@@ -120,5 +120,5 @@ def record_approval(approvals, workspace_path, name, defn):
 
     Mutates and returns the store (same object) so callers can persist it.
     """
-    approvals.setdefault(workspace_path, {})[name] = config_hash(defn)
+    approvals.setdefault(workspace_key(workspace_path), {})[name] = config_hash(defn)
     return approvals

@@ -80,7 +80,7 @@ def unsupported_tong_reasons(merged):
         reuses the container (a `session` tong is the right home for a
         per-workspace mount);
       * a workspace-sourced `shared` tong that mounts a `volume` -- the volume
-        is scoped to one checkout (see `_volume_scopes`) but the container is
+        is scoped to one checkout (see `tongs.volume_scope`) but the container is
         not, so a session in another checkout shipping the same definition would
         reuse it, volume and all.
 
@@ -112,29 +112,6 @@ def unsupported_tong_reasons(merged):
                 "data into theirs (make it a 'session' tong)" % name
             )
     return reasons
-
-
-def _volume_scopes(merged, org_tongs_dir, workspace):
-    """The scope naming each tong's volumes: `{name: (class, path) or None}`.
-
-    A volume is partitioned like the trust of the layer its tong came from (see
-    `tongs.volume_scope`): an org tong's by its org's tongs directory, a
-    workspace tong's by the checkout's top level, and the user and repo layers'
-    by this machine. None for a tong that mounts no volume. Raises
-    `OrchestrationError` for a volume with no directory to scope it by, before
-    anything starts, rather than letting it fall back to the local scope.
-    """
-    scopes = {}
-    for name in sorted(merged):
-        scopes[name] = None
-        if not tongs.mounts_word(merged[name]["definition"], tongs.VOLUME_MOUNT):
-            continue
-        try:
-            scopes[name] = tongs.volume_scope(
-                merged[name]["source"], org_tongs_dir=org_tongs_dir, workspace=workspace)
-        except ValueError as exc:
-            raise OrchestrationError("tong '%s': %s" % (name, exc))
-    return scopes
 
 
 def ensure_mcp_harness_supported(merged, harness):
@@ -343,9 +320,7 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
     becomes ready (the anvil does not run against a half-up environment) or a
-    `session` tong is discovered with no anvil `--name` to key the session by, or
-    a tong mounts a volume with no directory to scope it by (an org tong with no
-    org tongs directory, a workspace tong with no workspace path), and
+    `session` tong is discovered with no anvil `--name` to key the session by, and
     `SecretResolutionError` if a secret reference cannot be resolved.
     """
     ensure_mcp_harness_supported(merged, opts.harness)
@@ -376,7 +351,11 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             "join their isolated network"
         )
 
-    volume_scopes = _volume_scopes(merged, org_tongs_dir, opts.workspace)
+    volume_scopes = {
+        name: tongs.volume_scope(merged[name]["source"], org_tongs_dir=org_tongs_dir,
+                                 workspace=opts.workspace)
+        for name in merged
+    }
 
     plan = tongs.plan_network(merged, base_network, session_id)
     injection = tongs.plan_injection(merged, opts.harness)

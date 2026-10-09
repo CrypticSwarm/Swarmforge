@@ -1003,17 +1003,14 @@ class VolumeScopeTests(unittest.TestCase):
                                       + ":/models"])
         self.assertNotEqual(mounted[0], mounted[1])
 
-    def test_workspace_tong_volume_without_a_workspace_path_starts_nothing(self):
-        docker = FakeDocker()
-        with self.assertRaisesRegex(launcher.OrchestrationError, "tong 'cache'.*workspace"):
-            self._run(docker, _merged("cache", SESSION_VOLUME))
-        self.assertEqual(docker.calls, [])
-
-    def test_org_tong_volume_without_an_org_directory_starts_nothing(self):
-        docker = FakeDocker()
-        with self.assertRaisesRegex(launcher.OrchestrationError, "tong 'cache'.*org"):
-            self._run(docker, _merged("cache", SESSION_VOLUME, source=tongs.ORG))
-        self.assertEqual(docker.calls, [])
+    def test_volume_without_a_directory_to_scope_it_starts_no_tong(self):
+        # Never the local scope: that would share the volume across orgs or checkouts.
+        for source in (tongs.WORKSPACE, tongs.ORG):
+            docker = FakeDocker()
+            with self.assertRaisesRegex(launcher.OrchestrationError,
+                                        "tong 'cache'.*name and scope", msg=source):
+                self._run(docker, _merged("cache", SESSION_VOLUME, source=source))
+            self.assertEqual(docker.run_argvs, [], source)
 
     def test_workspace_tong_without_a_volume_needs_no_workspace_path(self):
         docker = FakeDocker()

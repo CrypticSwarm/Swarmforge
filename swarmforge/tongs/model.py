@@ -9,6 +9,7 @@ and `resources.gpus` request.
 every message passes through `printable` beside it.
 """
 
+import os
 import re
 import sys
 
@@ -33,6 +34,11 @@ SOCKET_MOUNT = "docker-socket"
 
 # A container cannot re-share a bind mount, so a broker needs the workspace's host path.
 WORKSPACE_HOST_ENV = "SWARMFORGE_WORKSPACE_HOST_PATH"
+
+
+def workspace_key(workspace):
+    """The key a checkout's approvals and volumes are stored under: its path, symlinks resolved."""
+    return os.path.realpath(workspace)
 
 
 def warn(message):

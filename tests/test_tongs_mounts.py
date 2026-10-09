@@ -196,10 +196,8 @@ class MountGrammarTests(unittest.TestCase):
             tongs.volume_scope(tongs.ORG, org_tongs_dir="/orgs//acme/./tongs/"),
             (tongs.ORG_VOLUME_SCOPE, "/orgs/acme/tongs"),
         )
-        with self.assertRaisesRegex(ValueError, "org tongs directory"):
-            tongs.volume_scope(tongs.ORG, workspace="/ws")
-        with self.assertRaisesRegex(ValueError, "workspace path"):
-            tongs.volume_scope(tongs.WORKSPACE, org_tongs_dir="/o/tongs")
+        self.assertIsNone(tongs.volume_scope(tongs.ORG, workspace="/ws"))
+        self.assertIsNone(tongs.volume_scope(tongs.WORKSPACE, org_tongs_dir="/o/tongs"))
         with self.assertRaisesRegex(ValueError, "unknown layer"):
             tongs.volume_scope("elsewhere")
 

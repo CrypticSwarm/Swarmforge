@@ -118,6 +118,17 @@ class ApprovalKeyingTests(unittest.TestCase):
         tongs.record_approval(approvals, self.ws, "github", self.defn)
         self.assertFalse(tongs.is_approved(approvals, "/other/ws", "github", self.defn))
 
+    def test_a_symlinked_checkout_shares_its_approvals_and_volumes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = os.path.join(tmp, "checkout")
+            os.mkdir(checkout)
+            link = os.path.join(tmp, "link")
+            os.symlink(checkout, link)
+            approvals = tongs.record_approval({}, link, "github", self.defn)
+            self.assertTrue(tongs.is_approved(approvals, checkout, "github", self.defn))
+            self.assertEqual(list(approvals),
+                             [tongs.volume_scope(tongs.WORKSPACE, workspace=link)[1]])
+
     def test_load_save_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "nested", "approvals.json")
