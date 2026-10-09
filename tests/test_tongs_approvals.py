@@ -76,15 +76,26 @@ class PrivilegeSummaryTests(unittest.TestCase):
     def test_summary_names_each_declared_volume(self):
         defn = def_of(GITHUB_TONG)
         defn["mounts"] = ["workspace:ro", "volume:models:/a", "volume:cache:/c:ro"]
-        self.assertEqual(tongs.privilege_summary(defn)["volumes"], ["models", "cache"])
+        self.assertEqual(tongs.privilege_summary(defn)["volumes"], [
+            {"name": "models", "target": "/a", "docker": None},
+            {"name": "cache", "target": "/c", "docker": None},
+        ])
         self.assertEqual(tongs.privilege_summary(def_of(GITHUB_TONG))["volumes"], [])
+
+    def test_summary_names_the_docker_volume_given_its_scope(self):
+        defn = dict(def_of(GITHUB_TONG), mounts=["volume:models:/a"])
+        scope = (tongs.WORKSPACE_VOLUME_SCOPE, "/home/me/proj")
+        self.assertEqual(
+            tongs.privilege_summary(defn, "cache", scope)["volumes"][0]["docker"],
+            tongs.tong_volume_name("cache", "models", scope),
+        )
 
     def test_summary_tolerates_malformed_mounts(self):
         # The gate runs before validation, which refuses these on its own.
         defn = def_of(GITHUB_TONG)
         defn["mounts"] = ["volume:bad_name:/a", "volume:v", 7, "/etc:/etc", "volume:ok:/b"]
         summary = tongs.privilege_summary(defn)
-        self.assertEqual(summary["volumes"], ["ok"])
+        self.assertEqual([v["name"] for v in summary["volumes"]], ["ok"])
         self.assertEqual(summary["mounts"], defn["mounts"])
 
 

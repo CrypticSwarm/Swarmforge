@@ -42,10 +42,15 @@ def render_privilege_summary(name, summary):
     if mounts:
         lines.append("  mounts:   %s" % ", ".join(str(m) for m in mounts))
     volumes = summary.get("volumes") or []
+    for volume in volumes:
+        where = "%s at %s" % (volume["name"], volume["target"])
+        if volume["docker"]:
+            where += " (docker volume %s)" % volume["docker"]
+        lines.append("  volume:   %s" % where)
     if volumes:
-        lines.append("  volumes:  %s (persistent: outlives the tong and reuses any data "
-                     "left by an earlier definition or checkout at this path)"
-                     % ", ".join(volumes))
+        lines.append("            persistent: outlives the tong, is mounted by each of its "
+                     "concurrent sessions, and reuses any data left by an earlier "
+                     "definition or checkout at this path")
     networks = summary.get("networks") or []
     if networks:
         lines.append("  networks: %s" % ", ".join(str(n) for n in networks))
@@ -113,7 +118,9 @@ def gate_workspace_tongs(merged, workspace, approvals_path, prompt=True, out=Non
     for name, defn in pending:
         if tongs.is_approved(approvals, workspace, name, defn):
             continue
-        out.write(render_privilege_summary(name, tongs.privilege_summary(defn)) + "\n")
+        summary = tongs.privilege_summary(
+            defn, name, tongs.volume_scope(tongs.WORKSPACE, workspace=workspace))
+        out.write(render_privilege_summary(name, summary) + "\n")
         if not prompt:
             raise ApprovalDenied(
                 "workspace tong %r is unapproved and --no-prompt fails closed" % name

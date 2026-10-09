@@ -12,7 +12,7 @@ import json
 import os
 
 from .model import SOCKET_MOUNT, WORKSPACE, workspace_key
-from .mounts import mounts_word, parse_mount
+from .mounts import mounts_word, parse_mount, tong_volume_name
 from .secrets import find_secret_refs
 
 
@@ -28,20 +28,22 @@ def config_hash(defn):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def privilege_summary(defn):
+def privilege_summary(defn, name=None, volume_scope=None):
     """Structured summary of what a definition asks for, for the approval gate.
 
     Gathers the privileges a reviewer must see before approving a
     workspace-sourced tong: image, secret references, mounts (and the
     persistent volumes among them), networks, docker-socket access, and host
-    GPU access. Rendering and prompting are the caller's job; this just
+    GPU access. Each volume is `{"name", "target", "docker"}`, where `docker` is
+    the docker volume the tong `name` mounts from `volume_scope`, or None
+    without both. Rendering and prompting are the caller's job; this just
     assembles the facts.
     """
     return {
         "image": defn.get("image"),
         "secrets": [{"provider": p, "ref": r} for p, r in find_secret_refs(defn)],
         "mounts": list(defn.get("mounts") or []),
-        "volumes": _declared_volumes(defn),
+        "volumes": _declared_volumes(defn, name, volume_scope),
         "networks": list(defn.get("networks") or []),
         "socket": mounts_word(defn, SOCKET_MOUNT),
         "gpus": _requested_gpus(defn),
@@ -58,8 +60,8 @@ def _requested_gpus(defn):
     return resources.get("gpus") if isinstance(resources, dict) else None
 
 
-def _declared_volumes(defn):
-    """Names of the volumes a definition's well-formed `volume:` mounts declare.
+def _declared_volumes(defn, name, volume_scope):
+    """The volumes a definition's well-formed `volume:` mounts declare.
 
     The gate runs before validation, so a malformed entry is skipped here rather
     than raised: it is still listed among the raw mounts, and validation refuses
@@ -70,11 +72,13 @@ def _declared_volumes(defn):
         if not isinstance(mount, str):
             continue
         try:
-            volume = parse_mount(mount)[1]
+            _, volume, target, _ = parse_mount(mount)
         except ValueError:
             continue
         if volume:
-            volumes.append(volume)
+            docker = (tong_volume_name(name, volume, volume_scope)
+                      if name and volume_scope else None)
+            volumes.append({"name": volume, "target": target, "docker": docker})
     return volumes
 
 
