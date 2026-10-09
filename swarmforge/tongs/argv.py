@@ -12,7 +12,7 @@ import os
 from swarmforge.names import canonical_path, dir_hint, path_token, sanitize_token
 
 from .mcp import _is_network_facing, _ordered_aliases
-from .model import LABEL_CONFIG_HASH, LABEL_TONG_NAME, WORKSPACE_HOST_ENV
+from .model import LABEL_CONFIG_HASH, LABEL_TONG_NAME, WORKSPACE_HOST_ENV, parse_gpus
 from .mounts import DEFAULT_DOCKER_SOCKET, _has_socket_mount, tong_mount_specs
 from .secrets import SECRET_FIFO_TMPFS, declared_run_override
 
@@ -90,9 +90,11 @@ def session_container_name(session_id, name):
 def tong_resource_flags(defn):
     """docker resource flags from a tong's `resources:` block.
 
-    v1 understands `memory` (mapped to `--memory`). Unknown keys are ignored for
-    forward compatibility. Raises `ValueError` if `resources` is present but not a
-    mapping.
+    v1 understands `memory` (mapped to `--memory`) and `gpus` (mapped to `--gpus`
+    verbatim once `parse_gpus` accepts it: `all`, a count, or a device
+    selector). Unknown keys are ignored for forward compatibility. Raises
+    `ValueError` if `resources` is present but not a mapping, or if `gpus` is
+    not a request `parse_gpus` accepts.
     """
     resources = defn.get("resources")
     if resources is None:
@@ -103,6 +105,9 @@ def tong_resource_flags(defn):
     memory = resources.get("memory")
     if memory is not None:
         flags += ["--memory", str(memory)]
+    gpus = parse_gpus(resources.get("gpus"))
+    if gpus is not None:
+        flags += ["--gpus", gpus]
     return flags
 
 

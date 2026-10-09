@@ -46,11 +46,24 @@ class RenderPrivilegeSummaryTests(unittest.TestCase):
         self.assertIn("workspace:ro", text)
         self.assertIn("docker socket", text)
 
+    def test_calls_out_requested_gpus(self):
+        defn = dict(WORKSPACE_TONG, resources={"gpus": '"device=0,1"'})
+        text = launcher.render_privilege_summary("github", tongs.privilege_summary(defn))
+        self.assertIn('  gpus:     "device=0,1" (host GPU access)', text.splitlines())
+
+    def test_non_mapping_resources_renders_no_gpus_line(self):
+        for resources in ("8g", ["gpus"]):
+            with self.subTest(resources=resources):
+                defn = dict(WORKSPACE_TONG, resources=resources)
+                text = launcher.render_privilege_summary("github", tongs.privilege_summary(defn))
+                self.assertNotIn("gpus", text)
+
     def test_omits_unrequested_sections(self):
-        defn = {"image": "x", "interface": {"kind": "none"}}
+        defn = {"image": "x", "interface": {"kind": "none"}, "resources": {"memory": "1g"}}
         text = launcher.render_privilege_summary("x", tongs.privilege_summary(defn))
         self.assertNotIn("secrets:", text)
         self.assertNotIn("docker socket", text)
+        self.assertNotIn("gpus", text)
 
 
 class GateTests(unittest.TestCase):
@@ -123,6 +136,13 @@ class GateTests(unittest.TestCase):
         changed = dict(WORKSPACE_TONG, image="registry/github@sha256:def")
         with self.assertRaises(launcher.ApprovalDenied):
             self._gate(_merged("gh", changed), prompt=False)
+
+    def test_adding_gpus_to_an_approved_tong_reprompts_and_shows_them(self):
+        self._gate(_merged("gh", WORKSPACE_TONG), answer="y\n")
+        changed = dict(WORKSPACE_TONG, resources={"gpus": "all"})
+        out = self._gate(_merged("gh", changed), answer="y\n")
+        self.assertIn("gpus:     all (host GPU access)", out)
+        self.assertIn("Approve workspace tong 'gh'?", out)
 
     def test_missing_workspace_path_fails_closed(self):
         merged = _merged("gh", WORKSPACE_TONG)

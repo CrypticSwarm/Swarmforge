@@ -4,8 +4,8 @@ Permissive about unknown keys (forward compatibility) and strict about the
 fields the launcher dispatches on, so a malformed definition becomes a list of
 errors here rather than a docker failure mid-launch. Every check that would
 otherwise restate launcher logic -- the mount grammar and its targets, secret
-env names, readiness durations -- calls the same function the launcher calls, so
-validation and assembly can never disagree.
+env names, readiness durations, GPU requests -- calls the same function the
+launcher calls, so validation and assembly can never disagree.
 """
 
 import re
@@ -18,6 +18,7 @@ from .model import (
     TRANSPORTS,
     _is_int,
     parse_duration,
+    parse_gpus,
 )
 from .mounts import (
     mount_destination,
@@ -183,5 +184,9 @@ def validate_tong(name, defn):
             isinstance(memory, str) or _is_int(memory) or isinstance(memory, float)
         ):
             err("resources.memory must be a string or number")
+        try:
+            parse_gpus(resources.get("gpus"))
+        except ValueError as exc:
+            err("resources.gpus: %s" % exc)
 
     return errors

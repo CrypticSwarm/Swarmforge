@@ -3,7 +3,8 @@
 The leaf of the package: it imports nothing else from `swarmforge.tongs`, so
 every other module can depend on it. It holds the constant sets the launcher
 dispatches on (layers, lifecycles, interface kinds, readiness modes), the docker
-labels it stamps, and the pure resolution of a definition's `readiness:` block.
+labels it stamps, and the pure resolution of a definition's `readiness:` block
+and `resources.gpus` request.
 `warn` lives here too, so the one `tongs: ` stderr prefix has a single home.
 """
 
@@ -68,6 +69,48 @@ def parse_duration(value, default=None):
     if seconds <= 0:
         raise ValueError("duration must be positive, got %r" % (value,))
     return seconds
+
+
+# Of docker's --gpus keys only `device`: driver/capabilities/options reach beyond GPUs.
+_GPU_ID = r"[A-Za-z0-9][A-Za-z0-9._:-]*"
+_GPU_COUNT_RE = re.compile(r"[0-9]+")
+# Docker reads a count with Go's Atoi; a 32-bit int fits on every platform it builds for.
+GPU_COUNT_MAX = 2**31 - 1
+_GPU_DEVICE_RE = re.compile(r'device=%s|"device=%s(?:,%s)*"' % (_GPU_ID, _GPU_ID, _GPU_ID))
+_GPU_UNQUOTED_LIST_RE = re.compile(r"device=%s(?:,%s)+" % (_GPU_ID, _GPU_ID))
+_GPU_FORMS = (
+    "'all', a positive GPU count, 'device=<id>', or '\"device=<id>,<id>,...\"'"
+)
+
+
+def parse_gpus(value):
+    """Resolve a `resources.gpus` declaration to its `docker run --gpus` value.
+
+    `None` (no GPUs requested) yields None. Accepted, and returned verbatim as
+    a string: `all`; a count from 1 to `GPU_COUNT_MAX`, as an int or a string
+    of ASCII digits; or a device selector, `device=<id>` or the docker-quoted
+    list `"device=<id>,<id>,..."` (literal double quotes, since docker reads
+    the value as CSV), each id starting with a letter or digit followed by
+    letters, digits, and `._:-`. Raises `ValueError`
+    for anything else -- including docker's other `--gpus` keys, which can
+    reach devices beyond GPUs -- so validation and argv assembly share one
+    definition of a usable request.
+    """
+    if value is None:
+        return None
+    if _is_int(value) and 0 < value <= GPU_COUNT_MAX:
+        return str(value)
+    if isinstance(value, str):
+        if value == "all" or _GPU_DEVICE_RE.fullmatch(value):
+            return value
+        if _GPU_COUNT_RE.fullmatch(value) and 0 < int(value) <= GPU_COUNT_MAX:
+            return value
+        if _GPU_UNQUOTED_LIST_RE.fullmatch(value):
+            raise ValueError(
+                "a device list needs literal double quotes because docker reads "
+                "--gpus as CSV; write gpus: '\"%s\"', got %r" % (value, value)
+            )
+    raise ValueError("must be %s, got %r" % (_GPU_FORMS, value))
 
 
 def readiness_settings(defn):

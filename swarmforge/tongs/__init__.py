@@ -11,7 +11,7 @@ discovered across the same four layers as agents (lowest to highest precedence):
 
 This package is the pure core of the tongs launcher, one module per concern:
 
-    model       the vocabulary of a definition, and readiness resolution
+    model       the vocabulary of a definition, readiness and GPU-request resolution
     discovery   reading the layer directories and merging by name
     validate    schema validation
     secrets     secret references, the provider table, FIFO delivery
@@ -87,6 +87,7 @@ from .mcp import (
 from .model import (
     DEFAULT_READINESS_TIMEOUT_S,
     ENV_PREFIX,
+    GPU_COUNT_MAX,
     INTERFACE_KINDS,
     LABEL_CONFIG_HASH,
     LABEL_TONG_NAME,
@@ -102,6 +103,7 @@ from .model import (
     WORKSPACE,
     WORKSPACE_HOST_ENV,
     parse_duration,
+    parse_gpus,
     readiness_settings,
     warn,
 )
@@ -187,6 +189,7 @@ __all__ = [
     "tong_env_var",
     "DEFAULT_READINESS_TIMEOUT_S",
     "ENV_PREFIX",
+    "GPU_COUNT_MAX",
     "INTERFACE_KINDS",
     "LABEL_CONFIG_HASH",
     "LABEL_TONG_NAME",
@@ -202,6 +205,7 @@ __all__ = [
     "WORKSPACE",
     "WORKSPACE_HOST_ENV",
     "parse_duration",
+    "parse_gpus",
     "readiness_settings",
     "warn",
     "DEFAULT_DOCKER_SOCKET",

@@ -32,9 +32,9 @@ def privilege_summary(defn):
     """Structured summary of what a definition asks for, for the approval gate.
 
     Gathers the privileges a reviewer must see before approving a
-    workspace-sourced tong: image, secret references, mounts, networks, and
-    docker-socket access. Rendering and prompting are the caller's job; this
-    just assembles the facts.
+    workspace-sourced tong: image, secret references, mounts, networks,
+    docker-socket access, and host GPU access. Rendering and prompting are the
+    caller's job; this just assembles the facts.
     """
     return {
         "image": defn.get("image"),
@@ -42,7 +42,18 @@ def privilege_summary(defn):
         "mounts": list(defn.get("mounts") or []),
         "networks": list(defn.get("networks") or []),
         "socket": _has_socket_mount(defn),
+        "gpus": _requested_gpus(defn),
     }
+
+
+def _requested_gpus(defn):
+    """The raw `resources.gpus` a definition declares, or None.
+
+    The gate runs before validation, so the value is reported as declared
+    rather than parsed: anything that might reach docker is shown.
+    """
+    resources = defn.get("resources")
+    return resources.get("gpus") if isinstance(resources, dict) else None
 
 
 def is_workspace_sourced(source_layer):
