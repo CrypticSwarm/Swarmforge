@@ -12,7 +12,7 @@ import json
 import os
 
 from .model import SOCKET_MOUNT, WORKSPACE
-from .mounts import mount_volume_name, mounts_word
+from .mounts import mounts_word, parse_mount
 from .secrets import find_secret_refs
 
 
@@ -70,7 +70,7 @@ def _declared_volumes(defn):
         if not isinstance(mount, str):
             continue
         try:
-            volume = mount_volume_name(mount)
+            volume = parse_mount(mount)[1]
         except ValueError:
             continue
         if volume:

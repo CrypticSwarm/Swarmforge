@@ -23,29 +23,25 @@ class MountGrammarTests(unittest.TestCase):
     and `tong_mount_specs` both delegate here."""
 
     def test_parse_mount_splits_the_optional_fields(self):
-        self.assertEqual(tongs.parse_mount("workspace"), ("workspace", None, None))
-        self.assertEqual(tongs.parse_mount("workspace:ro"), ("workspace", None, "ro"))
-        self.assertEqual(tongs.parse_mount("workspace:/code"), ("workspace", "/code", None))
+        self.assertEqual(tongs.parse_mount("workspace"), ("workspace", None, None, None))
+        self.assertEqual(tongs.parse_mount("workspace:ro"), ("workspace", None, None, "ro"))
         self.assertEqual(
-            tongs.parse_mount("workspace:/code:rw"), ("workspace", "/code", "rw")
+            tongs.parse_mount("workspace:/code"), ("workspace", None, "/code", None)
         )
         self.assertEqual(
-            tongs.parse_mount("docker-socket:ro"), ("docker-socket", None, "ro")
+            tongs.parse_mount("workspace:/code:rw"), ("workspace", None, "/code", "rw")
+        )
+        self.assertEqual(
+            tongs.parse_mount("docker-socket:ro"), ("docker-socket", None, None, "ro")
         )
 
-    def test_parse_mount_keeps_a_volume_name_out_of_the_tuple(self):
+    def test_parse_mount_reads_a_volume_name(self):
         self.assertEqual(
-            tongs.parse_mount("volume:models:/data"), ("volume", "/data", None)
+            tongs.parse_mount("volume:models:/data"), ("volume", "models", "/data", None)
         )
         self.assertEqual(
-            tongs.parse_mount("volume:models:/data:ro"), ("volume", "/data", "ro")
+            tongs.parse_mount("volume:v1.2-x:/data:ro"), ("volume", "v1.2-x", "/data", "ro")
         )
-        self.assertEqual(tongs.mount_volume_name("volume:models:/data:ro"), "models")
-        self.assertEqual(tongs.mount_volume_name("volume:v1.2-x:/data"), "v1.2-x")
-
-    def test_mount_volume_name_is_none_for_other_words(self):
-        self.assertIsNone(tongs.mount_volume_name("workspace:/code:ro"))
-        self.assertIsNone(tongs.mount_volume_name("docker-socket"))
 
     def test_parse_mount_rejects_a_malformed_volume_name(self):
         # `_` is what splits the volume back off its docker name, so it cannot be in one.
@@ -54,12 +50,10 @@ class MountGrammarTests(unittest.TestCase):
                       "volume:models\n:/data"):
             with self.assertRaisesRegex(ValueError, "volume:<name>:/target", msg=mount):
                 tongs.parse_mount(mount)
-            with self.assertRaises(ValueError, msg=mount):
-                tongs.mount_volume_name(mount)
 
     def test_parse_mount_caps_a_volume_name(self):
         longest = "v" * tongs.VOLUME_NAME_MAX_LENGTH
-        self.assertEqual(tongs.mount_volume_name("volume:%s:/data" % longest), longest)
+        self.assertEqual(tongs.parse_mount("volume:%s:/data" % longest)[1], longest)
         with self.assertRaisesRegex(ValueError, "at most 64 characters"):
             tongs.parse_mount("volume:%s:/data" % (longest + "v"))
 
@@ -87,7 +81,8 @@ class MountGrammarTests(unittest.TestCase):
         # A known word refused by a narrowed set is a policy refusal, not a misspelling.
         narrowed = (tongs.WORKSPACE_MOUNT,)
         self.assertEqual(
-            tongs.parse_mount("workspace:/code", words=narrowed), ("workspace", "/code", None)
+            tongs.parse_mount("workspace:/code", words=narrowed),
+            ("workspace", None, "/code", None),
         )
         with self.assertRaisesRegex(ValueError, "not allowed here"):
             tongs.parse_mount("docker-socket", words=narrowed)
@@ -251,20 +246,22 @@ class MountGrammarTests(unittest.TestCase):
         )
 
     def test_overlapping_mount_error_catches_duplicates_and_nesting(self):
-        placed = [("workspace:/code", "/code")]
-        self.assertIsNone(tongs.overlapping_mount_error("workspace:/src", "/src", placed))
+        placed = [("workspace:/code", "/code", None)]
+        self.assertIsNone(
+            tongs.overlapping_mount_error("workspace:/src", "/src", None, placed))
         for destination in ("/code", "/code/sub", "/"):
             self.assertIn(
                 "overlaps mount 'workspace:/code'",
-                tongs.overlapping_mount_error("workspace", destination, placed),
+                tongs.overlapping_mount_error("workspace", destination, None, placed),
             )
 
     def test_overlapping_mount_error_refuses_one_volume_mounted_twice(self):
-        placed = [("volume:models:/a", "/a")]
-        self.assertIsNone(tongs.overlapping_mount_error("volume:cache:/b", "/b", placed))
+        placed = [("volume:models:/a", "/a", "models")]
+        self.assertIsNone(
+            tongs.overlapping_mount_error("volume:cache:/b", "/b", "cache", placed))
         self.assertIn(
             "volume 'models' is already mounted by 'volume:models:/a'",
-            tongs.overlapping_mount_error("volume:models:/b:ro", "/b", placed),
+            tongs.overlapping_mount_error("volume:models:/b:ro", "/b", "models", placed),
         )
 
 

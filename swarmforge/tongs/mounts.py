@@ -79,7 +79,7 @@ def _targets_overlap(one, other):
 
 
 def parse_mount(mount, words=MOUNT_WORDS):
-    """Split a `mounts:` entry into `(word, target, mode)`.
+    """Split a `mounts:` entry into `(word, volume, target, mode)`.
 
     The grammar is `<word>[:/target][:mode]`: the magic word, an optional absolute
     path naming where the container sees the mount, and an optional access mode,
@@ -87,8 +87,8 @@ def parse_mount(mount, words=MOUNT_WORDS):
     `workspace:/work:ro` are all valid. `target`/`mode` are None when not declared;
     the caller supplies the default target for its magic word. The `volume` word
     is spelled `volume:<name>:/target[:mode]`: its name comes first and its target
-    is required, since a named volume has no natural place to land. The name is
-    left out of the tuple and read with `mount_volume_name`.
+    is required, since a named volume has no natural place to land. `volume` is
+    that name, and None for every other word.
 
     The word is checked against `words` before the rest of the entry, since a mount
     nobody recognizes has no meaningful target or mode; narrow that set to accept
@@ -97,21 +97,6 @@ def parse_mount(mount, words=MOUNT_WORDS):
     that is not last, more than one target, a target resolving to the root, or a
     volume mount whose name is malformed or whose target is missing.
     """
-    word, _, target, mode = _split_mount(mount, words)
-    return word, target, mode
-
-
-def mount_volume_name(mount):
-    """The name a `volume:<name>:...` entry declares, or None for any other word.
-
-    Judged by the same grammar as `parse_mount`, so it raises `ValueError` for
-    exactly the entries that does.
-    """
-    return _split_mount(mount, MOUNT_WORDS)[1]
-
-
-def _split_mount(mount, words):
-    """`(word, volume name, target, mode)` for a `mounts:` entry; see `parse_mount`."""
     fields = mount.split(":")
     word, fields = fields[0], fields[1:]
     if word not in words:
@@ -235,22 +220,21 @@ def mount_target_error(mount, word, target, destination, reserved):
     return None
 
 
-def overlapping_mount_error(mount, destination, placed):
+def overlapping_mount_error(mount, destination, volume, placed):
     """Why a mount collides with one already placed, or None if it is clear.
 
-    `placed` is the `(mount, destination)` pairs accepted so far, each entry one
-    `parse_mount` accepted, as `mount` is. Docker refuses two binds onto one
+    `volume` is the name `parse_mount` read from `mount`, and `placed` the
+    `(mount, destination, volume)` triples accepted so far. Docker refuses two binds onto one
     destination outright, and creates the inner mountpoint of nested ones inside
     the outer bind -- inside the user's workspace, for a workspace bind. One volume
     is mounted once: a second target for the same data, perhaps with another
     access mode, is far likelier a mistake than a need.
     """
-    volume = mount_volume_name(mount)
-    for other, other_destination in placed:
+    for other, other_destination, other_volume in placed:
         if _targets_overlap(destination, other_destination):
             return ("mount %r: %s overlaps mount %r at %s"
                     % (mount, destination, other, other_destination))
-        if volume is not None and mount_volume_name(other) == volume:
+        if volume is not None and other_volume == volume:
             return "mount %r: volume %r is already mounted by %r" % (mount, volume, other)
     return None
 
@@ -325,14 +309,14 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
     """
     specs = []
     reserved = reserved_mount_targets(defn, socket_path)
-    placed = []                          # (mount, destination) already emitted
+    placed = []                          # (mount, destination, volume) already emitted
     for mount in defn.get("mounts") or []:
         if not isinstance(mount, str):
             raise ValueError("mount entries must be strings, got %r" % (mount,))
-        word, target, mode = parse_mount(mount)
+        word, volume, target, mode = parse_mount(mount)
         destination = mount_destination(word, target, socket_path)
         reason = (mount_target_error(mount, word, target, destination, reserved)
-                  or overlapping_mount_error(mount, destination, placed))
+                  or overlapping_mount_error(mount, destination, volume, placed))
         if reason:
             raise ValueError(reason)
         if word == WORKSPACE_MOUNT:
@@ -345,7 +329,7 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
             if not tong_name or volume_scope is None:
                 raise ValueError(
                     "mount %r needs the tong's name and scope to name its volume" % (mount,))
-            source = tong_volume_name(tong_name, mount_volume_name(mount), volume_scope)
+            source = tong_volume_name(tong_name, volume, volume_scope)
         else:
             # Unreachable via `parse_mount`; a new word must not inherit the socket bind.
             raise ValueError("mount %r has no docker spec" % (mount,))
@@ -353,7 +337,7 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
         if mode:
             spec += ":" + mode
         specs.append(spec)
-        placed.append((mount, destination))
+        placed.append((mount, destination, volume))
     return specs
 
 
@@ -372,7 +356,7 @@ def workspace_mount_placements(defn, socket_path=DEFAULT_DOCKER_SOCKET):
     for mount in defn.get("mounts") or []:
         if not isinstance(mount, str):
             raise ValueError("mount entries must be strings, got %r" % (mount,))
-        word, target, mode = parse_mount(mount)
+        word, _, target, mode = parse_mount(mount)
         if word == WORKSPACE_MOUNT:
             placements.append((mount_destination(word, target, socket_path), mode))
     return placements
