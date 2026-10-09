@@ -12,7 +12,7 @@ import json
 import posixpath
 import re
 
-from swarmforge.names import canonical_path, sanitize_token
+from swarmforge.names import canonical_path, name_hint
 
 from .model import ORG, REPO, SOCKET_MOUNT, USER, WORKSPACE, workspace_key
 from .secrets import SECRET_FIFO_DIR, SECRET_INJECT_SHELL, partition_secret_env
@@ -256,7 +256,7 @@ def tong_volume_name(tong_name, volume, scope):
     scope_class, scope_path = scope
     key = json.dumps([scope_class, scope_path, tong_name])
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:VOLUME_DIGEST_LENGTH]
-    hint = sanitize_token(tong_name)[:VOLUME_HINT_LIMIT].rstrip("-_.")
+    hint = name_hint(tong_name, VOLUME_HINT_LIMIT)
     parts = [VOLUME_NAME_PREFIX] + ([hint] if hint else []) + [digest]
     return "%s_%s" % ("-".join(parts), volume)
 
