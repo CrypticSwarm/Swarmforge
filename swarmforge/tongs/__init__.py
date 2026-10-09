@@ -104,6 +104,7 @@ from .model import (
     WORKSPACE_HOST_ENV,
     parse_duration,
     parse_gpus,
+    printable,
     readiness_settings,
     warn,
 )
@@ -206,6 +207,7 @@ __all__ = [
     "WORKSPACE_HOST_ENV",
     "parse_duration",
     "parse_gpus",
+    "printable",
     "readiness_settings",
     "warn",
     "DEFAULT_DOCKER_SOCKET",

@@ -11,7 +11,7 @@ import os
 
 from swarmforge.yamlite import parse_map
 
-from .model import TRUSTED_LAYERS, WORKSPACE, warn
+from .model import TRUSTED_LAYERS, WORKSPACE, printable, warn
 
 
 def load_yaml(text):
@@ -48,7 +48,7 @@ def load_tong_dir(path):
         try:
             out[name] = load_tong_file(full)
         except (ValueError, OSError) as exc:
-            warn("skipping %s: %s" % (full, exc))
+            warn(printable("skipping %s: %s" % (full, exc)))
     return out
 
 

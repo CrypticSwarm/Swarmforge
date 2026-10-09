@@ -65,6 +65,89 @@ class RenderPrivilegeSummaryTests(unittest.TestCase):
         self.assertNotIn("docker socket", text)
         self.assertNotIn("gpus", text)
 
+    def test_escape_sequences_in_every_field_are_escaped(self):
+        cursor_up_erase = "\x1b[1A\x1b[2K"
+        defn = {
+            "image": "img" + cursor_up_erase,
+            "env": {"T": "${secret:op%s:ref%s}" % (cursor_up_erase, cursor_up_erase)},
+            "mounts": ["docker-socket", "m" + cursor_up_erase],
+            "networks": ["n" + cursor_up_erase],
+            "resources": {"gpus": "g" + cursor_up_erase},
+        }
+        text = launcher.render_privilege_summary("x", tongs.privilege_summary(defn))
+        shown = "\\x1b[1A\\x1b[2K"
+        self.assertNotIn("\x1b", text)
+        self.assertEqual(
+            text.split("\n"),
+            [
+                "Workspace tong 'x' requests approval:",
+                "  image:    img" + shown,
+                "  secrets:  op%s:ref%s" % (shown, shown),
+                "  mounts:   docker-socket, m" + shown,
+                "  networks: n" + shown,
+                "  docker socket: full host docker control",
+                "  gpus:     g%s (host GPU access)" % shown,
+            ],
+        )
+
+    def test_conceal_in_a_secret_from_an_unknown_key_cannot_hide_later_lines(self):
+        defn = {"x-note": "${secret:a:\x1b[8m}", "mounts": ["docker-socket"]}
+        text = launcher.render_privilege_summary("x", tongs.privilege_summary(defn))
+        self.assertNotIn("\x1b", text)
+        self.assertEqual(
+            text.split("\n")[2:],
+            [
+                "  secrets:  a:\\x1b[8m",
+                "  mounts:   docker-socket",
+                "  docker socket: full host docker control",
+            ],
+        )
+
+    def test_line_breaks_in_a_value_cannot_forge_a_line(self):
+        defn = {
+            "image": "evil\r  image:    registry/trusted@sha256:abc",
+            "mounts": ["docker-socket\n  networks: none"],
+        }
+        lines = launcher.render_privilege_summary(
+            "x", tongs.privilege_summary(defn)
+        ).split("\n")
+        self.assertEqual(
+            lines[1:],
+            [
+                "  image:    evil\\r  image:    registry/trusted@sha256:abc",
+                "  mounts:   docker-socket\\n  networks: none",
+            ],
+        )
+
+    def test_c1_del_bidi_and_zero_width_characters_are_escaped(self):
+        defn = {"image": "a\x9b2Jb\x7fc\u202ed\u200be"}
+        text = launcher.render_privilege_summary("x", tongs.privilege_summary(defn))
+        self.assertIn("  image:    a\\x9b2Jb\\x7fc\\u202ed\\u200be", text)
+
+    def test_plain_values_render_unchanged(self):
+        defn = {
+            "image": "registry/naïve-日本@sha256:abc",
+            "env": {"T": "${secret:op:op://Wörk/token}"},
+            "mounts": ["workspace:ro"],
+            "networks": ["café"],
+        }
+        text = launcher.render_privilege_summary("ü", tongs.privilege_summary(defn))
+        self.assertEqual(
+            text,
+            "Workspace tong 'ü' requests approval:\n"
+            "  image:    registry/naïve-日本@sha256:abc\n"
+            "  secrets:  op:op://Wörk/token\n"
+            "  mounts:   workspace:ro\n"
+            "  networks: café",
+        )
+
+    def test_non_string_values_still_render(self):
+        defn = {"image": 5, "mounts": [7, ["a"]], "networks": [8]}
+        text = launcher.render_privilege_summary("x", tongs.privilege_summary(defn))
+        self.assertIn("  image:    5", text)
+        self.assertIn("  mounts:   7, ['a']", text)
+        self.assertIn("  networks: 8", text)
+
 
 class GateTests(unittest.TestCase):
     def setUp(self):
@@ -143,6 +226,13 @@ class GateTests(unittest.TestCase):
         out = self._gate(_merged("gh", changed), answer="y\n")
         self.assertIn("gpus:     all (host GPU access)", out)
         self.assertIn("Approve workspace tong 'gh'?", out)
+
+    def test_prompt_output_carries_no_raw_control_characters(self):
+        defn = dict(WORKSPACE_TONG, image="img\x1b[2J\x9b2J")
+        out = self._gate(_merged("gh\x1b[8m", defn), answer="y\n")
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("\x9b", out)
+        self.assertIn("Approve workspace tong 'gh\\x1b[8m'? [y/N]: ", out)
 
     def test_missing_workspace_path_fails_closed(self):
         merged = _merged("gh", WORKSPACE_TONG)
