@@ -6,16 +6,21 @@ gates the workspace-sourced ones on approval, refuses a set it cannot start, and
 then either execs the anvil argv verbatim (no tongs discovered) or hands the
 launch to the orchestrator. Every failure the launcher reports is mapped to a
 process exit code here.
+
+While the orchestrator runs, SIGHUP and SIGTERM unwind it through its teardown
+the way Ctrl-C does.
 """
 
 import collections
+import contextlib
 import os
+import signal
 
 from swarmforge import tongs
 
 from .approval import ApprovalDenied, gate_workspace_tongs
 from .docker import DockerCLI, DockerError
-from .errors import OrchestrationError
+from .errors import OrchestrationError, TerminationSignal
 from .orchestrate import (
     ensure_mcp_harness_supported,
     exec_anvil,
@@ -157,6 +162,73 @@ def discover_tongs(layer_dirs):
     return tongs.merge_tongs(tongs.discover(layer_dirs))
 
 
+_TERMINATION_SIGNALS = (signal.SIGHUP, signal.SIGTERM)
+
+
+class _TerminationTrap:
+    """SIGHUP/SIGTERM handler that raises `TerminationSignal`, or only records it.
+
+    Only the first signal is kept in `received`; later ones are dropped. It
+    raises unless `deferred` is entering or leaving, when it is only recorded
+    for `main` to turn into the exit status. SIGINT is left alone.
+    """
+
+    def __init__(self):
+        self.received = None
+        self._deferring = False
+
+    def handle(self, signum, frame):
+        if self.received is not None:
+            return
+        self.received = signum
+        if not self._deferring:
+            raise TerminationSignal(signum)
+
+    @contextlib.contextmanager
+    def deferred(self):
+        """Teardown guard: ignore SIGHUP/SIGTERM until the block has finished.
+
+        Ignored rather than blocked, because teardown's `docker` children
+        inherit it: a Go program clears an inherited signal mask but keeps an
+        inherited SIGHUP ignore, so a later hangup cannot cut a `docker rm`
+        short. Go does not keep SIGTERM ignored. A signal ignored here is lost.
+        """
+        self._deferring = True
+        trapped = [s for s in _TERMINATION_SIGNALS if signal.getsignal(s) == self.handle]
+        try:
+            for signum in trapped:
+                signal.signal(signum, signal.SIG_IGN)
+            yield
+        finally:
+            for signum in trapped:
+                signal.signal(signum, self.handle)
+            self._deferring = False
+
+
+@contextlib.contextmanager
+def _termination_signals_raise():
+    """Install a `_TerminationTrap` on SIGHUP/SIGTERM for the duration; yields it.
+
+    Python's default action for both skips every `finally`, where the
+    orchestrator tears down. A signal ignored on entry (`nohup`) stays ignored,
+    and the previous handlers are put back on the way out.
+    """
+    trap = _TerminationTrap()
+    previous = {}
+    try:
+        for signum in _TERMINATION_SIGNALS:
+            handler = signal.getsignal(signum)
+            if handler is signal.SIG_IGN:
+                continue
+            previous[signum] = handler
+            signal.signal(signum, trap.handle)
+        yield trap
+    finally:
+        for signum, handler in previous.items():
+            # None means a handler installed outside Python; the default is the best match.
+            signal.signal(signum, signal.SIG_DFL if handler is None else handler)
+
+
 def main(argv):
     try:
         opts, anvil_cmd = parse_args(argv)
@@ -221,13 +293,25 @@ def main(argv):
         tongs.warn(str(exc))
         return 1
 
+    # Outermost, so a signal landing in an except clause is caught too.
     try:
-        return run_with_tongs(
-            merged, anvil_cmd, opts, docker=DockerCLI(), providers=providers
-        )
-    except (OrchestrationError, DockerError, SecretResolutionError) as exc:
-        tongs.warn(str(exc))
-        return 1
-    except KeyboardInterrupt:
-        # 128 + SIGINT; the shared tongs stay running by design.
-        return 130
+        with _termination_signals_raise() as trap:
+            try:
+                rc = run_with_tongs(
+                    merged, anvil_cmd, opts, docker=DockerCLI(), providers=providers,
+                    teardown_guard=trap.deferred,
+                )
+            except (OrchestrationError, DockerError, SecretResolutionError) as exc:
+                # Nothing written after a hangup: the terminal may be gone.
+                if trap.received is not None:
+                    return 128 + trap.received
+                tongs.warn(str(exc))
+                return 1
+            except KeyboardInterrupt:
+                # 128 + SIGINT, even if a HUP/TERM followed.
+                return 130
+            if trap.received is not None:
+                return 128 + trap.received
+            return rc
+    except TerminationSignal as exc:
+        return 128 + exc.signum

@@ -11,6 +11,8 @@ import subprocess
 
 from swarmforge import tongs
 
+from .errors import TerminationSignal
+
 
 class DockerError(Exception):
     """A docker command the launch depends on failed; the launch must stop."""
@@ -21,6 +23,9 @@ _INSPECT_STATE_FORMAT = (
     '{{.State.Running}}|{{index .Config.Labels "%s"}}' % tongs.LABEL_CONFIG_HASH
 )
 _INSPECT_HEALTH_FORMAT = "{{if .State.Health}}{{.State.Health.Status}}{{end}}"
+
+# Teardown waits on this; under a TTY the forwarded signal just ends the client.
+_FOREGROUND_STOP_GRACE_S = 3
 
 
 class DockerCLI:
@@ -209,22 +214,34 @@ class DockerCLI:
         )
 
     def _wait_foreground(self, argv):
-        """Run a foreground command, reaping it on Ctrl-C before re-raising.
+        """Run a foreground command, reaping it on any interrupt before re-raising.
 
-        Popen + wait (rather than exec) so the launcher regains control after the
-        process exits. On Ctrl-C the SIGINT reaches both this process and the child
-        through the controlling terminal's process group; the child handles it and
-        exits, we reap it, and the KeyboardInterrupt propagates to the caller.
+        A SIGHUP/SIGTERM may have reached this process alone, so it is forwarded
+        to the child, which gets `_FOREGROUND_STOP_GRACE_S` to exit before it is
+        killed. The child is always reaped before the exception propagates, so
+        teardown never races a live client.
         """
         try:
             proc = subprocess.Popen(argv)
         except OSError as exc:
             raise DockerError("cannot run anvil %r: %s" % (argv[:2], exc))
         try:
-            return proc.wait()
-        except KeyboardInterrupt:
-            proc.wait()
+            try:
+                return proc.wait()
+            except KeyboardInterrupt:
+                proc.wait()
+                raise
+        except TerminationSignal as exc:
+            proc.send_signal(exc.signum)
+            try:
+                proc.wait(timeout=_FOREGROUND_STOP_GRACE_S)
+            except subprocess.TimeoutExpired:
+                pass
             raise
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
 
 
 def _decode(output):

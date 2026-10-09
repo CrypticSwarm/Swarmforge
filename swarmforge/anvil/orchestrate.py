@@ -14,6 +14,7 @@ per-harness config. `exec_anvil` is the degenerate case -- no tongs, so the anvi
 argv is exec'd verbatim.
 """
 
+import contextlib
 import json
 import os
 import shutil
@@ -187,11 +188,11 @@ def _start_one_tong(docker, name, defn, *, container, network, alias,
 
     Once the argv is assembled, any existing container of the same name is removed
     so a stale or stopped one is replaced cleanly -- but a definition the argv
-    builder refuses removes nothing, since it started nothing. If anything fails
-    after the container starts -- a docker error, a delivery timeout, or a Ctrl-C --
-    the container is removed before re-raising, so a half-configured `shared` tong
-    (stamped with its config-hash label) is not reused on the next session despite
-    missing its secret.
+    builder refuses removes nothing here, since it started nothing (teardown still
+    removes a `session` tong by name). If anything fails after the container
+    starts -- a docker error, a delivery timeout, or a Ctrl-C -- the container is
+    removed before re-raising, so a half-configured `shared` tong (stamped with its
+    config-hash label) is not reused on the next session despite missing its secret.
     """
     plan = tongs.plan_tong_secrets(defn.get("env"), resolver)
     plain_env = plan["env"]
@@ -324,7 +325,7 @@ def _mcp_injection(mcp_config, harness, mcp_dir):
 
 
 def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
-                   make_channel=SecretChannel,
+                   make_channel=SecretChannel, teardown_guard=contextlib.nullcontext,
                    sleep=time.sleep, monotonic=time.monotonic):
     """Start the discovered tongs, run the anvil, and tear down session state.
 
@@ -346,10 +347,13 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     vars and, for `mcp` tongs, the per-harness MCP config -- and the anvil runs
     in the foreground.
 
-    On exit -- including SIGINT -- the `session` tongs and the per-session network
-    are torn down (and the connected `shared` tongs disconnected) while the
-    long-lived `shared` tongs are left running. No tong's named volumes are ever
-    removed: they are the state a tong keeps between containers.
+    On exit -- including SIGINT, and SIGHUP/SIGTERM once `cli.main` makes them
+    raise -- the `session` tongs and the per-session network are torn down (and
+    the connected `shared` tongs disconnected) while the long-lived `shared`
+    tongs are left running. No tong's named volumes are ever removed: they are
+    the state a tong keeps between containers. Teardown runs inside the caller's
+    `teardown_guard()`, which keeps signals from cutting it short; the default
+    guards nothing.
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
     becomes ready (the anvil does not run against a half-up environment) or a
@@ -397,10 +401,11 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     joined_shared_networks = []
     anvil_multi = False
     mcp_dir = None
+    # Recorded before creation: an interrupt can land mid-create.
     try:
         if plan["create"]:
-            docker.ensure_network(plan["create"])
             created_network = plan["create"]
+            docker.ensure_network(plan["create"])
 
         ready_checks = []  # (name, defn, alias, container, probe_network)
         for name in sorted(merged):
@@ -408,6 +413,7 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             alias = tongs.canonical_alias(name, defn)
             if defn.get("lifecycle") == "session":
                 container = tongs.session_container_name(session_id, name)
+                started_sessions.append(container)
                 _start_one_tong(
                     docker, name, defn,
                     container=container, network=plan["network"], alias=alias,
@@ -415,16 +421,15 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                     label_hash=tongs.config_hash(defn), make_channel=make_channel,
                     volume_scope=volume_scopes[name],
                 )
-                started_sessions.append(container)
                 probe_network = plan["network"]
             else:
                 scope = org_token if merged[name]["source"] == tongs.ORG else None
                 container = tongs.shared_container_name(name, scope=scope)
                 if scope:
                     tong_network = tongs.shared_network_name(scope)
-                    docker.ensure_network(tong_network)
                     if tong_network not in joined_shared_networks:
                         joined_shared_networks.append(tong_network)
+                    docker.ensure_network(tong_network)
                     probe_network = tong_network
                 else:
                     tong_network = base_network
@@ -444,10 +449,10 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                 # Reached only over its own org network, never the session fabric.
                 continue
             container = tongs.shared_container_name(name)
+            connected_shared.append((plan["network"], container))
             # A stale endpoint from a hard-killed session would fail the connect.
             docker.network_disconnect(plan["network"], container)
             docker.network_connect(plan["network"], container, aliases=aliases)
-            connected_shared.append((plan["network"], container))
 
         # A scoped shared tong lives only on its org network, so probe where the anvil dials.
         for name, defn, alias, container, probe_network in ready_checks:
@@ -476,21 +481,22 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
             return docker.run_foreground_multi(injected, extra_networks, session_id)
         return docker.run_foreground(injected)
     finally:
-        # Order matters: docker refuses to remove a network while endpoints remain.
-        for container in started_sessions:
-            docker.rm_force(container)
-        # rm_force covers a create path that failed before its own --rm could fire.
-        if anvil_multi:
-            docker.rm_force(session_id)
-        for network, container in connected_shared:
-            docker.network_disconnect(network, container)
-        if created_network:
-            docker.network_rm(created_network)
-        # Best-effort: docker refuses while the long-lived shared tong is still attached.
-        for network in joined_shared_networks:
-            docker.network_rm(network)
-        if mcp_dir:
-            shutil.rmtree(mcp_dir, ignore_errors=True)
+        with teardown_guard():
+            # Order matters: docker refuses to remove a network while endpoints remain.
+            for container in started_sessions:
+                docker.rm_force(container)
+            # rm_force covers a create path that failed before its own --rm could fire.
+            if anvil_multi:
+                docker.rm_force(session_id)
+            for network, container in connected_shared:
+                docker.network_disconnect(network, container)
+            if created_network:
+                docker.network_rm(created_network)
+            # Best-effort: docker refuses while the long-lived shared tong is still attached.
+            for network in joined_shared_networks:
+                docker.network_rm(network)
+            if mcp_dir:
+                shutil.rmtree(mcp_dir, ignore_errors=True)
 
 
 def exec_anvil(anvil_cmd):

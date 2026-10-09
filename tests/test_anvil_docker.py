@@ -2,8 +2,14 @@
 """Unit tests for swarmforge.anvil.docker. Run: python3 tests/test_anvil_docker.py"""
 
 import os
+import queue
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -92,6 +98,34 @@ class DockerCLITests(unittest.TestCase):
         self.assertIn(["docker", "network", "disconnect", "net", "ctr"], rec.argvs)
         self.assertIn(["docker", "network", "rm", "net"], rec.argvs)
 
+    def test_termination_signal_is_forwarded_to_the_anvil_and_it_is_reaped(self):
+        cli = launcher.DockerCLI(run=_RecordingRun())
+        with mock.patch.object(launcher.docker.subprocess, "Popen") as popen:
+            proc = popen.return_value
+            proc.wait.side_effect = [launcher.TerminationSignal(signal.SIGHUP), 0, 0]
+            proc.poll.return_value = 0
+            with self.assertRaises(launcher.TerminationSignal):
+                cli.run_foreground(["docker", "run", "img"])
+        proc.send_signal.assert_called_once_with(signal.SIGHUP)
+        proc.wait.assert_any_call(timeout=3)
+        proc.kill.assert_not_called()
+
+    def test_anvil_ignoring_a_forwarded_signal_is_killed_after_the_grace(self):
+        cli = launcher.DockerCLI(run=_RecordingRun())
+        with mock.patch.object(launcher.docker.subprocess, "Popen") as popen:
+            proc = popen.return_value
+            proc.wait.side_effect = [
+                launcher.TerminationSignal(signal.SIGTERM),
+                subprocess.TimeoutExpired(["docker"], 3),
+                -9,
+            ]
+            proc.poll.return_value = None
+            with self.assertRaises(launcher.TerminationSignal):
+                cli.run_foreground(["docker", "run", "img"])
+        proc.send_signal.assert_called_once_with(signal.SIGTERM)
+        proc.kill.assert_called_once_with()
+        self.assertEqual(proc.wait.call_count, 3)
+
     def test_run_foreground_multi_creates_connects_then_starts(self):
         rec = _RecordingRun()
         cli = launcher.DockerCLI(run=rec)
@@ -172,6 +206,144 @@ class DockerCLITests(unittest.TestCase):
         cli = launcher.DockerCLI(run=run)
         self.assertEqual(cli.exec_stdin("ctr", ["cmd"], b"x", timeout=0.1),
                          (None, ""))
+
+
+# Unbuffered writes: a handler writing into a buffered file mid-write raises "reentrant call".
+_ANVIL_STANDIN = r"""
+import os, signal, sys, time
+fifo, survived = sys.argv[1], [name for name in sys.argv[2].split(",") if name]
+report = os.open(fifo, os.O_WRONLY)
+def survive(signum, frame):
+    os.write(report, b"%d\n" % signum)
+for name in survived:
+    signal.signal(getattr(signal, name), survive)
+os.write(report, b"ready\n")
+time.sleep(60)
+"""
+
+
+class ForegroundInterruptTests(unittest.TestCase):
+    """`_wait_foreground` against a real child, interrupted by real signals."""
+
+    def setUp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        self.fifo = os.path.join(tmp, "report")
+        os.mkfifo(self.fifo)
+        # As under the launcher's trap, only the first of each signal raises.
+        for signum, interrupt in ((signal.SIGTERM, launcher.TerminationSignal),
+                                  (signal.SIGINT, lambda _signum: KeyboardInterrupt())):
+            previous = signal.signal(signum, self._first_only(interrupt))
+            self.addCleanup(signal.signal, signum, previous)
+        self.procs = []
+        self.waits = queue.Queue()
+        waits = self.waits
+
+        class ObservedPopen(subprocess.Popen):
+            """Announces each wait, so a driver can tell the launcher has moved on."""
+
+            def wait(self, timeout=None):
+                waits.put(timeout)
+                return super().wait(timeout)
+
+        def recording_popen(argv):
+            proc = ObservedPopen(argv)
+            self.procs.append(proc)
+            return proc
+
+        patcher = mock.patch.object(launcher.docker.subprocess, "Popen", recording_popen)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._kill_leftovers)
+
+    @staticmethod
+    def _first_only(interrupt):
+        taken = []
+
+        def handler(signum, frame):
+            if not taken:
+                taken.append(signum)
+                raise interrupt(signum)
+
+        return handler
+
+    def _kill_leftovers(self):
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def _run(self, survived, drive, grace):
+        """Run the stand-in, letting `drive(report, deliver)` interrupt it.
+
+        `deliver(signum)` signals the launcher and returns once it has entered
+        its next wait. Returns `(exception raised, stand-in's exit code, seconds taken)`.
+        """
+        main_thread = threading.main_thread().ident
+
+        def deliver(signum):
+            # One landing just before a blocking waitpid waits for it to return, so re-send.
+            while True:
+                signal.pthread_kill(main_thread, signum)
+                try:
+                    self.waits.get(timeout=0.5)
+                    return
+                except queue.Empty:
+                    pass
+
+        def driver():
+            with open(self.fifo) as report:
+                if report.readline() == "ready\n":
+                    self.waits.get()
+                    drive(report, deliver)
+                report.read()  # held open until the stand-in exits, so its reports never break
+
+        threading.Thread(target=driver, daemon=True).start()
+        argv = [sys.executable, "-c", _ANVIL_STANDIN, self.fifo, survived]
+        started = time.monotonic()
+        with mock.patch.object(launcher.docker, "_FOREGROUND_STOP_GRACE_S", grace):
+            with self.assertRaises(BaseException) as raised:
+                launcher.DockerCLI().run_foreground(argv)
+        elapsed = time.monotonic() - started
+        (proc,) = self.procs
+        self.assertIsNotNone(proc.returncode, "the anvil client was left unreaped")
+        return raised.exception, proc.returncode, elapsed
+
+    def test_forwarded_signal_ends_the_anvil(self):
+        exc, code, elapsed = self._run(
+            "", lambda report, deliver: deliver(signal.SIGTERM), grace=30)
+        self.assertIsInstance(exc, launcher.TerminationSignal)
+        self.assertEqual(code, -signal.SIGTERM)
+        self.assertLess(elapsed, 20)
+
+    def test_anvil_surviving_the_forwarded_signal_is_killed_after_the_grace(self):
+        exc, code, _ = self._run(
+            "SIGTERM", lambda report, deliver: deliver(signal.SIGTERM), grace=0.2)
+        self.assertIsInstance(exc, launcher.TerminationSignal)
+        self.assertEqual(code, -signal.SIGKILL)
+
+    def test_signal_while_waiting_out_a_ctrl_c_is_forwarded(self):
+        # The anvil survived the Ctrl-C (as Claude's input-clearing does), so the launcher waits.
+        def drive(report, deliver):
+            deliver(signal.SIGINT)
+            deliver(signal.SIGTERM)
+
+        exc, code, elapsed = self._run("", drive, grace=30)
+        self.assertIsInstance(exc, launcher.TerminationSignal)
+        self.assertIsInstance(exc.__context__, KeyboardInterrupt)
+        self.assertEqual(code, -signal.SIGTERM)
+        self.assertLess(elapsed, 20)
+
+    def test_ctrl_c_during_the_grace_kills_the_anvil(self):
+        def drive(report, deliver):
+            deliver(signal.SIGTERM)
+            if report.readline() == "%d\n" % signal.SIGTERM:
+                deliver(signal.SIGINT)
+
+        exc, code, elapsed = self._run("SIGTERM", drive, grace=30)
+        self.assertIsInstance(exc, KeyboardInterrupt)
+        self.assertEqual(code, -signal.SIGKILL)
+        self.assertLess(elapsed, 20)
 
 
 if __name__ == "__main__":
