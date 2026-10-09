@@ -285,7 +285,7 @@ def volume_scope(layer, org_tongs_dir=None, workspace=None):
 
 
 def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
-                     tong_name=None, volume_scope=None):
+                     tong_name=None, volume_scope=None, extra_mount_specs=()):
     """Concrete docker `-v` specs for a tong's `mounts:` magic words.
 
     Returns the list of `-v` *values* (the orchestrator pairs each with a `-v`
@@ -294,7 +294,10 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
     bind-mounts the host docker socket onto the same path it has on the host;
     `volume:<name>:/target[:mode]` mounts the named volume
     `tong_volume_name(tong_name, name, volume_scope)`, which docker creates on
-    first use and never removes with the container.
+    first use and never removes with the container. A volume may not overlap
+    the destination of any of `extra_mount_specs`, the `-v` values that ride
+    along with a workspace mount (see `tong_run_argv`): docker would create
+    their mountpoints inside the volume, where they outlive the container.
     Raises `ValueError` for a non-string entry, a malformed mount, an unusable or
     colliding destination, a `workspace` mount when no workspace path is known, or
     a `volume` mount without a `tong_name` and `volume_scope` to name it by -- a
@@ -324,6 +327,13 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
                 raise ValueError(
                     "mount %r needs the tong's name and scope to name its volume" % (mount,))
             source = tong_volume_name(tong_name, volume, volume_scope)
+            for extra in extra_mount_specs:
+                # Ride-along sources never contain a colon; gitguard refuses those.
+                extra_destination = extra.split(":")[1]
+                if _targets_overlap(destination, extra_destination):
+                    raise ValueError(
+                        "mount %r: %s overlaps %s, which is mounted alongside the "
+                        "workspace" % (mount, destination, extra_destination))
         else:
             # Unreachable via `parse_mount`; a new word must not inherit the socket bind.
             raise ValueError("mount %r has no docker spec" % (mount,))

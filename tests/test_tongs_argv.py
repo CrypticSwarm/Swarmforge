@@ -221,6 +221,16 @@ class DockerArgvTests(unittest.TestCase):
             ["/ws:/workspace", "/ws/.git/config:/workspace/.git/config:ro"],
         )
 
+    def test_run_argv_refuses_a_volume_over_an_extra_mount(self):
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["workspace", "volume:v:/home"]
+        with self.assertRaisesRegex(ValueError, "mounted alongside the workspace"):
+            tongs.tong_run_argv(
+                "w", defn, container_name="c", network="n", alias="w", workspace="/ws",
+                extra_mount_specs=["/home/u/repo/.git:/home/u/repo/.git"],
+                volume_scope=(tongs.LOCAL_VOLUME_SCOPE, None),
+            )
+
     def test_run_argv_without_extra_mount_specs_is_unchanged(self):
         defn = def_of(NONE_TONG)
         defn["mounts"] = ["workspace"]

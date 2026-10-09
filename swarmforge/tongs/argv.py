@@ -191,7 +191,8 @@ def tong_run_argv(
     for key in sorted(effective_env):
         argv += ["-e", "%s=%s" % (key, effective_env[key])]
     for spec in tong_mount_specs(defn, workspace, socket_path=socket_path,
-                                 tong_name=name, volume_scope=volume_scope):
+                                 tong_name=name, volume_scope=volume_scope,
+                                 extra_mount_specs=extra_mount_specs or ()):
         argv += ["-v", spec]
     for spec in extra_mount_specs or []:
         argv += ["-v", spec]

@@ -340,6 +340,19 @@ class MountSpecTests(unittest.TestCase):
                 tongs.tong_mount_specs(
                     {"mounts": mounts}, "/ws", tong_name="t", volume_scope=LOCAL)
 
+    def test_mount_specs_volume_overlapping_a_ride_along_mount_raises(self):
+        git_dir = "/home/u/repo/.git:/home/u/repo/.git"
+        defn = {"mounts": ["workspace", "volume:v:/home"]}
+        with self.assertRaisesRegex(ValueError, "/home overlaps /home/u/repo/.git"):
+            tongs.tong_mount_specs(defn, "/ws", tong_name="t", volume_scope=LOCAL,
+                                   extra_mount_specs=[git_dir])
+        self.assertEqual(
+            len(tongs.tong_mount_specs(
+                {"mounts": ["workspace", "volume:v:/data"]}, "/ws", tong_name="t",
+                volume_scope=LOCAL, extra_mount_specs=[git_dir])),
+            2,
+        )
+
     def test_mount_specs_no_mounts_is_empty(self):
         self.assertEqual(tongs.tong_mount_specs({}, "/ws"), [])
 
