@@ -15,7 +15,7 @@ This package is the pure core of the tongs launcher, one module per concern:
     discovery   reading the layer directories and merging by name
     validate    schema validation
     secrets     secret references, the provider table, FIFO delivery
-    mounts      the `mounts:` magic words and their docker bind specs
+    mounts      the `mounts:` magic words and their docker `-v` specs
     mcp         what each `interface:` contributes to the anvil
     network     per-session network planning
     approvals   config hash, privilege summary, approval keying
@@ -107,20 +107,30 @@ from .model import (
     printable,
     readiness_settings,
     warn,
+    workspace_key,
 )
 from .mounts import (
     DEFAULT_DOCKER_SOCKET,
     DEFAULT_WORKSPACE_MOUNT_TARGET,
+    LOCAL_VOLUME_SCOPE,
     MOUNT_MODES,
     MOUNT_WORDS,
+    ORG_VOLUME_SCOPE,
+    VOLUME_DIGEST_LENGTH,
+    VOLUME_MOUNT,
+    VOLUME_NAME_MAX_LENGTH,
     WORKSPACE_MOUNT,
+    WORKSPACE_VOLUME_SCOPE,
     mount_destination,
     mount_target_error,
+    mounts_word,
     normalize_mount_target,
     overlapping_mount_error,
     parse_mount,
     reserved_mount_targets,
     tong_mount_specs,
+    tong_volume_name,
+    volume_scope,
     workspace_mount_placements,
 )
 from .network import SESSION_NET_PREFIX, plan_network, session_network_name
@@ -210,18 +220,28 @@ __all__ = [
     "printable",
     "readiness_settings",
     "warn",
+    "workspace_key",
     "DEFAULT_DOCKER_SOCKET",
     "DEFAULT_WORKSPACE_MOUNT_TARGET",
+    "LOCAL_VOLUME_SCOPE",
     "MOUNT_MODES",
     "MOUNT_WORDS",
+    "ORG_VOLUME_SCOPE",
+    "VOLUME_DIGEST_LENGTH",
+    "VOLUME_MOUNT",
+    "VOLUME_NAME_MAX_LENGTH",
     "WORKSPACE_MOUNT",
+    "WORKSPACE_VOLUME_SCOPE",
     "mount_destination",
     "mount_target_error",
+    "mounts_word",
     "normalize_mount_target",
     "overlapping_mount_error",
     "parse_mount",
     "reserved_mount_targets",
     "tong_mount_specs",
+    "tong_volume_name",
+    "volume_scope",
     "workspace_mount_placements",
     "SESSION_NET_PREFIX",
     "plan_network",

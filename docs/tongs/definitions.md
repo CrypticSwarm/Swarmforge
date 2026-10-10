@@ -16,6 +16,7 @@ interface:                    # required; how (or whether) the anvil reaches the
 # aliases: [gh, git.example]  # optional extra DNS names the tong also answers to
 mounts:                       # opt-in magic words only, never raw host paths
   - workspace:ro              # or workspace:/code:ro to bind it somewhere else
+# - volume:cache:/var/cache   # a persistent named volume, kept between containers
 resources:
   memory: 512m                # string or number
   # gpus: all                 # optional host GPU access (see Resources)
@@ -65,10 +66,21 @@ readiness:
 
 ## Mounts
 
-Mounts are opt-in **magic words**, never raw host paths. Only two are recognized, spelled `<word>[:/target][:mode]` with the access mode (`ro`/`rw`) last:
+Mounts are opt-in **magic words**, never raw host paths. Only three are recognized, each spelled as shown below with the optional access mode (`ro`/`rw`) last:
 
 - `workspace[:/target][:mode]` — bind-mounts the session workspace, at `/workspace` unless an absolute `target` says otherwise (e.g. `workspace:ro`, `workspace:/code`, `workspace:/code:ro`). A custom target lets an image that expects its sources elsewhere be used unmodified (it does not set the working directory — the process still starts in the image's own `WORKDIR`). A target is refused unless it is an absolute path free of whitespace, and refused if it resolves to `/`, overlaps another of the tong's mounts, or overlaps a path the tong's own wiring occupies — the secret-delivery tmpfs at `/run/swarmforge` and the `/bin/sh` its wrapper execs (for a tong with secret references), or the docker socket (for a tong that mounts it). The workspace bind is paired with the same git-dir mounts the anvil gets from `swarmforge/gitguard.py`: read-only guards over the config and hooks the host's git obeys, and — when the workspace is a linked worktree or another checkout whose git dir lives outside it — that git dir at its own absolute path, which is where the checkout's `.git` pointer file says to look (without it, git inside the tong fails with "not a git repository"). The one mount the anvil gets and a tong does not is the restated worktree registration — a tong keeps the host's copy, so `git worktree list` inside one names the checkout by its host path (the [git guard](../git-guard.md) has the rest). When every `workspace` mount is `ro`, the ride-along git-dir mounts are forced read-only too.
 - `docker-socket[:mode]` — bind-mounts the host docker socket onto the same path inside the container (so it takes no target). This is full host docker control and is always called out explicitly in the workspace approval prompt; it is the grant a broker tong needs.
+- `volume:<name>:/target[:mode]` — mounts a docker **named volume** at `target`, for state the tong keeps between containers (a model store, a cache). The name comes first and is at most 64 letters, digits, `.` and `-`, starting with a letter or digit; the target is required and held to the same rules as a `workspace` target, may not overlap the git dir that a `workspace` mount brings along, and a tong mounts each volume only once. Docker creates the volume on first use and seeds a new, empty one with whatever the image has at `target`. Only that first seeding happens: a later image's files at `target` never replace what the volume holds, so point `target` at a data directory, not at files the image ships. The launcher never removes a volume; remove one by hand with `docker volume rm <volume>` (`docker volume ls --filter name=swarmforge-volume-` lists them). A `volume:` mount is private to its tong; it is unrelated to `interface.kind: volume`, which would share a volume with the anvil and is not wired up yet.
+
+### Volume naming and scope
+
+The docker volume is named `swarmforge-volume-[<hint>-]<digest>_<name>`. The hint is the tong's filename made docker-safe and cut to 32 characters, only for reading. The digest, a 128-bit SHA-256 prefix over the tong's exact filename and its scope, is the identity, so two tongs share a volume only with the same filename and scope. The scope depends on the tong's layer:
+
+- **org** — the org's tongs directory. This applies to both lifecycles.
+- **workspace** — the checkout's top-level path, with symlinks resolved. A clone or worktree at another path gets its own volume; a later checkout at the same path, even of a different repository, inherits it, as it does the approvals. Deleting a checkout leaves its volumes behind. A workspace tong that mounts a volume may not be `shared`: its container would be reused by other checkouts, still mounting this one's volume.
+- **user** and **repo** — this machine, across every checkout, so anything such a tong copies from one workspace is visible in the others. A repo tong and the same-named user tong it replaces use one volume.
+
+A volume belongs to the tong's name, not to one definition or one session: an edited definition reuses its data, and concurrent sessions of a `session` tong mount it read-write at once. Keep state there that tolerates that, or that the program locks itself.
 
 ## Resources
 
@@ -87,3 +99,22 @@ Both are optional and passed to `docker run` as written. `gpus` grants the tong 
 Docker's other `--gpus` keys are deliberately refused. `driver=`, `capabilities=`, and `options=` can grant more than GPU access — `driver=cdi`, for one, injects any device registered on the host — and `count=` is redundant with a plain count.
 GPU access needs a docker host set up for GPU containers — the NVIDIA Container Toolkit on Linux; Docker Desktop's WSL 2 backend provides GPU support itself. Without it `docker run` fails and the launch stops.
 A workspace tong's GPU request is called out in its [approval prompt](approval.md).
+
+## Example: a GPU model server
+
+A `shared` `port` tong that serves models from the host's GPUs and keeps its multi-GB model store in a volume, so a recreated container does not download it again:
+
+```yaml
+# ~/.swarmforge/tongs/models.yaml
+lifecycle: shared
+image: ollama/ollama@sha256:...
+interface:
+  kind: port
+  port: 11434
+mounts:
+  - volume:store:/root/.ollama
+resources:
+  gpus: all
+```
+
+The anvil gets `SWARMFORGE_TONG_MODELS_HOST=models` and `SWARMFORGE_TONG_MODELS_PORT=11434`, and the store lives in the volume `swarmforge-volume-models-<digest>_store`. It is named `models` because `make run_ollama` already answers to `ollama` on that network.

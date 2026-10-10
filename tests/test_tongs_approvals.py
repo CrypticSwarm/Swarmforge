@@ -73,6 +73,31 @@ class PrivilegeSummaryTests(unittest.TestCase):
         defn["resources"] = {"gpus": 0}
         self.assertEqual(tongs.privilege_summary(defn)["gpus"], 0)
 
+    def test_summary_names_each_declared_volume(self):
+        defn = def_of(GITHUB_TONG)
+        defn["mounts"] = ["workspace:ro", "volume:models:/a", "volume:cache:/c:ro"]
+        self.assertEqual(tongs.privilege_summary(defn)["volumes"], [
+            {"name": "models", "target": "/a", "docker": None},
+            {"name": "cache", "target": "/c", "docker": None},
+        ])
+        self.assertEqual(tongs.privilege_summary(def_of(GITHUB_TONG))["volumes"], [])
+
+    def test_summary_names_the_docker_volume_given_its_scope(self):
+        defn = dict(def_of(GITHUB_TONG), mounts=["volume:models:/a"])
+        scope = (tongs.WORKSPACE_VOLUME_SCOPE, "/home/me/proj")
+        self.assertEqual(
+            tongs.privilege_summary(defn, "cache", scope)["volumes"][0]["docker"],
+            tongs.tong_volume_name("cache", "models", scope),
+        )
+
+    def test_summary_tolerates_malformed_mounts(self):
+        # The gate runs before validation, which refuses these on its own.
+        defn = def_of(GITHUB_TONG)
+        defn["mounts"] = ["volume:bad_name:/a", "volume:v", 7, "/etc:/etc", "volume:ok:/b"]
+        summary = tongs.privilege_summary(defn)
+        self.assertEqual([v["name"] for v in summary["volumes"]], ["ok"])
+        self.assertEqual(summary["mounts"], defn["mounts"])
+
 
 class ApprovalKeyingTests(unittest.TestCase):
     def setUp(self):
@@ -103,6 +128,17 @@ class ApprovalKeyingTests(unittest.TestCase):
         approvals = {}
         tongs.record_approval(approvals, self.ws, "github", self.defn)
         self.assertFalse(tongs.is_approved(approvals, "/other/ws", "github", self.defn))
+
+    def test_a_symlinked_checkout_shares_its_approvals_and_volumes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = os.path.join(tmp, "checkout")
+            os.mkdir(checkout)
+            link = os.path.join(tmp, "link")
+            os.symlink(checkout, link)
+            approvals = tongs.record_approval({}, link, "github", self.defn)
+            self.assertTrue(tongs.is_approved(approvals, checkout, "github", self.defn))
+            self.assertEqual(list(approvals),
+                             [tongs.volume_scope(tongs.WORKSPACE, workspace=link)[1]])
 
     def test_load_save_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:

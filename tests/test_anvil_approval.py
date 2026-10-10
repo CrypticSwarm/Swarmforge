@@ -58,10 +58,25 @@ class RenderPrivilegeSummaryTests(unittest.TestCase):
                 text = launcher.render_privilege_summary("github", tongs.privilege_summary(defn))
                 self.assertNotIn("gpus", text)
 
+    def test_calls_out_a_volume_as_persistent(self):
+        defn = dict(WORKSPACE_TONG, mounts=["volume:models:/models"])
+        scope = (tongs.WORKSPACE_VOLUME_SCOPE, "/home/me/proj")
+        text = launcher.render_privilege_summary(
+            "cache", tongs.privilege_summary(defn, "cache", scope))
+        self.assertIn("volume:models:/models", text)
+        lines = text.splitlines()
+        self.assertIn("  volume:   models at /models (docker volume %s)"
+                      % tongs.tong_volume_name("cache", "models", scope), lines)
+        self.assertIn(
+            "            persistent: outlives the tong, is mounted by each of its concurrent "
+            "sessions, and reuses any data left by an earlier definition or checkout at "
+            "this path", lines)
+
     def test_omits_unrequested_sections(self):
         defn = {"image": "x", "interface": {"kind": "none"}, "resources": {"memory": "1g"}}
         text = launcher.render_privilege_summary("x", tongs.privilege_summary(defn))
         self.assertNotIn("secrets:", text)
+        self.assertNotIn("volume", text)
         self.assertNotIn("docker socket", text)
         self.assertNotIn("gpus", text)
 
@@ -188,6 +203,12 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self._gate(merged), "")
         stored = tongs.load_approvals(self.approvals)
         self.assertTrue(tongs.is_approved(stored, self.ws, "gh", WORKSPACE_TONG))
+
+    def test_prompt_names_the_volume_this_checkout_would_mount(self):
+        merged = _merged("cache", dict(WORKSPACE_TONG, mounts=["volume:models:/models"]))
+        out = self._gate(merged, answer="y\n")
+        scope = tongs.volume_scope(tongs.WORKSPACE, workspace=self.ws)
+        self.assertIn(tongs.tong_volume_name("cache", "models", scope), out)
 
     def test_declined_workspace_tong_raises_and_does_not_persist(self):
         merged = _merged("gh", WORKSPACE_TONG)

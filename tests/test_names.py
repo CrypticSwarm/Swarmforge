@@ -82,6 +82,16 @@ class PathDigest(unittest.TestCase):
             names.path_digest("/home/me/repo2/master"))
 
 
+class NameHint(unittest.TestCase):
+    """The readable half of a token, from any name."""
+
+    def test_a_name_is_reduced_to_what_docker_accepts(self):
+        self.assertEqual(names.name_hint("my tong!"), "my-tong")
+
+    def test_a_cut_never_leaves_the_hint_on_a_separator(self):
+        self.assertEqual(names.name_hint("abc-defg", limit=4), "abc")
+
+
 class DirHint(unittest.TestCase):
     """The readable half of a token."""
 

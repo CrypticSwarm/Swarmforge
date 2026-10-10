@@ -5,10 +5,11 @@ every other module can depend on it. It holds the constant sets the launcher
 dispatches on (layers, lifecycles, interface kinds, readiness modes), the docker
 labels it stamps, and the pure resolution of a definition's `readiness:` block
 and `resources.gpus` request.
-`warn` lives here too, so the one `tongs: ` stderr prefix has a single home, with
-`printable` beside it for echoing definition-sourced text to the terminal.
+`warn` lives here too, so the one `tongs: ` stderr prefix has a single home, and
+every message passes through `printable` beside it.
 """
 
+import os
 import re
 import sys
 
@@ -35,8 +36,14 @@ SOCKET_MOUNT = "docker-socket"
 WORKSPACE_HOST_ENV = "SWARMFORGE_WORKSPACE_HOST_PATH"
 
 
+def workspace_key(workspace):
+    """The key a checkout's approvals and volumes are stored under: its path, symlinks resolved."""
+    return os.path.realpath(workspace)
+
+
 def warn(message):
-    print("tongs: %s" % message, file=sys.stderr)
+    """Print `message` to stderr through `printable`, since it may quote definition-sourced text."""
+    print("tongs: %s" % printable(message), file=sys.stderr)
 
 
 def printable(text):
