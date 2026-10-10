@@ -32,12 +32,10 @@ def privilege_summary(defn, name=None, volume_scope=None):
     """Structured summary of what a definition asks for, for the approval gate.
 
     Gathers the privileges a reviewer must see before approving a
-    workspace-sourced tong: image, secret references, mounts (and the
-    persistent volumes among them), networks, docker-socket access, and host
-    GPU access. Each volume is `{"name", "target", "docker"}`, where `docker` is
-    the docker volume the tong `name` mounts from `volume_scope`, or None
-    without both. Rendering and prompting are the caller's job; this just
-    assembles the facts.
+    workspace-sourced tong: image, secret references, mounts, volumes, networks,
+    docker-socket access, and host GPU access. Each volume is `{"name", "target",
+    "docker"}`; `docker` is None unless `name` and `volume_scope` are given.
+    Rendering and prompting are the caller's job; this just assembles the facts.
     """
     return {
         "image": defn.get("image"),

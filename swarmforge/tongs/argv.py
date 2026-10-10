@@ -166,8 +166,7 @@ def tong_run_argv(
     `workspace` mount -- see swarmforge.anvil); they are appended after the
     definition's own mounts, mirroring how the Makefile orders the anvil's.
 
-    `volume_scope` is the `(class, path)` pair the orchestrator picked for the
-    tong's `volume:` mounts from the layer it came from (see `tong_volume_name`).
+    `volume_scope` names the tong's `volume:` mounts (see `volume_scope`).
     """
     if entrypoint is None and command is None:
         entrypoint, command = declared_run_override(defn)

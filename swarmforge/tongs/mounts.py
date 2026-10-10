@@ -85,8 +85,7 @@ def parse_mount(mount, words=MOUNT_WORDS):
     which is always last -- so `workspace`, `workspace:ro`, `workspace:/work` and
     `workspace:/work:ro` are all valid. `target`/`mode` are None when not declared;
     the caller supplies the default target for its magic word. The `volume` word
-    is spelled `volume:<name>:/target[:mode]`: its name comes first and its target
-    is required, since a named volume has no natural place to land. `volume` is
+    is spelled `volume:<name>:/target[:mode]`, its target required; `volume` is
     that name, and None for every other word.
 
     The word is checked against `words` before the rest of the entry, since a mount
@@ -182,9 +181,8 @@ def mount_destination(word, target, socket_path=DEFAULT_DOCKER_SOCKET):
 
     The declared target when there is one, otherwise the word's default: /workspace
     for the workspace, its own host path for the socket (that is where a docker
-    client looks for it). A volume has no default, so it needs its target. Raises
-    `ValueError` for a targetless volume and for any other word, so a magic word
-    added without a default cannot inherit the socket's.
+    client looks for it); a volume has none. Raises `ValueError` for a targetless
+    volume and any other word, so a new word cannot inherit the socket's default.
     """
     if word == WORKSPACE_MOUNT:
         return normalize_mount_target(target or DEFAULT_WORKSPACE_MOUNT_TARGET)
@@ -225,9 +223,8 @@ def overlapping_mount_error(mount, destination, volume, placed):
     `volume` is the name `parse_mount` read from `mount`, and `placed` the
     `(mount, destination, volume)` triples accepted so far. Docker refuses two binds onto one
     destination outright, and creates the inner mountpoint of nested ones inside
-    the outer bind -- inside the user's workspace, for a workspace bind. One volume
-    is mounted once: a second target for the same data, perhaps with another
-    access mode, is far likelier a mistake than a need.
+    the outer bind -- inside the user's workspace, for a workspace bind. A volume
+    mounts only once.
     """
     for other, other_destination, other_volume in placed:
         if _targets_overlap(destination, other_destination):
@@ -241,17 +238,9 @@ def overlapping_mount_error(mount, destination, volume, placed):
 def tong_volume_name(tong_name, volume, scope):
     """The docker named volume behind one tong's `volume:<volume>` mount.
 
-    `swarmforge-volume-[<hint>-]<digest>_<volume>`. The digest is the volume's
-    identity: the first `VOLUME_DIGEST_LENGTH` hex digits of a SHA-256 over the
-    scope and the raw tong name, where `scope` is a `(class, path)` pair -- an
-    `ORG_VOLUME_SCOPE` or `WORKSPACE_VOLUME_SCOPE` with its canonical directory,
-    or `(LOCAL_VOLUME_SCOPE, None)` for this machine's own layers. Two tongs
-    share a volume only from one scope under exactly one name. The hint is the
-    tong name sanitized for docker and cut to `VOLUME_HINT_LIMIT`, there to be
-    read in `docker volume ls`; it decides nothing, since sanitizing can turn two
-    names into one. Volume names
-    exclude `_` and the digest has a fixed width, so the last `_` splits the
-    volume back off.
+    `swarmforge-volume-[<hint>-]<digest>_<volume>`. The digest, over `scope`
+    (from `volume_scope`) and the raw tong name, is the identity; the hint is the
+    sanitized name, only for reading in `docker volume ls`.
     """
     scope_class, scope_path = scope
     key = json.dumps([scope_class, scope_path, tong_name])
@@ -264,16 +253,11 @@ def tong_volume_name(tong_name, volume, scope):
 def volume_scope(layer, org_tongs_dir=None, workspace=None):
     """The `(class, path)` scope that names the volumes of a tong from `layer`.
 
-    An org tong's volumes belong to its org's tongs directory (canonical, as
-    `org_scope_token` reads it); a workspace tong's to the checkout's top level
-    `workspace`, keyed by `workspace_key` like its approvals, so every session in
-    that checkout, from any subdirectory, shares them -- as does any later
-    checkout at that path. The user and repo layers are this machine's own
-    and share `(LOCAL_VOLUME_SCOPE, None)`, so a repo tong and the same-named
-    user tong it replaces in the merge use one volume. None for an org or
-    workspace tong with no directory to scope it by, which `tong_mount_specs`
-    refuses rather than falling back to the local scope. Raises `ValueError` for
-    an unknown layer.
+    Org: its tongs directory, canonical as `org_scope_token` reads it.
+    Workspace: the checkout's `workspace_key`, like its approvals. User and
+    repo: `(LOCAL_VOLUME_SCOPE, None)`. None when the org or workspace directory
+    is unknown, which `tong_mount_specs` refuses rather than falling back to the
+    local scope. Raises `ValueError` for an unknown layer.
     """
     if layer == ORG:
         return (ORG_VOLUME_SCOPE, canonical_path(org_tongs_dir)) if org_tongs_dir else None
@@ -294,10 +278,9 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
     bind-mounts the host docker socket onto the same path it has on the host;
     `volume:<name>:/target[:mode]` mounts the named volume
     `tong_volume_name(tong_name, name, volume_scope)`, which docker creates on
-    first use and never removes with the container. A volume may not overlap
-    the destination of any of `extra_mount_specs`, the `-v` values that ride
-    along with a workspace mount (see `tong_run_argv`): docker would create
-    their mountpoints inside the volume, where they outlive the container.
+    first use and the launcher never removes. A volume may not overlap one of
+    `extra_mount_specs` (see `tong_run_argv`), or docker would leave their
+    mountpoints inside it.
     Raises `ValueError` for a non-string entry, a malformed mount, an unusable or
     colliding destination, a `workspace` mount when no workspace path is known, or
     a `volume` mount without a `tong_name` and `volume_scope` to name it by -- a

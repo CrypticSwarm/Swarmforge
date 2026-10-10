@@ -79,10 +79,8 @@ def unsupported_tong_reasons(merged):
         workspace into it would expose that workspace to every later session that
         reuses the container (a `session` tong is the right home for a
         per-workspace mount);
-      * a workspace-sourced `shared` tong that mounts a `volume` -- the volume
-        is scoped to one checkout (see `tongs.volume_scope`) but the container is
-        not, so a session in another checkout shipping the same definition would
-        reuse it, volume and all.
+      * a workspace-sourced `shared` tong that mounts a `volume` -- its volume
+        is scoped to one checkout but its container is not.
 
     A refused tong is reported rather than started half-wired. Returns a list of
     human-readable reason strings (empty == every discovered tong is startable).
@@ -224,8 +222,6 @@ def _ensure_shared_tong(docker, name, defn, *, container, network, alias,
     so the same long-lived container is reused across sessions while the
     definition is stable -- and deciding to reuse one never runs a secret-provider
     CLI, so a rotated secret behind an unchanged reference does not churn it.
-    The recreated container mounts the same named volumes, so a tong's
-    persistent state outlives it.
     """
     state = docker.inspect_state(container)
     if state and state["running"] and state["label"] == label_hash:
@@ -313,10 +309,8 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
     On exit -- including SIGINT, and SIGHUP/SIGTERM once `cli.main` makes them
     raise -- the `session` tongs and the per-session network are torn down (and
     the connected `shared` tongs disconnected) while the long-lived `shared`
-    tongs are left running. No tong's named volumes are ever removed: they are
-    the state a tong keeps between containers. Teardown runs inside the caller's
-    `teardown_guard()`, which keeps signals from cutting it short; the default
-    guards nothing.
+    tongs are left running. Teardown runs inside the caller's `teardown_guard()`,
+    which keeps signals from cutting it short; the default guards nothing.
 
     Returns the anvil's exit code. Raises `OrchestrationError` if a tong never
     becomes ready (the anvil does not run against a half-up environment) or a
