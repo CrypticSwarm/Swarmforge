@@ -45,10 +45,12 @@ LAYER_FLAGS = {
 }
 
 # `anvil_image` is what the readiness prober runs; `no_prompt` fails the gate closed.
+# `tmux`/`tmux_pane` are the launcher's own `$TMUX`/`$TMUX_PANE`, None outside tmux.
 LauncherOptions = collections.namedtuple(
     "LauncherOptions",
     ["layer_dirs", "workspace", "approvals", "providers", "harness", "anvil_image",
-     "no_prompt"],
+     "no_prompt", "tmux", "tmux_pane"],
+    defaults=(None, None),
 )
 
 
@@ -56,14 +58,17 @@ class UsageError(ValueError):
     """Raised for malformed launcher arguments (reported, then exit 2)."""
 
 
-def parse_args(argv):
+def parse_args(argv, environ=None):
     """Split launcher options from the anvil command at the first ``--``.
 
     Returns ``(options, anvil_cmd)`` where ``options`` is a ``LauncherOptions``
     (its ``layer_dirs`` ordered by canonical precedence, only the layers that
-    were given) and ``anvil_cmd`` is the argv after ``--``. Raises ``UsageError``
+    were given) and ``anvil_cmd`` is the argv after ``--``. ``tmux`` and
+    ``tmux_pane`` are read unvalidated from ``environ`` (the process environment
+    by default); the orchestrator checks them. Raises ``UsageError``
     if the separator is missing, the command is empty, or an option is malformed.
     """
+    environ = os.environ if environ is None else environ
     paths = {}
     workspace = None
     approvals = None
@@ -82,7 +87,8 @@ def parse_args(argv):
             return (
                 LauncherOptions(
                     layer_dirs, workspace, approvals, providers, harness,
-                    anvil_image, no_prompt
+                    anvil_image, no_prompt,
+                    environ.get("TMUX") or None, environ.get("TMUX_PANE") or None,
                 ),
                 anvil_cmd,
             )

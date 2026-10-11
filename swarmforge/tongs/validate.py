@@ -20,13 +20,7 @@ from .model import (
     parse_duration,
     parse_gpus,
 )
-from .mounts import (
-    mount_destination,
-    mount_target_error,
-    overlapping_mount_error,
-    parse_mount,
-    reserved_mount_targets,
-)
+from .mounts import checked_mounts, tmux_secret_env_error
 from .secrets import ENV_NAME_RE, partition_secret_env
 
 
@@ -134,6 +128,9 @@ def validate_tong(name, defn):
         for secret_name in sorted(secret):
             if not ENV_NAME_RE.match(secret_name):
                 err("invalid secret env name %r (must be a valid identifier)" % secret_name)
+        owned_secret = tmux_secret_env_error(defn)
+        if owned_secret:
+            err(owned_secret)
 
     for argvish in ("entrypoint", "command"):
         value = defn.get(argvish)
@@ -147,27 +144,10 @@ def validate_tong(name, defn):
         if value is not None and not isinstance(value, list):
             err("'%s' must be a list" % listish)
 
-    mounts = defn.get("mounts")
-    if isinstance(mounts, list):
-        reserved = reserved_mount_targets(defn)
-        placed = []                      # (mount, destination, volume) already accounted for
-        for mount in mounts:
-            if not isinstance(mount, str):
-                err("mount entries must be strings, got %r" % (mount,))
-                continue
-            try:
-                word, volume, target, _ = parse_mount(mount)
-                destination = mount_destination(word, target)
-            except ValueError as exc:
-                err(str(exc))
-                continue
-            reason = mount_target_error(mount, word, target, destination, reserved)
-            if reason is None:
-                reason = overlapping_mount_error(mount, destination, volume, placed)
-            if reason:
-                err(reason)
-                continue
-            placed.append((mount, destination, volume))
+    if isinstance(defn.get("mounts"), list):
+        for checked in checked_mounts(defn):
+            if checked.error:
+                err(checked.error)
 
     networks = defn.get("networks")
     if isinstance(networks, list):

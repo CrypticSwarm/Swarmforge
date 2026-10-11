@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 
-from .model import SOCKET_MOUNT, WORKSPACE, workspace_key
+from .model import SOCKET_MOUNT, TMUX_MOUNT, WORKSPACE, workspace_key
 from .mounts import mounts_word, parse_mount, tong_volume_name
 from .secrets import find_secret_refs
 
@@ -33,8 +33,9 @@ def privilege_summary(defn, name=None, volume_scope=None):
 
     Gathers the privileges a reviewer must see before approving a
     workspace-sourced tong: image, secret references, mounts, volumes, networks,
-    docker-socket access, and host GPU access. Each volume is `{"name", "target",
-    "docker"}`; `docker` is None unless `name` and `volume_scope` are given.
+    docker-socket access, tmux-socket access, and host GPU access. Each volume is
+    `{"name", "target", "docker"}`; `docker` is None unless `name` and
+    `volume_scope` are given.
     Rendering and prompting are the caller's job; this just assembles the facts.
     """
     return {
@@ -44,6 +45,7 @@ def privilege_summary(defn, name=None, volume_scope=None):
         "volumes": _declared_volumes(defn, name, volume_scope),
         "networks": list(defn.get("networks") or []),
         "socket": mounts_word(defn, SOCKET_MOUNT),
+        "tmux": mounts_word(defn, TMUX_MOUNT),
         "gpus": _requested_gpus(defn),
     }
 
