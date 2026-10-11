@@ -880,7 +880,7 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertIn(container, started)
         self.assertEqual(started[started.index("--network") + 1], net)
         self.assertNotEqual(started[started.index("--network") + 1], "opencode-net")
-        # opencode-net stays primary, for the model backend.
+        # opencode-net stays primary, for unscoped shared tongs.
         self.assertEqual(docker.anvil_extra_networks, [net])
         self.assertEqual(
             docker.anvil_argv[docker.anvil_argv.index("--network") + 1], "opencode-net"

@@ -6,29 +6,5 @@
     "skills/skill-follower.md",
     "skills/copy-etiquette.md"
   ],
-  "theme": "tokyonight",
-  "provider": {
-    "ollama": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Ollama (opencode-net)",
-      "options": {
-        "baseURL": "http://ollama:11434/v1",
-        "apiKey": "ollama"
-      },
-      "models": {
-        "gpt-oss:20b": {
-          "name": "gpt-oss-20b"
-        },
-        "gpt-oss:120b": {
-          "name": "gpt-oss-120b"
-        },
-        "llama3.1:8b": {
-          "name": "llama3.1"
-        },
-        "devstral-small-2:24b": {
-          "name": "devstral-small-2"
-        }
-      }
-    }
-  }
+  "theme": "tokyonight"
 }

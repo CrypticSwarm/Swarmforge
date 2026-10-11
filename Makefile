@@ -255,7 +255,7 @@ lint:
 # Drives a real model in the opencode image; OPENCODE_IMG comes from its harness.mk fragment.
 test-skills: opencode_network
 	@if [ -z "$(strip $(MODEL))" ]; then \
-		printf '%s\n' "MODEL is required (example: make test-skills MODEL=ollama/llama3.1)"; \
+		printf '%s\n' "MODEL is required (example: make test-skills MODEL=openai/gpt-5.3-codex)"; \
 		exit 2; \
 	fi
 	@mkdir -p "$(TEST_DATA_DIR)"
