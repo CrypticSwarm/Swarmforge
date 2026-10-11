@@ -3,6 +3,7 @@
 
 import os
 import sys
+import tempfile
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,20 +15,63 @@ if REPO_ROOT not in sys.path:
 from swarmforge import tongs
 
 
+LOCAL = (tongs.LOCAL_VOLUME_SCOPE, None)
+
+
 class MountGrammarTests(unittest.TestCase):
     """The mount grammar and target policy, exercised directly -- `validate_tong`
     and `tong_mount_specs` both delegate here."""
 
     def test_parse_mount_splits_the_optional_fields(self):
-        self.assertEqual(tongs.parse_mount("workspace"), ("workspace", None, None))
-        self.assertEqual(tongs.parse_mount("workspace:ro"), ("workspace", None, "ro"))
-        self.assertEqual(tongs.parse_mount("workspace:/code"), ("workspace", "/code", None))
+        self.assertEqual(tongs.parse_mount("workspace"), ("workspace", None, None, None))
+        self.assertEqual(tongs.parse_mount("workspace:ro"), ("workspace", None, None, "ro"))
         self.assertEqual(
-            tongs.parse_mount("workspace:/code:rw"), ("workspace", "/code", "rw")
+            tongs.parse_mount("workspace:/code"), ("workspace", None, "/code", None)
         )
         self.assertEqual(
-            tongs.parse_mount("docker-socket:ro"), ("docker-socket", None, "ro")
+            tongs.parse_mount("workspace:/code:rw"), ("workspace", None, "/code", "rw")
         )
+        self.assertEqual(
+            tongs.parse_mount("docker-socket:ro"), ("docker-socket", None, None, "ro")
+        )
+
+    def test_parse_mount_reads_a_volume_name(self):
+        self.assertEqual(
+            tongs.parse_mount("volume:models:/data"), ("volume", "models", "/data", None)
+        )
+        self.assertEqual(
+            tongs.parse_mount("volume:v1.2-x:/data:ro"), ("volume", "v1.2-x", "/data", "ro")
+        )
+
+    def test_parse_mount_rejects_a_malformed_volume_name(self):
+        # `_` is what splits the volume back off its docker name, so it cannot be in one.
+        for mount in ("volume", "volume::/data", "volume:/data", "volume:my_models:/data",
+                      "volume:-models:/data", "volume:.models:/data", "volume:mo dels:/data",
+                      "volume:models\n:/data"):
+            with self.assertRaisesRegex(ValueError, "volume:<name>:/target", msg=mount):
+                tongs.parse_mount(mount)
+
+    def test_parse_mount_caps_a_volume_name(self):
+        longest = "v" * tongs.VOLUME_NAME_MAX_LENGTH
+        self.assertEqual(tongs.parse_mount("volume:%s:/data" % longest)[1], longest)
+        with self.assertRaisesRegex(ValueError, "at most 64 characters"):
+            tongs.parse_mount("volume:%s:/data" % (longest + "v"))
+
+    def test_parse_mount_requires_a_volume_target(self):
+        for mount in ("volume:models", "volume:models:ro"):
+            with self.assertRaisesRegex(ValueError, "needs an absolute target path", msg=mount):
+                tongs.parse_mount(mount)
+
+    def test_parse_mount_judges_a_volume_target_like_a_workspace_one(self):
+        for mount, message in (
+            ("volume:models:data", "neither an absolute target path"),
+            ("volume:models:/", "not a usable target path"),
+            ("volume:models:/a:/b", "more than one target path"),
+            ("volume:models:ro:/data", "must be the last field"),
+            ("volume:models:/da ta", "whitespace"),
+        ):
+            with self.assertRaisesRegex(ValueError, message, msg=mount):
+                tongs.parse_mount(mount)
 
     def test_parse_mount_rejects_a_raw_host_path(self):
         with self.assertRaisesRegex(ValueError, "unknown mount"):
@@ -37,10 +81,18 @@ class MountGrammarTests(unittest.TestCase):
         # A known word refused by a narrowed set is a policy refusal, not a misspelling.
         narrowed = (tongs.WORKSPACE_MOUNT,)
         self.assertEqual(
-            tongs.parse_mount("workspace:/code", words=narrowed), ("workspace", "/code", None)
+            tongs.parse_mount("workspace:/code", words=narrowed),
+            ("workspace", None, "/code", None),
         )
         with self.assertRaisesRegex(ValueError, "not allowed here"):
             tongs.parse_mount("docker-socket", words=narrowed)
+
+    def test_mounts_word_compares_only_the_word(self):
+        defn = {"mounts": ["volume:workspace:/data", "docker-socket:ro", 7]}
+        self.assertTrue(tongs.mounts_word(defn, tongs.VOLUME_MOUNT))
+        self.assertTrue(tongs.mounts_word(defn, "docker-socket"))
+        self.assertFalse(tongs.mounts_word(defn, tongs.WORKSPACE_MOUNT))
+        self.assertFalse(tongs.mounts_word({}, tongs.WORKSPACE_MOUNT))
 
     def test_mount_destination_refuses_a_word_with_no_default(self):
         # A word without its own default must not inherit the socket's destination.
@@ -77,6 +129,92 @@ class MountGrammarTests(unittest.TestCase):
         self.assertEqual(
             tongs.mount_destination("docker-socket", None, "/run/d.sock"), "/run/d.sock"
         )
+        self.assertEqual(tongs.mount_destination("volume", "//data/"), "/data")
+
+    def test_mount_destination_refuses_a_volume_without_a_target(self):
+        with self.assertRaisesRegex(ValueError, "no destination"):
+            tongs.mount_destination("volume", None)
+
+    def test_mount_target_error_holds_a_volume_to_the_reserved_paths(self):
+        reserved = {"/run/x": "where the launcher delivers this tong's secrets"}
+        self.assertIsNone(tongs.mount_target_error(
+            "volume:v:/data", "volume", "/data", "/data", reserved))
+        self.assertIn("overlaps /run/x", tongs.mount_target_error(
+            "volume:v:/run", "volume", "/run", "/run", reserved))
+
+    def test_tong_volume_name_is_a_hint_then_a_fixed_width_digest(self):
+        name = tongs.tong_volume_name("my tong_x", "models", LOCAL)
+        self.assertRegex(name, r"\Aswarmforge-volume-my-tong_x-[0-9a-f]{32}_models\Z")
+        self.assertEqual(tongs.VOLUME_DIGEST_LENGTH, 32)
+        self.assertEqual(name.rsplit("_", 1)[1], "models")
+        self.assertEqual(name, tongs.tong_volume_name("my tong_x", "models", LOCAL))
+        # A name that sanitizes to nothing keeps the digest alone.
+        self.assertRegex(
+            tongs.tong_volume_name("__", "v", LOCAL), r"\Aswarmforge-volume-[0-9a-f]{32}_v\Z"
+        )
+
+    def test_tong_volume_name_is_pinned(self):
+        # Literal on purpose: any change to the formula orphans every existing volume.
+        cases = (
+            ("ollama", LOCAL,
+             "swarmforge-volume-ollama-fbdbeb6d19743ef7c7724f97755c49d1_models"),
+            ("ollama", (tongs.ORG_VOLUME_SCOPE, "/orgs/acme/.swarmforge/tongs"),
+             "swarmforge-volume-ollama-a0afff5cc924fc93f5f25e86a52f5888_models"),
+            ("ollama", (tongs.WORKSPACE_VOLUME_SCOPE, "/home/me/proj"),
+             "swarmforge-volume-ollama-9d5322a3cc671ff97654fc52727d1dd3_models"),
+            ("caf\u00e9", LOCAL,
+             "swarmforge-volume-caf-a3195456dbda485c7f802622dae166e0_models"),
+            # The hint is cut to 32 and loses the separator it would end on.
+            ("a" * 31 + "-" + "b" * 10, LOCAL,
+             "swarmforge-volume-" + "a" * 31 + "-c9719a32926cd73d826a8ed165eb2523_models"),
+        )
+        for tong_name, scope, expected in cases:
+            self.assertEqual(tongs.tong_volume_name(tong_name, "models", scope), expected)
+
+    def test_tong_volume_name_digests_the_raw_name_not_the_hint(self):
+        # Both sanitize to `github`; the hint is for reading, never for identity.
+        dotted = tongs.tong_volume_name("github.", "v", LOCAL)
+        plain = tongs.tong_volume_name("github", "v", LOCAL)
+        self.assertTrue(dotted.startswith("swarmforge-volume-github-"))
+        self.assertTrue(plain.startswith("swarmforge-volume-github-"))
+        self.assertNotEqual(dotted, plain)
+
+    def test_tong_volume_name_differs_per_scope(self):
+        names = {
+            tongs.tong_volume_name("cache", "v", scope)
+            for scope in (LOCAL, (tongs.ORG_VOLUME_SCOPE, "/orgs/acme/.swarmforge/tongs"),
+                          (tongs.ORG_VOLUME_SCOPE, "/orgs/globex/.swarmforge/tongs"),
+                          (tongs.WORKSPACE_VOLUME_SCOPE, "/orgs/acme/.swarmforge/tongs"),
+                          (tongs.WORKSPACE_VOLUME_SCOPE, "/home/me/proj"))
+        }
+        self.assertEqual(len(names), 5)
+
+    def test_volume_scope_follows_the_layer(self):
+        self.assertEqual(tongs.volume_scope(tongs.USER), LOCAL)
+        self.assertEqual(tongs.volume_scope(tongs.REPO, "/o/tongs", "/ws"), LOCAL)
+        self.assertEqual(
+            tongs.volume_scope(tongs.ORG, org_tongs_dir="/orgs//acme/./tongs/"),
+            (tongs.ORG_VOLUME_SCOPE, "/orgs/acme/tongs"),
+        )
+        self.assertIsNone(tongs.volume_scope(tongs.ORG, workspace="/ws"))
+        self.assertIsNone(tongs.volume_scope(tongs.WORKSPACE, org_tongs_dir="/o/tongs"))
+        with self.assertRaisesRegex(ValueError, "unknown layer"):
+            tongs.volume_scope("elsewhere")
+
+    def test_volume_scope_resolves_a_symlinked_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = os.path.join(tmp, "checkout")
+            os.mkdir(checkout)
+            link = os.path.join(tmp, "link")
+            os.symlink(checkout, link)
+            self.assertEqual(
+                tongs.volume_scope(tongs.WORKSPACE, workspace=link),
+                tongs.volume_scope(tongs.WORKSPACE, workspace=checkout),
+            )
+            self.assertEqual(
+                tongs.volume_scope(tongs.WORKSPACE, workspace=link)[1],
+                os.path.realpath(checkout),
+            )
 
     def test_mount_target_error_names_the_mount_and_the_reason(self):
         reserved = {"/run/x": "where the launcher delivers this tong's secrets"}
@@ -90,7 +228,7 @@ class MountGrammarTests(unittest.TestCase):
         self.assertIsNone(error("workspace:/code", "workspace", "/code"))
         self.assertIsNone(error("docker-socket", "docker-socket", None))
         self.assertIn(
-            "only the 'workspace' mount takes a target path",
+            "only the 'workspace' and 'volume' mounts take a target path",
             error("docker-socket:/s", "docker-socket", "/s"),
         )
         # Overlap in both directions: the target above the reserved path and under it.
@@ -106,13 +244,23 @@ class MountGrammarTests(unittest.TestCase):
         )
 
     def test_overlapping_mount_error_catches_duplicates_and_nesting(self):
-        placed = [("workspace:/code", "/code")]
-        self.assertIsNone(tongs.overlapping_mount_error("workspace:/src", "/src", placed))
+        placed = [("workspace:/code", "/code", None)]
+        self.assertIsNone(
+            tongs.overlapping_mount_error("workspace:/src", "/src", None, placed))
         for destination in ("/code", "/code/sub", "/"):
             self.assertIn(
                 "overlaps mount 'workspace:/code'",
-                tongs.overlapping_mount_error("m", destination, placed),
+                tongs.overlapping_mount_error("workspace", destination, None, placed),
             )
+
+    def test_overlapping_mount_error_refuses_one_volume_mounted_twice(self):
+        placed = [("volume:models:/a", "/a", "models")]
+        self.assertIsNone(
+            tongs.overlapping_mount_error("volume:cache:/b", "/b", "cache", placed))
+        self.assertIn(
+            "volume 'models' is already mounted by 'volume:models:/a'",
+            tongs.overlapping_mount_error("volume:models:/b:ro", "/b", "models", placed),
+        )
 
 
 class MountSpecTests(unittest.TestCase):
@@ -138,7 +286,7 @@ class MountSpecTests(unittest.TestCase):
     def test_mount_specs_socket_target_raises(self):
         with self.assertRaises(ValueError) as caught:
             tongs.tong_mount_specs({"mounts": ["docker-socket:/run/d.sock"]}, "/ws")
-        self.assertIn("only the 'workspace' mount takes a target path", str(caught.exception))
+        self.assertIn("only the 'workspace' and 'volume' mounts take a target path", str(caught.exception))
 
     def test_mount_specs_normalize_the_target(self):
         # docker cleans a bind destination, so it is handed the spelling the overlap checks judged.
@@ -163,6 +311,48 @@ class MountSpecTests(unittest.TestCase):
         specs = tongs.tong_mount_specs({"mounts": ["docker-socket:ro"]}, "/ws", socket_path="/run/d.sock")
         self.assertEqual(specs, ["/run/d.sock:/run/d.sock:ro"])
 
+    def test_mount_specs_volume_names_a_docker_volume(self):
+        defn = {"mounts": ["volume:models:/root/.ollama", "volume:cache:/cache:ro"]}
+        scope = (tongs.ORG_VOLUME_SCOPE, "/orgs/acme/.swarmforge/tongs")
+        self.assertEqual(
+            tongs.tong_mount_specs(defn, None, tong_name="ollama", volume_scope=scope),
+            [tongs.tong_volume_name("ollama", "models", scope) + ":/root/.ollama",
+             tongs.tong_volume_name("ollama", "cache", scope) + ":/cache:ro"],
+        )
+
+    def test_mount_specs_volume_target_normalized(self):
+        self.assertEqual(
+            tongs.tong_mount_specs(
+                {"mounts": ["volume:v://data/"]}, None, tong_name="t", volume_scope=LOCAL),
+            [tongs.tong_volume_name("t", "v", LOCAL) + ":/data"],
+        )
+
+    def test_mount_specs_volume_without_a_tong_name_or_scope_raises(self):
+        # Either would let tongs that must stay apart land on one volume.
+        for kwargs in ({"volume_scope": LOCAL}, {"tong_name": "t"}):
+            with self.assertRaisesRegex(ValueError, "name and scope", msg=kwargs):
+                tongs.tong_mount_specs({"mounts": ["volume:v:/data"]}, None, **kwargs)
+
+    def test_mount_specs_volume_overlapping_another_mount_raises(self):
+        for mounts in (["workspace", "volume:v:/workspace/cache"],
+                       ["volume:a:/data", "volume:b:/data"]):
+            with self.assertRaisesRegex(ValueError, "overlaps", msg=mounts):
+                tongs.tong_mount_specs(
+                    {"mounts": mounts}, "/ws", tong_name="t", volume_scope=LOCAL)
+
+    def test_mount_specs_volume_overlapping_a_ride_along_mount_raises(self):
+        git_dir = "/home/u/repo/.git:/home/u/repo/.git"
+        defn = {"mounts": ["workspace", "volume:v:/home"]}
+        with self.assertRaisesRegex(ValueError, "/home overlaps /home/u/repo/.git"):
+            tongs.tong_mount_specs(defn, "/ws", tong_name="t", volume_scope=LOCAL,
+                                   extra_mount_specs=[git_dir])
+        self.assertEqual(
+            len(tongs.tong_mount_specs(
+                {"mounts": ["workspace", "volume:v:/data"]}, "/ws", tong_name="t",
+                volume_scope=LOCAL, extra_mount_specs=[git_dir])),
+            2,
+        )
+
     def test_mount_specs_no_mounts_is_empty(self):
         self.assertEqual(tongs.tong_mount_specs({}, "/ws"), [])
 
@@ -170,6 +360,9 @@ class MountSpecTests(unittest.TestCase):
         self.assertEqual(tongs.workspace_mount_placements({}), [])
         self.assertEqual(
             tongs.workspace_mount_placements({"mounts": ["docker-socket"]}), []
+        )
+        self.assertEqual(
+            tongs.workspace_mount_placements({"mounts": ["volume:v:/data"]}), []
         )
 
     def test_workspace_mount_placements_default_target_and_mode(self):

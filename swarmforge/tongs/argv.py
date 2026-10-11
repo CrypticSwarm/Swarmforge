@@ -12,8 +12,14 @@ import os
 from swarmforge.names import canonical_path, dir_hint, path_token, sanitize_token
 
 from .mcp import _is_network_facing, _ordered_aliases
-from .model import LABEL_CONFIG_HASH, LABEL_TONG_NAME, WORKSPACE_HOST_ENV, parse_gpus
-from .mounts import DEFAULT_DOCKER_SOCKET, _has_socket_mount, tong_mount_specs
+from .model import (
+    LABEL_CONFIG_HASH,
+    LABEL_TONG_NAME,
+    SOCKET_MOUNT,
+    WORKSPACE_HOST_ENV,
+    parse_gpus,
+)
+from .mounts import DEFAULT_DOCKER_SOCKET, mounts_word, tong_mount_specs
 from .secrets import SECRET_FIFO_TMPFS, declared_run_override
 
 
@@ -125,6 +131,7 @@ def tong_run_argv(
     entrypoint=None,
     command=None,
     extra_mount_specs=None,
+    volume_scope=None,
 ):
     """Full `docker run -d` argv that starts one tong container.
 
@@ -158,6 +165,8 @@ def tong_run_argv(
     outside the definition (today the git-dir mounts that ride along with a
     `workspace` mount -- see swarmforge.anvil); they are appended after the
     definition's own mounts, mirroring how the Makefile orders the anvil's.
+
+    `volume_scope` names the tong's `volume:` mounts (see `volume_scope`).
     """
     if entrypoint is None and command is None:
         entrypoint, command = declared_run_override(defn)
@@ -176,11 +185,13 @@ def tong_run_argv(
     if secret_channel:
         argv += ["--tmpfs", SECRET_FIFO_TMPFS]
     effective_env = dict(env or {})
-    if workspace and _has_socket_mount(defn) and defn.get("lifecycle") == "session":
+    if workspace and mounts_word(defn, SOCKET_MOUNT) and defn.get("lifecycle") == "session":
         effective_env.setdefault(WORKSPACE_HOST_ENV, workspace)
     for key in sorted(effective_env):
         argv += ["-e", "%s=%s" % (key, effective_env[key])]
-    for spec in tong_mount_specs(defn, workspace, socket_path=socket_path):
+    for spec in tong_mount_specs(defn, workspace, socket_path=socket_path,
+                                 tong_name=name, volume_scope=volume_scope,
+                                 extra_mount_specs=extra_mount_specs or ()):
         argv += ["-v", spec]
     for spec in extra_mount_specs or []:
         argv += ["-v", spec]

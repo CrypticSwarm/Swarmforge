@@ -53,10 +53,15 @@ def path_digest(path):
     return digest.hexdigest()[:DIGEST_LENGTH]
 
 
-def dir_hint(path, limit=None):
-    """`path`'s basename as a docker name, cut to `limit` and not left on a separator."""
-    hint = sanitize_token(os.path.basename(canonical_path(path)))
+def name_hint(name, limit=None):
+    """`name` as a docker name, cut to `limit` and not left on a separator."""
+    hint = sanitize_token(name)
     return hint[:limit].rstrip("-_.") if limit is not None else hint
+
+
+def dir_hint(path, limit=None):
+    """`path`'s basename as a `name_hint`."""
+    return name_hint(os.path.basename(canonical_path(path)), limit)
 
 
 def path_token(path, hint):

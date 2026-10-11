@@ -193,6 +193,21 @@ class DockerArgvTests(unittest.TestCase):
             [part for part in default if part != "/ws:/workspace"],
         )
 
+    def test_run_argv_names_a_volume_after_the_tong_and_its_scope(self):
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["volume:models:/root/.ollama"]
+        for scope in ((tongs.LOCAL_VOLUME_SCOPE, None),
+                      (tongs.ORG_VOLUME_SCOPE, "/orgs/acme/.swarmforge/tongs")):
+            argv = tongs.tong_run_argv(
+                "ollama", defn, container_name="c", network="n", alias="ollama",
+                volume_scope=scope,
+            )
+            self.assertEqual(
+                [argv[i + 1] for i, part in enumerate(argv) if part == "-v"],
+                [tongs.tong_volume_name("ollama", "models", scope) + ":/root/.ollama"],
+                scope,
+            )
+
     def test_run_argv_extra_mount_specs_follow_definition_mounts(self):
         defn = def_of(NONE_TONG)
         defn["mounts"] = ["workspace"]
@@ -205,6 +220,16 @@ class DockerArgvTests(unittest.TestCase):
             mounted,
             ["/ws:/workspace", "/ws/.git/config:/workspace/.git/config:ro"],
         )
+
+    def test_run_argv_refuses_a_volume_over_an_extra_mount(self):
+        defn = def_of(NONE_TONG)
+        defn["mounts"] = ["workspace", "volume:v:/home"]
+        with self.assertRaisesRegex(ValueError, "mounted alongside the workspace"):
+            tongs.tong_run_argv(
+                "w", defn, container_name="c", network="n", alias="w", workspace="/ws",
+                extra_mount_specs=["/home/u/repo/.git:/home/u/repo/.git"],
+                volume_scope=(tongs.LOCAL_VOLUME_SCOPE, None),
+            )
 
     def test_run_argv_without_extra_mount_specs_is_unchanged(self):
         defn = def_of(NONE_TONG)

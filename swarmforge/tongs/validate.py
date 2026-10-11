@@ -150,24 +150,24 @@ def validate_tong(name, defn):
     mounts = defn.get("mounts")
     if isinstance(mounts, list):
         reserved = reserved_mount_targets(defn)
-        placed = []                      # (mount, destination) already accounted for
+        placed = []                      # (mount, destination, volume) already accounted for
         for mount in mounts:
             if not isinstance(mount, str):
                 err("mount entries must be strings, got %r" % (mount,))
                 continue
             try:
-                word, target, _ = parse_mount(mount)
+                word, volume, target, _ = parse_mount(mount)
                 destination = mount_destination(word, target)
             except ValueError as exc:
                 err(str(exc))
                 continue
             reason = mount_target_error(mount, word, target, destination, reserved)
             if reason is None:
-                reason = overlapping_mount_error(mount, destination, placed)
+                reason = overlapping_mount_error(mount, destination, volume, placed)
             if reason:
                 err(reason)
                 continue
-            placed.append((mount, destination))
+            placed.append((mount, destination, volume))
 
     networks = defn.get("networks")
     if isinstance(networks, list):

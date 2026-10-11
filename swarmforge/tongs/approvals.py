@@ -11,8 +11,8 @@ import hashlib
 import json
 import os
 
-from .model import WORKSPACE
-from .mounts import _has_socket_mount
+from .model import SOCKET_MOUNT, WORKSPACE, workspace_key
+from .mounts import mounts_word, parse_mount, tong_volume_name
 from .secrets import find_secret_refs
 
 
@@ -28,20 +28,22 @@ def config_hash(defn):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def privilege_summary(defn):
+def privilege_summary(defn, name=None, volume_scope=None):
     """Structured summary of what a definition asks for, for the approval gate.
 
     Gathers the privileges a reviewer must see before approving a
-    workspace-sourced tong: image, secret references, mounts, networks,
-    docker-socket access, and host GPU access. Rendering and prompting are the
-    caller's job; this just assembles the facts.
+    workspace-sourced tong: image, secret references, mounts, volumes, networks,
+    docker-socket access, and host GPU access. Each volume is `{"name", "target",
+    "docker"}`; `docker` is None unless `name` and `volume_scope` are given.
+    Rendering and prompting are the caller's job; this just assembles the facts.
     """
     return {
         "image": defn.get("image"),
         "secrets": [{"provider": p, "ref": r} for p, r in find_secret_refs(defn)],
         "mounts": list(defn.get("mounts") or []),
+        "volumes": _declared_volumes(defn, name, volume_scope),
         "networks": list(defn.get("networks") or []),
-        "socket": _has_socket_mount(defn),
+        "socket": mounts_word(defn, SOCKET_MOUNT),
         "gpus": _requested_gpus(defn),
     }
 
@@ -54,6 +56,28 @@ def _requested_gpus(defn):
     """
     resources = defn.get("resources")
     return resources.get("gpus") if isinstance(resources, dict) else None
+
+
+def _declared_volumes(defn, name, volume_scope):
+    """The volumes a definition's well-formed `volume:` mounts declare.
+
+    The gate runs before validation, so a malformed entry is skipped here rather
+    than raised: it is still listed among the raw mounts, and validation refuses
+    it before anything starts.
+    """
+    volumes = []
+    for mount in defn.get("mounts") or []:
+        if not isinstance(mount, str):
+            continue
+        try:
+            _, volume, target, _ = parse_mount(mount)
+        except ValueError:
+            continue
+        if volume:
+            docker = (tong_volume_name(name, volume, volume_scope)
+                      if name and volume_scope else None)
+            volumes.append({"name": volume, "target": target, "docker": docker})
+    return volumes
 
 
 def is_workspace_sourced(source_layer):
@@ -87,7 +111,7 @@ def is_approved(approvals, workspace_path, name, defn):
     Fails closed (returns False) on a missing or malformed store entry rather
     than raising -- a hand-edited approvals.json must never crash the gate.
     """
-    entry = approvals.get(workspace_path)
+    entry = approvals.get(workspace_key(workspace_path))
     if not isinstance(entry, dict):
         return False
     return entry.get(name) == config_hash(defn)
@@ -98,5 +122,5 @@ def record_approval(approvals, workspace_path, name, defn):
 
     Mutates and returns the store (same object) so callers can persist it.
     """
-    approvals.setdefault(workspace_path, {})[name] = config_hash(defn)
+    approvals.setdefault(workspace_key(workspace_path), {})[name] = config_hash(defn)
     return approvals

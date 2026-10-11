@@ -8,7 +8,7 @@ import json
 import sys
 
 from .discovery import discover, merge_tongs
-from .model import LAYERS
+from .model import LAYERS, printable
 from .validate import validate_tong
 
 
@@ -31,7 +31,7 @@ def main(argv):
         problems = 0
         for name in sorted(merged):
             for error in validate_tong(name, merged[name]["definition"]):
-                print(error)
+                print(printable(error))
                 problems += 1
         if not problems:
             print("ok: %d tong(s) valid" % len(merged))
