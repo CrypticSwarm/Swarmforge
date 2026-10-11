@@ -31,7 +31,7 @@ A `harness_rules` macro generates all twenty from the knobs each [`harness.mk`](
 | `stop_<harness>` | `docker rm -f` on that harness's container, silent if there is none. | `<PREFIX>_CTR` |
 | `name_<harness>` | Prints that harness's container name for this `PROJECT_DIR` and does nothing else, so `make -s` output can be handed straight to `docker`. | `<PREFIX>_CTR` |
 | `build_harnesses` | Builds all four images. | as `build_<harness>` |
-| `clean` | Stops every harness container, stops Ollama, and removes the network. | `NETWORK` |
+| `clean` | Stops every harness container and removes the network. | `NETWORK` |
 
 ## Container names
 
@@ -49,25 +49,13 @@ docker exec -it "$(make -s -C /path/to/Swarmforge name_claude PROJECT_DIR=$(pwd)
 
 Set `<PREFIX>_CTR` to name the container yourself; `run_<harness>`, `stop_<harness>`, and `name_<harness>` all read it, so the three stay in agreement.
 
-## Images without a harness
+## Other targets
 
 | Target | What it does |
 | --- | --- |
 | `build_broker` | Builds `tongs/docker-broker` and tags it `$(BROKER_IMG)`, for a [broker tong](../tongs/broker.md). |
-| `opencode_network` | Creates the `$(NETWORK)` docker network if it is not there. Every `run_<harness>` target, `run_ollama`, and `test-skills` depends on it, and it is the default goal. |
-
-## Ollama
-
-Ollama serves models from your own machine, so a session can use one without a provider account.
-
-| Target | What it does |
-| --- | --- |
-| `run_ollama` | Starts `$(OLLAMA_IMG)` detached as `$(OLLAMA_CTR)`, with the checkout's `ollama/` as its model store, `--gpus=all`, and `$(OLLAMA_PORT)` published. Replaces a container already under that name. |
-| `logs_ollama` | `docker logs -f` on it. |
-| `stop_ollama` | `docker rm -f` on it, silent if there is none. |
+| `opencode_network` | Creates the `$(NETWORK)` docker network if it is not there. Every `run_<harness>` target and `test-skills` depends on it, and it is the default goal. |
 | `gpu_stat` | `nvidia-smi`. |
-
-Seven targets exec into the running container to pull and run one model: `run_llama_3-1-8b`, `run_gpt-oss-20b`, `run_gpt-oss-120b`, `run_devstral2_small`, `run_qwen_3-5-27b`, `run_qwen_3-5-35b`, `run_gemma4_26b`. Each takes no variables and has no prerequisite, so `make run_ollama` comes first.
 
 ## Tests and lint
 

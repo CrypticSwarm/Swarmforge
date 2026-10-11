@@ -29,9 +29,8 @@ NOT_OURS = {
     "venv",
 }
 
-# Container state stores, matched by path so a package named `ollama` is still read.
+# Container state stores, matched by path so a package named `data` is still read.
 NOT_OURS_PATHS = {
-    os.path.join(REPO_ROOT, "ollama"),
     os.path.join(REPO_ROOT, "anvil", "data"),
     os.path.join(REPO_ROOT, ".opencode-test-data"),
 }
@@ -543,13 +542,12 @@ class PathLoadingStaysInTheShims(unittest.TestCase):
     def test_container_stores_are_pruned_by_place_and_not_by_name(self):
         """The distinction the path-keyed prune list exists to make.
 
-        `ollama` names a directory the Makefile fills with container state,
-        and it is also a word this repo uses for its own things. Pruning the
-        name everywhere would quietly drop a package directory out of both
-        checks; pruning the path drops only the store.
+        `anvil/data` is a gitignored state store, but `data` could as well
+        name a package. Pruning the name everywhere would drop such a package
+        out of both checks; pruning the path drops only the store.
         """
-        self.assertTrue(is_pruned(REPO_ROOT, "ollama"))
-        self.assertFalse(is_pruned(PACKAGE_ROOT, "ollama"))
+        self.assertTrue(is_pruned(os.path.join(REPO_ROOT, "anvil"), "data"))
+        self.assertFalse(is_pruned(PACKAGE_ROOT, "data"))
         # Names with no meaning of their own still go wherever they appear.
         self.assertTrue(is_pruned(PACKAGE_ROOT, "__pycache__"))
 

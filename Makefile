@@ -2,11 +2,6 @@ SHELL := /bin/bash
 
 NETWORK      ?= opencode-net
 
-OLLAMA_IMG   ?= ollama/ollama
-OLLAMA_CTR   ?= ollama
-OLLAMA_PORT  ?= 11434
-OLLAMA_CTX   ?= 32768
-
 BROKER_IMG  ?= swarmforge-docker-broker:latest
 
 SWARMFORGE_REPO_SLUG ?=
@@ -96,8 +91,7 @@ TONGS_LAYER_ARGS = \
 	$(if $(and $(strip $(SWARMFORGE_ORG_ASSETS_DIR)),$(wildcard $(SWARMFORGE_ORG_ASSETS_DIR)/tongs)),--org-tongs "$(SWARMFORGE_ORG_ASSETS_DIR)/tongs",) \
 	$(if $(and $(strip $(SWARMFORGE_REPO_TONGS_DIR)),$(wildcard $(SWARMFORGE_REPO_TONGS_DIR))),--repo-tongs "$(SWARMFORGE_REPO_TONGS_DIR)",)
 
-.PHONY: opencode_network build_harnesses build_broker run_ollama logs_ollama stop_ollama gpu_stat clean \
-	run_llama_3-1-8b run_gpt-oss-20b run_gpt-oss-120b run_devstral2_small test test-skills lint
+.PHONY: opencode_network build_harnesses build_broker gpu_stat clean test test-skills lint
 
 # bin/git-guard prints the git-dir mounts per --target, one docker -v per line; its docstring has the why.
 define run_agent_container
@@ -244,50 +238,11 @@ include $(HARNESS_FRAGMENTS)
 build_broker:
 	docker build -t $(BROKER_IMG) "$(SWARMFORGE_DIR)/tongs/docker-broker"
 
-run_ollama: opencode_network
-	@docker rm -f $(OLLAMA_CTR) >/dev/null 2>&1 || true
-	docker run -d --rm --name $(OLLAMA_CTR) \
-	  --network $(NETWORK) \
-	  -v $(SWARMFORGE_DIR)/ollama:/root/.ollama \
-	  -e OLLAMA_HOST=0.0.0.0:11434 \
-		-e OLLAMA_CONTEXT_LENGTH=$(OLLAMA_CTX) \
-	  -p $(OLLAMA_PORT):11434 \
-	  --gpus=all \
-	  $(OLLAMA_IMG)
-	@echo "Ollama: host http://localhost:$(OLLAMA_PORT) | containers http://$(OLLAMA_CTR):11434"
-
-logs_ollama:
-	docker logs -f $(OLLAMA_CTR)
-
-stop_ollama:
-	@docker rm -f $(OLLAMA_CTR) >/dev/null 2>&1 || true
-
 gpu_stat:
 	nvidia-smi
 
-clean: stop_ollama
+clean:
 	@docker network rm $(NETWORK) >/dev/null 2>&1 || true
-
-run_llama_3-1-8b:
-	docker exec -it ollama ollama run llama3.1:8b
-
-run_gpt-oss-20b:
-	docker exec -it ollama ollama run gpt-oss:20b
-
-run_gpt-oss-120b:
-	docker exec -it ollama ollama run gpt-oss:120b
-
-run_devstral2_small:
-	docker exec -it ollama ollama run devstral-small-2:24b
-
-run_qwen_3-5-27b:
-	docker exec -it ollama ollama run qwen3.5:27b
-
-run_qwen_3-5-35b:
-	docker exec -it ollama ollama run qwen3.5:35b
-
-run_gemma4_26b:
-	docker exec -it ollama ollama run gemma4:26b
 
 # PYTHONPATH makes swarmforge importable regardless of where make was invoked from.
 test:
@@ -300,7 +255,7 @@ lint:
 # Drives a real model in the opencode image; OPENCODE_IMG comes from its harness.mk fragment.
 test-skills: opencode_network
 	@if [ -z "$(strip $(MODEL))" ]; then \
-		printf '%s\n' "MODEL is required (example: make test-skills MODEL=ollama/llama3.1)"; \
+		printf '%s\n' "MODEL is required (example: make test-skills MODEL=openai/gpt-5.3-codex)"; \
 		exit 2; \
 	fi
 	@mkdir -p "$(TEST_DATA_DIR)"

@@ -30,7 +30,7 @@ Read by every `run_<harness>` target.
 | `GITCONFIG_FILE` | `$(HOME)/.gitconfig` | Mounted read-only at `/home/anvil/.gitconfig` when it is a file, and skipped when it is not, so an agent commits under your `user.name` and `user.email`. |
 | `ENV_FILE` | `$(PROJECT_DIR)/.swarmforge/env` | Passed as `docker run --env-file` when the file exists. The route for anything the harness wants in its environment that no make variable names. |
 | `TIMEZONE` | `Etc/UTC` | Arrives as `TZ`. A name with no file under `/usr/share/zoneinfo` keeps the image default and warns on stderr. |
-| `NETWORK` | `opencode-net` | The docker network the anvil, the tongs, and Ollama share. |
+| `NETWORK` | `opencode-net` | The docker network the anvil and the tongs share. |
 | `SWARMFORGE_REPO_SLUG` | empty | The path under `/repos` the workspace mounts at; empty derives it from the remote URL, then the basename. Slug-mounting harnesses only, not `run_opencode`. |
 | `SWARMFORGE_REMOTE_NAME` | `origin` | Which remote's URL the slug comes from. |
 
@@ -131,17 +131,6 @@ What each target runs is in [Testing](../development/testing.md).
 | `TEST_TIMEOUT_S` | `600` | The per-scenario timeout. |
 | `TEST_DATA_DIR` | `$(DATA_DIR)` | The OpenCode data dir the eval container gets. |
 | `FORCE_COLOR` | unset | Host environment. `make test-skills` passes `--color always` and forwards nothing, so `1` reaches a hand-run `scripts/skill_eval.py --color auto` only. |
-
-## Ollama
-
-The targets are in [Make targets](make-targets.md#ollama).
-
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `OLLAMA_IMG` | `ollama/ollama` | The image `run_ollama` starts. |
-| `OLLAMA_CTR` | `ollama` | The container name; the `run_<model>` targets name `ollama` literally and ignore this. |
-| `OLLAMA_PORT` | `11434` | The host port. The container is started with `OLLAMA_HOST=0.0.0.0:11434`, so inside the network it is always `http://$(OLLAMA_CTR):11434`. |
-| `OLLAMA_CTX` | `32768` | Passed through as `OLLAMA_CONTEXT_LENGTH`. |
 
 ## On the host
 

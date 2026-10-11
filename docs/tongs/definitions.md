@@ -107,14 +107,14 @@ A `shared` `port` tong that serves models from the host's GPUs and keeps its mul
 ```yaml
 # ~/.swarmforge/tongs/models.yaml
 lifecycle: shared
-image: ollama/ollama@sha256:...
+image: ghcr.io/example/model-server@sha256:...
 interface:
   kind: port
-  port: 11434
+  port: 8000
 mounts:
-  - volume:store:/root/.ollama
+  - volume:store:/var/lib/models
 resources:
   gpus: all
 ```
 
-The anvil gets `SWARMFORGE_TONG_MODELS_HOST=models` and `SWARMFORGE_TONG_MODELS_PORT=11434`, and the store lives in the volume `swarmforge-volume-models-<digest>_store`. It is named `models` because `make run_ollama` already answers to `ollama` on that network.
+The anvil gets `SWARMFORGE_TONG_MODELS_HOST=models` and `SWARMFORGE_TONG_MODELS_PORT=8000`, and the store lives in the volume `swarmforge-volume-models-<digest>_store`.

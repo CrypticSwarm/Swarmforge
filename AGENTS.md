@@ -5,14 +5,13 @@
 - Follow this file whenever you add or modify source, scripts, Docker assets, or skills anywhere in the repo.
 
 ## Repo Overview
-- `Makefile` orchestrates the local containers (`build_opencode`, `run_opencode`, `run_ollama`, etc.) and is the preferred entry point for automation.
+- `Makefile` orchestrates the local containers (`build_opencode`, `run_opencode`, etc.) and is the preferred entry point for automation.
 - `install.sh` appends an `oc` helper alias that shells out to `make -f <repo>/Makefile run_opencode PROJECT_DIR=$(pwd)`; keep it POSIX-compliant because it is sourced in user shells.
 - `anvil/` holds the container-side assets shared by every harness image: the Dockerfile and the container entrypoint. Per-harness image assets — each harness's binary install script, and Claude's status line (`statusline.sh`) with the image config layer that turns it on (`claude-settings.json`) — live in `swarmforge/harness/<name>/` and ride into the image with the package. The images build from the repo root (`-f anvil/Dockerfile`) so `swarmforge/` can be copied in; `.dockerignore` keeps everything else out of the context.
 - `swarmforge/` is the Python for both sides of the container boundary: the host launcher (`anvil`, `tongs`, `gitguard`, `names`, `cli`, `worktrees`), and the container lifecycle drivers the entrypoint runs with `python3 -m` (`swarmforge.harness.init` as root, then `swarmforge.harness.execute` as the anvil user), where the config merging, the agent translation, and the asset install happen. It is stdlib-only: the image installs no third-party Python and the launcher runs on the host's `python3`.
 - `bin/` holds the launcher entry points (`run-anvil`, `tongs`, `git-guard`, `project-name`, `swarmforge`). Each is a shim that puts the checkout on `sys.path` and calls its module's `main()` — the only files that resolve a path, so nothing under `swarmforge/` needs to know where it sits on disk.
 - `opencode/` holds the OpenCode-native repo config layer (`opencode.json`, plus untracked plugin state); harness-neutral assets live at the top level in `skills/`, `commands/`, and `agents/`.
 - `docs/` holds the prose, one file per subject, indexed by `docs/README.md`; embedded images live in `docs/images/`; `README.md` keeps the pitch, the install and run steps, and a map of that tree. Every page is reachable from the index and every relative link resolves, which `tests/test_docs_links.py` holds to.
-- `ollama/` stores persistent Ollama state. Do not add large model blobs to git—only configuration or lightweight defaults belong here.
 
 ## Coding Conventions
 - A comment is at most one short line, in every language here. Delete what restates the code, narrates history, or labels an obvious block — history belongs in the commit message. Where a comment explains *what* something is, give it a name instead: a named local, a private helper, a named constant. Write more than one line only for a constraint the code cannot carry — an ordering requirement, an external-system quirk, a security property — and make it obvious why that comment earned the space. Docstrings hold the module and function contracts and are not bound by this.
@@ -31,8 +30,7 @@
 - Lint the Python with `make lint` (`ruff check`, configured in `pyproject.toml`). It is a linter only — never run `ruff format`, which would reflow files the change did not touch. Ruff is the one tool outside the stdlib this repo asks for, and it is a contributor tool: no image installs it and nothing under `swarmforge/` imports it.
 - Run the skill eval harness via `make test-skills MODEL=<provider/model>`. It drives a real model in the OpenCode image, so it is a separate target from the unit suite.
 - Filter skill evals with `TEST_SKILL=<skill-name>` and adjust timeouts with `TEST_TIMEOUT_S=<seconds>`.
-- Start the local Ollama service with `make run_ollama` when testing models; pair it with `make stop_ollama` and `make clean` to tear everything down.
-- Use `gpu_stat` (wraps `nvidia-smi`) to confirm GPU availability before running high-memory models.
+- Use `gpu_stat` (wraps `nvidia-smi`) to confirm GPU availability before starting a tong that requests GPUs.
 
 ## Additional Notes
 - Keep secrets, API keys, and downloaded models out of version control; anything mounted into containers should be reproducible from repo contents.
