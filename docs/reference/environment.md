@@ -113,8 +113,9 @@ Each harness also has plain-`=` `<PREFIX>_`-named defaults in its fragment: `CLA
 | `RUBY_VERSION` | `3.2.11` | The Ruby release built into `/opt/ruby`. |
 | `RUBY_SHA256` | the `3.2.11` tarball's | The checksum the Ruby tarball must match. Change it together with `RUBY_VERSION`, or the build fails. |
 | `BUNDLER_VERSION` | `2.6.9` | The Bundler release installed alongside Ruby's default one. |
-| `NODE_MAJOR` | `24` | The NodeSource major version. |
+| `NODE_MAJOR` | `26` | The NodeSource major version. |
 | `PLAYWRIGHT_VERSION` | `1.63.0` | The Playwright release whose chromium is installed. |
+| `COREPACK_VERSION` | `0.36.0` | The Corepack release, installed from npm, behind the image's `yarn`. |
 
 ## Tests and tooling
 

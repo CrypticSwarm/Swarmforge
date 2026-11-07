@@ -4,7 +4,7 @@ ARG PYTHON_VERSION=3.12.7
 ARG RUBY_VERSION=3.2.11
 ARG RUBY_SHA256=b3eeabd6636f334531db3ffdc3229eb05e524740e6c84fdc043720573cf2f8b2
 ARG BUNDLER_VERSION=2.6.9
-ARG NODE_MAJOR=24
+ARG NODE_MAJOR=26
 
 FROM debian:${DEBIAN_TAG} AS python-builder
 
@@ -79,12 +79,13 @@ FROM debian:${DEBIAN_TAG} AS runtime-base
 ARG PYTHON_VERSION
 ARG NODE_MAJOR
 ARG PLAYWRIGHT_VERSION=1.63.0
+ARG COREPACK_VERSION=0.36.0
 
 # /opt/ruby is root's, so gems go under the anvil home; its bin trails PATH so it shadows nothing root runs.
 ENV GEM_HOME=/home/anvil/.gem
 ENV PATH="/opt/python/bin:/opt/ruby/bin:${PATH}:${GEM_HOME}/bin"
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-# No session is there to answer corepack's download prompt, and its auto-pin would edit package.json.
+# No session answers corepack's download prompt and auto-pin would edit package.json; hold both off for any COREPACK_VERSION.
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_ENABLE_AUTO_PIN=0
 
 COPY --from=python-builder /opt/python /opt/python
@@ -124,6 +125,8 @@ RUN set -eux; \
         zlib1g-dev; \
     curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
+    npm install -g corepack@${COREPACK_VERSION}; \
+    corepack disable pnpm; \
     corepack enable yarn; \
     npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps chromium; \
     PYTHON_MINOR="${PYTHON_VERSION%.*}"; \
