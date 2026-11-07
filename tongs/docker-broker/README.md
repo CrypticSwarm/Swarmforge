@@ -27,11 +27,11 @@ definition shape, with an MCP surface on top.
 ```yaml
 name: docker-broker
 allowed_images:                 # the entire image allowlist
-  - node:24-alpine
+  - node:26-alpine
 commands:
   - name: build                 # MCP tool name
     description: ...             # shown to the agent
-    image: node:24-alpine       # must be in allowed_images
+    image: node:26-alpine       # must be in allowed_images
     mounts: [workspace:/work]   # only the `workspace` magic word (never the socket)
     workdir: /work
     command: [npm, run, build]  # base argv inside the container
