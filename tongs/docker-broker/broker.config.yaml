@@ -6,12 +6,12 @@ description: >-
   the anvil can compile and test without holding the docker socket itself.
 
 allowed_images:
-  - node:24-alpine
+  - node:26-alpine
 
 commands:
   - name: build
     description: Run `npm run build` against the project workspace.
-    image: node:24-alpine
+    image: node:26-alpine
     mounts: [workspace:/work]
     workdir: /work
     command: [npm, run, build]
@@ -27,7 +27,7 @@ commands:
 
   - name: test
     description: Run the project's test suite, optionally narrowed to one suite.
-    image: node:24-alpine
+    image: node:26-alpine
     mounts: [workspace:/work:ro]
     workdir: /work
     command: [npm, test, --]
