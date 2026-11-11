@@ -54,3 +54,32 @@ def wait_ready(docker, container, defn, alias, network, *, anvil_image,
         if monotonic() - start >= timeout_s:
             return False
         sleep(interval)
+
+
+def explain_unready(docker, container, defn, alias, network, *, anvil_image):
+    """Lines saying why a tong failed `wait_ready`, for its timeout error.
+
+    The polling loop discards each probe's output, so this re-runs a `tcp`
+    probe once with it kept, after checking the container is up and attached
+    to `network` under `alias`.
+    """
+    state = docker.inspect_state(container)
+    if state is None:
+        return ["container %s does not exist" % container]
+    lines = []
+    if not state["running"]:
+        lines.append("container %s is not running; see `docker logs %s`" % (container, container))
+    mode, _, _ = tongs.readiness_settings(defn)
+    if mode != "tcp" or not anvil_image or not network:
+        return lines
+    attached = docker.network_aliases(container) or {}
+    if network not in attached:
+        lines.append("container %s is not on network %s (it is on: %s)"
+                     % (container, network, ", ".join(sorted(attached)) or "none"))
+    elif alias not in attached[network]:
+        lines.append("container %s has no alias '%s' on %s (aliases: %s)"
+                     % (container, alias, network, ", ".join(attached[network]) or "none"))
+    port = (defn.get("interface") or {}).get("port")
+    error = docker.tcp_probe_error(network, alias, port, anvil_image)
+    lines.append("probe from %s: %s" % (anvil_image, error or "connects now"))
+    return lines

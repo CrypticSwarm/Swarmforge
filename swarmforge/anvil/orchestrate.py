@@ -27,7 +27,7 @@ from swarmforge import harness as harnesses
 from swarmforge.harness.spec import provided
 
 from .errors import OrchestrationError
-from .readiness import wait_ready
+from .readiness import explain_unready, wait_ready
 from .secretchan import SecretChannel, make_secret_resolver
 
 
@@ -419,7 +419,14 @@ def run_with_tongs(merged, anvil_cmd, opts, *, docker, providers=None,
                 docker, container, defn, alias, probe_network,
                 anvil_image=opts.anvil_image, sleep=sleep, monotonic=monotonic,
             ):
-                raise OrchestrationError("tong '%s' did not become ready in time" % name)
+                reasons = explain_unready(
+                    docker, container, defn, alias, probe_network,
+                    anvil_image=opts.anvil_image,
+                )
+                raise OrchestrationError(
+                    "tong '%s' did not become ready in time%s"
+                    % (name, "".join("\n  " + reason for reason in reasons))
+                )
 
         pre_image_args = _injection_pre_image_args(injection)
         post_image_args = []
