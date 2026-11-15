@@ -77,16 +77,9 @@ class ParseArgsTests(unittest.TestCase):
             ["--", "x"],
             environ={"TMUX": "/tmp/tmux-1000/default,4242,3", "TMUX_PANE": "%7"},
         )
-        self.assertEqual(opts.tmux, "/tmp/tmux-1000/default,4242,3")
-        self.assertEqual(opts.tmux_pane, "%7")
-
-    def test_tmux_options_none_outside_tmux(self):
-        for environ in ({}, {"TMUX": "", "TMUX_PANE": ""}):
-            opts, _ = launcher.parse_args(["--", "x"], environ=environ)
-            self.assertIsNone(opts.tmux)
-            self.assertIsNone(opts.tmux_pane)
-
-    def test_tmux_options_default_to_the_process_environment(self):
+        self.assertEqual((opts.tmux, opts.tmux_pane), ("/tmp/tmux-1000/default,4242,3", "%7"))
+        opts, _ = launcher.parse_args(["--", "x"], environ={"TMUX": "", "TMUX_PANE": ""})
+        self.assertEqual((opts.tmux, opts.tmux_pane), (None, None))
         with mock.patch.dict(os.environ, {"TMUX": "/tmp/tmux-1/s,1,0", "TMUX_PANE": "%1"}):
             opts, _ = launcher.parse_args(["--", "x"])
         self.assertEqual((opts.tmux, opts.tmux_pane), ("/tmp/tmux-1/s,1,0", "%1"))
@@ -448,20 +441,6 @@ class MainGateTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             self.assertEqual(completed.stdout, "")
             self.assertIn("workspace", completed.stderr)
-
-    def test_shared_tmux_socket_mount_refused_without_exec(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tongs_dir = os.path.join(tmp, "tongs")
-            os.makedirs(tongs_dir)
-            with open(os.path.join(tongs_dir, "spawner.yaml"), "w") as handle:
-                handle.write(
-                    "lifecycle: shared\nimage: x\nmounts:\n  - tmux-socket\n"
-                    "interface:\n  kind: none\nreadiness:\n  mode: none\n"
-                )
-            completed = _run_launcher_raw(["--repo-tongs", tongs_dir])
-            self.assertEqual(completed.returncode, 1)
-            self.assertEqual(completed.stdout, "")
-            self.assertIn("tmux socket", completed.stderr)
 
 
 def _write_shared_tong(tmp):

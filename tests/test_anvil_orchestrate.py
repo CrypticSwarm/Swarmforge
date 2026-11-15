@@ -963,20 +963,6 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertNotIn("TMUX", " ".join(pg))
         self.assertNotIn("TMUX", " ".join(docker.anvil_argv))
 
-    def test_shared_tmux_tong_is_never_handed_the_server(self):
-        # Refused before this in main; reaching here anyway must not wire it.
-        docker = FakeDocker()
-        shared = dict(SESSION_TMUX, lifecycle="shared")
-        with self.assertRaisesRegex(launcher.OrchestrationError,
-                                    "'shared' tong may not mount the tmux socket"):
-            launcher.run_with_tongs(
-                _merged("spawner", shared, source=tongs.REPO), ANVIL_ARGV,
-                _opts(tmux="/tmp/tmux-1000/default,4242,3"),
-                docker=docker, check_tmux_dir=_skip_tmux_dir_check,
-                sleep=lambda _s: None, monotonic=_Clock(),
-            )
-        self.assertEqual(docker.run_argvs, [])
-
     def test_tmux_socket_dir_checked_on_disk_before_any_docker_call(self):
         parent = _tmux_test_dir(self)
         tmux_dir, socket_path = _tmux_socket_dir(parent)

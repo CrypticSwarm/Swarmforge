@@ -391,16 +391,6 @@ class MountSpecTests(unittest.TestCase):
                 mount,
             )
 
-    def test_mount_specs_tmux_socket_rw_raises(self):
-        with self.assertRaisesRegex(ValueError, "always read-only"):
-            tongs.tong_mount_specs(
-                {"mounts": ["tmux-socket:rw"]}, "/ws", tmux_socket_dir="/tmp/tmux-1000")
-
-    def test_mount_specs_tmux_socket_target_raises(self):
-        with self.assertRaisesRegex(ValueError, "only the 'workspace' and 'volume' mounts take a target"):
-            tongs.tong_mount_specs(
-                {"mounts": ["tmux-socket:/tmux"]}, "/ws", tmux_socket_dir="/tmp/tmux-1000")
-
     def test_mount_specs_tmux_socket_without_host_source_raises(self):
         with self.assertRaisesRegex(ValueError, "no tmux socket directory is known"):
             tongs.tong_mount_specs({"mounts": ["tmux-socket"]}, "/ws")

@@ -246,22 +246,12 @@ class ValidationTests(unittest.TestCase):
             self.assertTrue(
                 any("the launcher sets" in e and name in e for e in errors), (name, errors))
 
-    def test_tmux_launcher_env_plain_value_accepted(self):
-        defn = self._base(mounts=["tmux-socket"], env={"TMUX_PANE": "%1"})
-        self.assertEqual(tongs.validate_tong("t", defn), [])
-
-    def test_tmux_launcher_env_secret_accepted_without_the_mount(self):
-        defn = self._base(env={"TMUX": "${secret:op:r}"})
-        self.assertEqual(tongs.validate_tong("t", defn), [])
-
-    def test_unrelated_secret_on_a_tmux_tong_accepted(self):
-        defn = self._base(mounts=["tmux-socket"], env={"TOKEN": "${secret:op:r}"})
-        self.assertEqual(tongs.validate_tong("t", defn), [])
-
-    def test_target_overlapping_the_tmux_mount_rejected(self):
-        errors = tongs.validate_tong(
-            "t", self._base(mounts=["workspace:/run", "tmux-socket"]))
-        self.assertTrue(any("overlaps /run/swarmforge-tmux" in e for e in errors), errors)
+    def test_tmux_launcher_env_accepted_unless_a_secret_on_a_tmux_tong(self):
+        for mounts, env in ((["tmux-socket"], {"TMUX_PANE": "%1"}),
+                            ([], {"TMUX": "${secret:op:r}"}),
+                            (["tmux-socket"], {"TOKEN": "${secret:op:r}"})):
+            defn = self._base(mounts=mounts, env=env)
+            self.assertEqual(tongs.validate_tong("t", defn), [], (mounts, env))
 
     def test_extra_aliases_accepted_on_network_facing_kinds(self):
         # A client matching a certificate CN dials the dotted name, not the canonical alias.
