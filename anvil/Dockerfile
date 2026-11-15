@@ -4,7 +4,7 @@ ARG PYTHON_VERSION=3.12.7
 ARG RUBY_VERSION=3.2.11
 ARG RUBY_SHA256=b3eeabd6636f334531db3ffdc3229eb05e524740e6c84fdc043720573cf2f8b2
 ARG BUNDLER_VERSION=2.6.9
-ARG NODE_MAJOR=24
+ARG NODE_MAJOR=26
 
 FROM debian:${DEBIAN_TAG} AS python-builder
 
@@ -79,6 +79,8 @@ FROM debian:${DEBIAN_TAG} AS runtime-base
 ARG PYTHON_VERSION
 ARG NODE_MAJOR
 ARG PLAYWRIGHT_VERSION=1.63.0
+ARG COREPACK_VERSION=0.36.0
+ARG COREPACK_SHA256=9128cfe26aee0c99f4fc68c15c6b8b12309a68be0de2c012cdfea2a463cb722f
 
 # /opt/ruby is root's, so gems go under the anvil home; its bin trails PATH so it shadows nothing root runs.
 ENV GEM_HOME=/home/anvil/.gem
@@ -124,6 +126,11 @@ RUN set -eux; \
         zlib1g-dev; \
     curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
+    curl -fsSL "https://registry.npmjs.org/corepack/-/corepack-${COREPACK_VERSION}.tgz" -o /tmp/corepack.tgz; \
+    printf '%s  %s\n' "${COREPACK_SHA256}" /tmp/corepack.tgz | sha256sum -c -; \
+    npm install -g /tmp/corepack.tgz; \
+    rm /tmp/corepack.tgz; \
+    corepack disable pnpm; \
     corepack enable yarn; \
     npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps chromium; \
     PYTHON_MINOR="${PYTHON_VERSION%.*}"; \

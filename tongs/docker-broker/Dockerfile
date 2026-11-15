@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG NODE_TAG=24-alpine
+ARG NODE_TAG=26-alpine
 
 FROM node:${NODE_TAG} AS build
 WORKDIR /app

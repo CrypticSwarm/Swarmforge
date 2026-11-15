@@ -38,7 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "26"
           cache: npm
           cache-dependency-path: tongs/docker-broker/package-lock.json
       - name: Install broker deps
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "26"
           cache: npm
           cache-dependency-path: tongs/docker-broker/package-lock.json
       - name: Install broker deps

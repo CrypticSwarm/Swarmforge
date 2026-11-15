@@ -6,11 +6,11 @@ A **broker** is a tong that holds the docker socket and spawns its own short-liv
 
 ```yaml
 allowed_images:
-  - node:24-alpine            # the entire image allowlist; nothing else can run
+  - node:26-alpine            # the entire image allowlist; nothing else can run
 commands:
   - name: test                # the MCP tool the agent calls
     description: Run the project's test suite.
-    image: node:24-alpine
+    image: node:26-alpine
     mounts: [workspace:/work:ro]
     workdir: /work
     command: [npm, test, --]
