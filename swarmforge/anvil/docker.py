@@ -24,6 +24,17 @@ _INSPECT_STATE_FORMAT = (
 )
 _INSPECT_HEALTH_FORMAT = "{{if .State.Health}}{{.State.Health.Status}}{{end}}"
 
+# Exits with the connect error as its message, so a failed probe says why.
+_TCP_PROBE_SCRIPT = (
+    "import socket,sys\n"
+    "s=socket.socket()\n"
+    "s.settimeout(2)\n"
+    "try:\n"
+    "    s.connect((sys.argv[1], int(sys.argv[2])))\n"
+    "except OSError as exc:\n"
+    "    sys.exit('connect to %s:%s failed: %s' % (sys.argv[1], sys.argv[2], exc))\n"
+)
+
 # Teardown waits on this; under a TTY the forwarded signal just ends the client.
 _FOREGROUND_STOP_GRACE_S = 3
 
@@ -141,18 +152,36 @@ class DockerCLI:
         python3 -- since a tong's own port is only reachable over the docker
         network, not from the host.
         """
-        script = (
-            "import socket,sys\n"
-            "s=socket.socket()\n"
-            "s.settimeout(2)\n"
-            "try:\n"
-            "    s.connect((sys.argv[1], int(sys.argv[2])))\n"
-            "except OSError:\n"
-            "    sys.exit(1)\n"
+        return self._quiet(_tcp_probe_argv(network, host, port, image)) == 0
+
+    def tcp_probe_error(self, network, host, port, image):
+        """Why `tcp_probe` fails, from its stderr; None if it connects."""
+        completed = self._run(
+            _tcp_probe_argv(network, host, port, image),
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
-        argv = ["docker", "run", "--rm", "--network", network,
-                "--entrypoint", "python3", image, "-c", script, host, str(port)]
-        return self._quiet(argv) == 0
+        if completed.returncode == 0:
+            return None
+        stderr = _decode(completed.stderr or b"").strip()
+        return stderr or "probe exited %d" % completed.returncode
+
+    def network_aliases(self, container):
+        """`{network: [alias, ...]}` for each network a container is on, or None if absent."""
+        completed = self._run(
+            ["docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}", container],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if completed.returncode != 0:
+            return None
+        try:
+            networks = json.loads(_decode(completed.stdout)) or {}
+        except ValueError:
+            return None
+        return {
+            name: list((endpoint or {}).get("Aliases") or [])
+            for name, endpoint in networks.items()
+        }
 
     def ensure_network(self, name):
         """Create the per-session docker network unless it already exists.
@@ -242,6 +271,11 @@ class DockerCLI:
             if proc.poll() is None:
                 proc.kill()
             proc.wait()
+
+
+def _tcp_probe_argv(network, host, port, image):
+    return ["docker", "run", "--rm", "--network", network,
+            "--entrypoint", "python3", image, "-c", _TCP_PROBE_SCRIPT, host, str(port)]
 
 
 def _decode(output):

@@ -140,7 +140,7 @@ from .orchestrate import (
     run_with_tongs,
     unsupported_tong_reasons,
 )
-from .readiness import wait_ready
+from .readiness import explain_unready, wait_ready
 from .secretchan import (
     SecretChannel,
     SecretResolutionError,
@@ -170,6 +170,7 @@ __all__ = [
     "exec_anvil",
     "run_with_tongs",
     "unsupported_tong_reasons",
+    "explain_unready",
     "wait_ready",
     "SecretChannel",
     "SecretResolutionError",

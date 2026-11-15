@@ -146,10 +146,12 @@ class FakeDocker:
     results, so orchestration is tested without a docker daemon."""
 
     def __init__(self, states=None, ready=True, anvil_rc=0,
-                 image_config=(["app"], [])):
+                 image_config=(["app"], []), probe_error="refused", networks=None):
         self.calls = []
         self._states = states or {}
         self._ready = ready
+        self._probe_error = probe_error
+        self._networks = networks or {}
         self._anvil_rc = anvil_rc
         self._image_config = image_config
         self.run_argvs = []
@@ -199,6 +201,12 @@ class FakeDocker:
     def tcp_probe(self, network, host, port, image):
         self.calls.append(("tcp_probe", network, host, port, image))
         return self._ready
+
+    def tcp_probe_error(self, network, host, port, image):
+        return None if self._ready else self._probe_error
+
+    def network_aliases(self, container):
+        return self._networks.get(container)
 
     def run_foreground(self, argv):
         self.anvil_argv = argv
@@ -524,6 +532,39 @@ class RunWithTongsTests(unittest.TestCase):
         with self.assertRaises(launcher.OrchestrationError):
             self._run(docker, _merged("pg", defn, source=tongs.REPO))
         self.assertIsNone(docker.anvil_argv)
+
+    def _unready_error(self, **docker_kwargs):
+        defn = {
+            "lifecycle": "shared", "image": "pg",
+            "interface": {"kind": "port", "port": 5432},
+            "readiness": {"mode": "tcp", "timeout": "1s"},
+        }
+        states = {"swarmforge-shared-pg": {"running": True, "label": tongs.config_hash(defn)}}
+        docker = FakeDocker(states=states, ready=False, **docker_kwargs)
+        with self.assertRaises(launcher.OrchestrationError) as caught:
+            self._run(docker, _merged("pg", defn, source=tongs.REPO))
+        return str(caught.exception)
+
+    def test_unready_error_carries_the_probe_error(self):
+        message = self._unready_error(
+            probe_error="connect to pg:5432 failed: [Errno 111] Connection refused",
+            networks={"swarmforge-shared-pg": {"opencode-net": ["pg"]}},
+        )
+        self.assertIn("did not become ready in time", message)
+        self.assertIn("probe from anvil:img: connect to pg:5432 failed", message)
+        self.assertNotIn("alias", message)
+
+    def test_unready_error_names_a_missing_network(self):
+        message = self._unready_error(
+            networks={"swarmforge-shared-pg": {"bridge": []}},
+        )
+        self.assertIn("is not on network opencode-net (it is on: bridge)", message)
+
+    def test_unready_error_names_a_missing_alias(self):
+        message = self._unready_error(
+            networks={"swarmforge-shared-pg": {"opencode-net": ["other"]}},
+        )
+        self.assertIn("has no alias 'pg' on opencode-net (aliases: other)", message)
 
     def test_anvil_exit_code_is_returned(self):
         docker = FakeDocker(anvil_rc=42)

@@ -64,6 +64,8 @@ readiness:
 
 `tcp` is the implicit default for `mcp` and `port`. `volume` and `none` have no port to probe, so `mode` is **required** for them; use `mode: none` to deliberately skip the gate.
 
+A `tcp` probe dials the tong's alias from a throwaway container of the anvil image on the session network. When a tong times out, the error re-runs that probe once and prints its connect error, along with whether the tong is on that network under its alias.
+
 ## Mounts
 
 Mounts are opt-in **magic words**, never raw host paths. Only three are recognized, each spelled as shown below with the optional access mode (`ro`/`rw`) last:

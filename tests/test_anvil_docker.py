@@ -180,6 +180,44 @@ class DockerCLITests(unittest.TestCase):
         with self.assertRaises(launcher.DockerError):
             cli.image_exec_config("img")
 
+    @staticmethod
+    def _canned_run(code, stdout=b"", stderr=b""):
+        return lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, code, stdout=stdout, stderr=stderr)
+
+    def test_tcp_probe_error_returns_the_probe_stderr(self):
+        cli = launcher.DockerCLI(run=self._canned_run(
+            1, stderr=b"connect to pg:5432 failed: [Errno 111] Connection refused\n"))
+        self.assertEqual(
+            cli.tcp_probe_error("net", "pg", 5432, "img"),
+            "connect to pg:5432 failed: [Errno 111] Connection refused",
+        )
+
+    def test_tcp_probe_error_falls_back_to_the_exit_code(self):
+        cli = launcher.DockerCLI(run=self._canned_run(125))
+        self.assertEqual(cli.tcp_probe_error("net", "pg", 5432, "img"), "probe exited 125")
+
+    def test_tcp_probe_error_is_none_when_it_connects(self):
+        cli = launcher.DockerCLI(run=self._canned_run(0))
+        self.assertIsNone(cli.tcp_probe_error("net", "pg", 5432, "img"))
+
+    def test_tcp_probe_script_reports_why_a_connect_failed(self):
+        argv = launcher.docker._tcp_probe_argv("net", "127.0.0.1", 1, "img")
+        script = argv[argv.index("-c") + 1]
+        probe = subprocess.run([sys.executable, "-c", script, "127.0.0.1", "1"],
+                               stderr=subprocess.PIPE, text=True)
+        self.assertEqual(probe.returncode, 1)
+        self.assertIn("connect to 127.0.0.1:1 failed:", probe.stderr)
+
+    def test_network_aliases_maps_each_network_to_its_aliases(self):
+        networks = b'{"sess": {"Aliases": ["asana"]}, "bridge": {"Aliases": null}}\n'
+        cli = launcher.DockerCLI(run=self._canned_run(0, stdout=networks))
+        self.assertEqual(cli.network_aliases("c"), {"sess": ["asana"], "bridge": []})
+
+    def test_network_aliases_is_none_for_an_absent_container(self):
+        cli = launcher.DockerCLI(run=self._canned_run(1))
+        self.assertIsNone(cli.network_aliases("c"))
+
     def test_exec_stdin_feeds_payload_and_returns_exit_and_stderr(self):
         seen = {}
 
