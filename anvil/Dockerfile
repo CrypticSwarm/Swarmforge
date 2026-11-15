@@ -80,12 +80,13 @@ ARG PYTHON_VERSION
 ARG NODE_MAJOR
 ARG PLAYWRIGHT_VERSION=1.63.0
 ARG COREPACK_VERSION=0.36.0
+ARG COREPACK_SHA256=9128cfe26aee0c99f4fc68c15c6b8b12309a68be0de2c012cdfea2a463cb722f
 
 # /opt/ruby is root's, so gems go under the anvil home; its bin trails PATH so it shadows nothing root runs.
 ENV GEM_HOME=/home/anvil/.gem
 ENV PATH="/opt/python/bin:/opt/ruby/bin:${PATH}:${GEM_HOME}/bin"
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-# No session answers corepack's download prompt and auto-pin would edit package.json; hold both off for any COREPACK_VERSION.
+# No session is there to answer corepack's download prompt, and its auto-pin would edit package.json.
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 COREPACK_ENABLE_AUTO_PIN=0
 
 COPY --from=python-builder /opt/python /opt/python
@@ -125,7 +126,10 @@ RUN set -eux; \
         zlib1g-dev; \
     curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -; \
     apt-get install -y --no-install-recommends nodejs; \
-    npm install -g corepack@${COREPACK_VERSION}; \
+    curl -fsSL "https://registry.npmjs.org/corepack/-/corepack-${COREPACK_VERSION}.tgz" -o /tmp/corepack.tgz; \
+    printf '%s  %s\n' "${COREPACK_SHA256}" /tmp/corepack.tgz | sha256sum -c -; \
+    npm install -g /tmp/corepack.tgz; \
+    rm /tmp/corepack.tgz; \
     corepack disable pnpm; \
     corepack enable yarn; \
     npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps chromium; \

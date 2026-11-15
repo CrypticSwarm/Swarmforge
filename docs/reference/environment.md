@@ -116,6 +116,7 @@ Each harness also has plain-`=` `<PREFIX>_`-named defaults in its fragment: `CLA
 | `NODE_MAJOR` | `26` | The NodeSource major version. |
 | `PLAYWRIGHT_VERSION` | `1.63.0` | The Playwright release whose chromium is installed. |
 | `COREPACK_VERSION` | `0.36.0` | The Corepack release, installed from npm, behind the image's `yarn`. |
+| `COREPACK_SHA256` | the `0.36.0` tarball's | The checksum the Corepack tarball must match. Change it together with `COREPACK_VERSION`, or the build fails. |
 
 ## Tests and tooling
 
