@@ -145,7 +145,7 @@ What each target runs is in [Testing](../development/testing.md).
 | `SHELL` | Its basename picks which rc candidates are tried first. |
 | `PATH` | Only to warn when `~/.local/bin` is not on it. |
 
-The launcher reads `SWARMFORGE_USER_ASSETS_DIR` from its own environment too, as the fallback root for `approvals.json` and `secret-providers.yaml` when a call passes neither `--approvals` nor `--providers`. It also reads `TMUX` and `TMUX_PANE`, which only a [`tmux-socket`](../tongs/definitions.md#mounts) tong uses; `make` passes both through unchanged.
+The launcher reads `SWARMFORGE_USER_ASSETS_DIR` from its own environment too, as the fallback root for `approvals.json` and `secret-providers.yaml` when a call passes neither `--approvals` nor `--providers`. It also reads `TMUX`, `TMUX_PANE`, and `TMUX_TMPDIR`, which only a [`tmux-socket`](../tongs/definitions.md#mounts) tong uses; `make` passes them through unchanged.
 
 [`swarmforge clone` and `swarmforge init`](../cli.md) drop `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, and `GIT_NAMESPACE` from the environment they hand git, since `git -C` does not override them.
 

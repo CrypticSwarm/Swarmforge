@@ -110,19 +110,29 @@ def _lstat(path, what):
         raise OrchestrationError("cannot inspect %s: %s" % (what, exc))
 
 
-def check_tmux_socket_dir(host_dir, socket_path, uid=None):
+def check_tmux_socket_dir(host_dir, socket_path, uid=None, tmpdir=None):
     """Refuse a tmux socket directory that is not plainly the launcher's own.
 
     `tongs.resolve_tmux_server` judged only the spelling of `host_dir` and
     `socket_path`; this checks the host, since the whole directory is bound into
-    the tong. It must be reached through no symlink (docker would bind the
-    target), be a directory owned by `uid` (the launcher's by default) with no
-    group or other bits, and hold `socket_path` as a socket. Every ancestor must
-    pass OpenSSH's StrictModes rule -- owned by root or `uid`, not writable by
-    group or others unless sticky -- so no other user can swap in a symlink
-    before docker binds it. Raises `OrchestrationError` otherwise.
+    the tong. It must be tmux's own per-user directory, `tmux-<uid>` in `tmpdir`
+    (`$TMUX_TMPDIR` or `/tmp`, symlinks resolved as tmux does), since binding a
+    `-S` socket's parent could expose any host directory. It must be reached
+    through no symlink (docker would bind the target), be a directory owned by
+    `uid` (the launcher's by default) with no group or other bits, and hold
+    `socket_path` as a socket. Every ancestor must pass OpenSSH's StrictModes
+    rule -- owned by root or `uid`, not writable by group or others unless
+    sticky -- so no other user can swap in a symlink before docker binds it.
+    Raises `OrchestrationError` otherwise.
     """
     uid = os.getuid() if uid is None else uid
+    tmpdir = tmpdir or os.environ.get("TMUX_TMPDIR") or "/tmp"
+    tmux_dir = os.path.join(os.path.realpath(tmpdir), "tmux-%d" % uid)
+    if host_dir != tmux_dir:
+        raise OrchestrationError(
+            "tmux socket directory %s is not tmux's own %s; a socket at a custom "
+            "-S path is refused, since its whole directory would be mounted"
+            % (host_dir, tmux_dir))
     if os.path.realpath(host_dir) != host_dir:
         raise OrchestrationError(
             "tmux socket directory %s is reached through a symlink; docker would "

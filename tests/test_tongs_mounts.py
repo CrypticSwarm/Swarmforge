@@ -512,13 +512,6 @@ class TmuxSocketTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "contains"):
                 tongs.resolve_tmux_server(value)
 
-    def test_socket_outside_tmuxs_own_directory_refused(self):
-        # Binding a -S socket's parent could mount an arbitrary host directory.
-        for value in ("/home/me/my.sock,1,0", "/tmp/default,1,0", "/default,1,0",
-                      "/tmp/tmux-me/default,1,0", "/tmp/tmux-1000/sub/default,1,0"):
-            with self.assertRaisesRegex(ValueError, "default per-user socket directory"):
-                tongs.resolve_tmux_server(value)
-
     def test_pane_id_checked(self):
         tmux = "/tmp/tmux-1000/default,1,0"
         self.assertEqual(tongs.resolve_tmux_server(tmux, "%12").env["TMUX_PANE"], "%12")

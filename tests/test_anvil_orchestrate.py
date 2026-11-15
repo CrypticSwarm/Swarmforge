@@ -916,7 +916,7 @@ class RunWithTongsTests(unittest.TestCase):
 
     def test_malformed_tmux_raises_before_any_docker_call(self):
         for tmux, pane in (
-            ("/home/me/custom.sock,1,0", None),
+            ("tmux-1000/default,1,0", None),
             ("/tmp/tmux-1000/default,1", None),
             ("/tmp/tmux-1000/default,1,0", "7"),
         ):
@@ -978,18 +978,21 @@ class RunWithTongsTests(unittest.TestCase):
         self.assertEqual(docker.run_argvs, [])
 
     def test_tmux_socket_dir_checked_on_disk_before_any_docker_call(self):
-        tmux_dir, socket_path = _tmux_socket_dir(_tmux_test_dir(self))
+        parent = _tmux_test_dir(self)
+        tmux_dir, socket_path = _tmux_socket_dir(parent)
         tmux = "%s,4242,3" % socket_path
         os.chmod(tmux_dir, 0o755)
         docker = FakeDocker()
-        with self.assertRaisesRegex(launcher.OrchestrationError,
-                                    "tong\\(s\\) spawner mount 'tmux-socket': .*open to group or others"):
-            self._run_tmux(docker, tmux=tmux, check_tmux_dir=launcher.check_tmux_socket_dir)
-        self.assertEqual(docker.calls, [])
+        with mock.patch.dict(os.environ, {"TMUX_TMPDIR": parent}):
+            with self.assertRaisesRegex(
+                    launcher.OrchestrationError,
+                    "tong\\(s\\) spawner mount 'tmux-socket': .*open to group or others"):
+                self._run_tmux(docker, tmux=tmux, check_tmux_dir=launcher.check_tmux_socket_dir)
+            self.assertEqual(docker.calls, [])
 
-        os.chmod(tmux_dir, 0o700)
-        docker = FakeDocker()
-        self._run_tmux(docker, tmux=tmux, check_tmux_dir=launcher.check_tmux_socket_dir)
+            os.chmod(tmux_dir, 0o700)
+            docker = FakeDocker()
+            self._run_tmux(docker, tmux=tmux, check_tmux_dir=launcher.check_tmux_socket_dir)
         spawner = next(argv for argv in docker.run_argvs
                        if "claude-myproject-tong-spawner" in argv)
         self.assertIn("%s:/run/swarmforge-tmux:ro" % tmux_dir, spawner)
@@ -1208,9 +1211,10 @@ def _tmux_test_dir(test):
     return path
 
 
-def _tmux_socket_dir(parent):
-    """A `tmux-<n>` directory at 0700 holding a bound socket, as tmux leaves it."""
-    tmux_dir = os.path.join(os.path.realpath(parent), "tmux-%d" % os.getuid())
+def _tmux_socket_dir(parent, uid=None):
+    """A `tmux-<uid>` directory at 0700 holding a bound socket, as tmux leaves it."""
+    uid = os.getuid() if uid is None else uid
+    tmux_dir = os.path.join(os.path.realpath(parent), "tmux-%d" % uid)
     os.mkdir(tmux_dir, 0o700)
     os.chmod(tmux_dir, 0o700)
     socket_path = os.path.join(tmux_dir, "default")
@@ -1228,11 +1232,33 @@ class TmuxSocketDirCheckTests(unittest.TestCase):
         self.tmux_dir, self.socket_path = _tmux_socket_dir(self.tmp)
 
     def _check(self, host_dir=None, socket_path=None, uid=None):
+        host_dir = host_dir or self.tmux_dir
         launcher.check_tmux_socket_dir(
-            host_dir or self.tmux_dir, socket_path or self.socket_path, uid=uid)
+            host_dir, socket_path or self.socket_path, uid=uid,
+            tmpdir=os.path.dirname(host_dir))
 
     def test_tmuxs_own_directory_accepted(self):
         self._check()
+
+    def test_tmux_tmpdir_defaults_to_the_environment_then_tmp(self):
+        with mock.patch.dict(os.environ, {"TMUX_TMPDIR": self.tmp}):
+            launcher.check_tmux_socket_dir(self.tmux_dir, self.socket_path)
+        with mock.patch.dict(os.environ, {"TMUX_TMPDIR": ""}), \
+                self.assertRaisesRegex(launcher.OrchestrationError,
+                                       "not tmux's own %s/tmux-" % os.path.realpath("/tmp")):
+            launcher.check_tmux_socket_dir(self.tmux_dir, self.socket_path)
+
+    def test_directory_other_than_tmuxs_own_refused(self):
+        # Binding a -S socket's parent could mount an arbitrary host directory.
+        custom = os.path.join(os.path.realpath(self.tmp), "custom")
+        os.mkdir(custom, 0o700)
+        for host_dir, tmpdir in ((custom, self.tmp), (self.tmux_dir, custom)):
+            with self.assertRaisesRegex(launcher.OrchestrationError, "custom -S path"):
+                launcher.check_tmux_socket_dir(
+                    host_dir, os.path.join(host_dir, "default"), tmpdir=tmpdir)
+        with self.assertRaisesRegex(launcher.OrchestrationError, "custom -S path"):
+            launcher.check_tmux_socket_dir(
+                self.tmux_dir, self.socket_path, uid=os.getuid() + 1, tmpdir=self.tmp)
 
     def test_writable_non_sticky_ancestor_refused(self):
         # Another user could swap tmux-<uid> for a symlink between the check and the bind.
@@ -1265,8 +1291,10 @@ class TmuxSocketDirCheckTests(unittest.TestCase):
                 self._check()
 
     def test_directory_owned_by_another_uid_refused(self):
+        other = os.getuid() + 1
+        tmux_dir, socket_path = _tmux_socket_dir(tempfile.mkdtemp(dir=self.tmp), uid=other)
         with self.assertRaisesRegex(launcher.OrchestrationError, "owned by uid"):
-            self._check(uid=os.getuid() + 1)
+            self._check(tmux_dir, socket_path, uid=other)
 
     def test_regular_file_in_place_of_the_socket_refused(self):
         os.unlink(self.socket_path)
@@ -1281,7 +1309,8 @@ class TmuxSocketDirCheckTests(unittest.TestCase):
             self._check()
 
     def test_regular_file_in_place_of_the_directory_refused(self):
-        not_a_dir = os.path.join(os.path.realpath(self.tmp), "tmux-0")
+        parent = tempfile.mkdtemp(dir=self.tmp)
+        not_a_dir = os.path.join(os.path.realpath(parent), "tmux-%d" % os.getuid())
         with open(not_a_dir, "w") as handle:
             handle.write("")
         with self.assertRaisesRegex(launcher.OrchestrationError, "not a directory"):

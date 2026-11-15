@@ -43,8 +43,6 @@ MOUNT_MODES = ("ro", "rw")
 # Mount words that bind one session's host state, and what each binds.
 SESSION_ONLY_MOUNTS = {WORKSPACE_MOUNT: "workspace", TMUX_MOUNT: "tmux socket"}
 
-# What tmux creates (mode 0700) under $TMUX_TMPDIR or /tmp for each user's sockets.
-_TMUX_SOCKET_DIR_RE = re.compile(r"tmux-[0-9]+")
 _DECIMAL_RE = re.compile(r"[0-9]+")
 _TMUX_PANE_RE = re.compile(r"%[0-9]+")
 
@@ -439,9 +437,8 @@ def resolve_tmux_server(tmux, tmux_pane=None):
 
     Raises `ValueError` when `tmux` is unset or malformed, or `tmux_pane` is set
     and not `%<digits>`. The socket path must be normalized and absolute, free of
-    `:` (docker's `-v` separator), `,` (tmux's field separator) and whitespace,
-    and sit directly in tmux's per-user `tmux-<uid>` directory: binding a `-S`
-    socket's parent could expose any host directory.
+    `:` (docker's `-v` separator), `,` (tmux's field separator) and whitespace.
+    Whether its directory is tmux's own is a host fact, left to the launcher.
     """
     if not tmux:
         raise ValueError("the launcher is not running inside tmux ($TMUX is unset)")
@@ -460,11 +457,6 @@ def resolve_tmux_server(tmux, tmux_pane=None):
         raise ValueError(
             "$TMUX %r: socket path %r contains ':', ',' or whitespace" % (tmux, path))
     host_dir, socket_name = posixpath.split(path)
-    if not _TMUX_SOCKET_DIR_RE.fullmatch(posixpath.basename(host_dir)):
-        raise ValueError(
-            "$TMUX %r: socket %r is not in tmux's default per-user socket directory "
-            "(tmux-<uid> under $TMUX_TMPDIR or /tmp); a socket at a custom -S path "
-            "is refused, since its whole directory would be mounted" % (tmux, path))
     if tmux_pane and not (isinstance(tmux_pane, str) and _TMUX_PANE_RE.fullmatch(tmux_pane)):
         raise ValueError("$TMUX_PANE %r is not a tmux pane id ('%%<number>')" % (tmux_pane,))
     container_tmux = "%s/%s,%s,%s" % (TMUX_MOUNT_TARGET, socket_name, pid, session)
