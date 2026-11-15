@@ -20,6 +20,10 @@ The target is `python3 -m unittest discover -s tests -p 'test_*.py'` with the re
 
 Ruff is a contributor tool, not a dependency: the harness image installs no third-party Python, and every module under `swarmforge/` stays stdlib-only.
 
+## CI
+
+`.github/workflows/tests.yml` runs the unit tests, the lint, and the docker-broker's tests on every pull request. Its token is read-only. Every action it uses is pinned to a full commit SHA with the release tag in a trailing comment (`uses: actions/checkout@<sha> # v7.0.1`), so a moved or hijacked tag cannot change what CI runs. Write a new `uses:` line the same way. Dependabot (`.github/dependabot.yml`) bumps those pins and the broker's npm dependencies weekly, and only proposes a release once it is 14 days old.
+
 ## Skill Tests
 
 A lightweight skill test harness runs scenario prompts against a chosen model and verifies expected behavior. It drives a real model inside the OpenCode image, which is why it is a separate target from the unit suite.
