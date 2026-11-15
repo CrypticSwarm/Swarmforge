@@ -162,10 +162,10 @@ def tong_run_argv(
     later ones.
 
     Only a `tmux-socket` tong uses `tmux_server` (from `resolve_tmux_server`) and
-    `session_handle`: they give its mount source and `TMUX_LAUNCHER_ENV`, which
-    describe the host and session a definition cannot know, so they replace any
-    plain value its `env:` sets and drop one the launcher lacks. Raises
-    `ValueError` for any mount `tong_mount_specs` refuses, including a
+    `session_handle`, as its mount source and its `TMUX_LAUNCHER_ENV`. Those
+    describe a host and session the definition cannot know, so its own values
+    for those names are dropped, even where the launcher has none to give.
+    Raises `ValueError` for any mount `tong_mount_specs` refuses, including a
     `tmux-socket` mount with no `tmux_server`.
 
     When the tong has secret env, the launcher passes `secret_channel=True` (which

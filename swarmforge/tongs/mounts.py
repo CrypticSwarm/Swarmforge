@@ -46,7 +46,7 @@ SESSION_ONLY_MOUNTS = {WORKSPACE_MOUNT: "workspace", TMUX_MOUNT: "tmux socket"}
 _DECIMAL_RE = re.compile(r"[0-9]+")
 _TMUX_PANE_RE = re.compile(r"%[0-9]+")
 
-# The env the launcher sets on a tmux-socket tong; a definition never supplies it.
+# The env the launcher sets on a tmux-socket tong, overriding the definition's.
 TMUX_LAUNCHER_ENV = ("TMUX", "TMUX_PANE", SESSION_HANDLE_ENV)
 
 # One `mounts:` entry as `checked_mounts` judged it; `error` is None when it is accepted.
@@ -253,10 +253,9 @@ def mount_target_error(mount, word, target, destination, reserved):
 def mount_mode_error(mount, word, mode):
     """Why a mount's access mode is refused, or None if it is fine.
 
-    `tmux-socket` is read-only whatever it declares. A tmux client only needs
-    `connect()` on the socket, which a read-only bind allows; a writable bind of
-    the socket directory would let the tong replace the socket the host's own
-    tmux clients dial.
+    `tmux-socket` may not be `rw`: a tmux client needs only `connect()`, which a
+    read-only bind allows, and a writable one would let the tong replace the
+    socket the host's own tmux clients dial.
     """
     if word == TMUX_MOUNT and mode == "rw":
         return "mount %r: the '%s' mount is always read-only" % (mount, TMUX_MOUNT)
@@ -380,10 +379,9 @@ def tong_mount_specs(defn, workspace, socket_path=DEFAULT_DOCKER_SOCKET,
     `tong_volume_name(tong_name, name, volume_scope)`, which docker creates on
     first use and the launcher never removes. A volume may not overlap one of
     `extra_mount_specs` (see `tong_run_argv`), or docker would leave their
-    mountpoints inside it. `tmux-socket[:ro]` bind-mounts `tmux_socket_dir` --
-    the host directory holding the launcher's tmux socket -- read-only at
-    `TMUX_MOUNT_TARGET`. The directory rather than the socket, because tmux
-    recreates the socket when its server restarts.
+    mountpoints inside it. `tmux-socket[:ro]` bind-mounts `tmux_socket_dir`,
+    the host directory holding the launcher's tmux socket (which tmux recreates
+    on a server restart), read-only at `TMUX_MOUNT_TARGET`.
     Raises `ValueError` for any entry `checked_mounts` refuses, a volume
     overlapping one of `extra_mount_specs`, a `workspace` or `tmux-socket` mount
     when no host source for it is known, or a `volume` mount without a

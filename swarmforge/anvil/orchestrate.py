@@ -115,14 +115,13 @@ def check_tmux_socket_dir(host_dir, socket_path, uid=None, tmpdir=None):
 
     `tongs.resolve_tmux_server` judged only the spelling of `host_dir` and
     `socket_path`; this checks the host, since the whole directory is bound into
-    the tong. It must be tmux's own per-user directory, `tmux-<uid>` in `tmpdir`
-    (`$TMUX_TMPDIR` or `/tmp`, symlinks resolved as tmux does), since binding a
-    `-S` socket's parent could expose any host directory. It must be reached
-    through no symlink (docker would bind the target), be a directory owned by
-    `uid` (the launcher's by default) with no group or other bits, and hold
-    `socket_path` as a socket. Every ancestor must pass OpenSSH's StrictModes
-    rule -- owned by root or `uid`, not writable by group or others unless
-    sticky -- so no other user can swap in a symlink before docker binds it.
+    the tong. It must be exactly `tmux-<uid>` in `tmpdir` (`$TMUX_TMPDIR` or
+    `/tmp`, resolved as tmux resolves it), so no `-S` socket's parent is bound;
+    reached through no symlink (docker would bind the target); a directory owned
+    by `uid` (the launcher's by default) with no group or other bits; and
+    holding `socket_path` as a socket. Every ancestor must pass OpenSSH's
+    StrictModes rule -- owned by root or `uid`, not writable by group or others
+    unless sticky -- so no other user can swap in a symlink before docker binds it.
     Raises `OrchestrationError` otherwise.
     """
     uid = os.getuid() if uid is None else uid
