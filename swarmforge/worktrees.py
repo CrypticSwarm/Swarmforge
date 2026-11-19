@@ -22,24 +22,20 @@ want. `git init --bare` plus `remote add`, `fetch` and `remote set-head`
 avoids both.
 
 `init` needs git >= 2.42 for `git worktree add --orphan`.
+
+`find_repository` reads back any repository's root and worktrees, this layout
+or not.
 """
 
+import collections
 import os
 import shutil
-import subprocess
 
-from swarmforge import gitguard
+from swarmforge import command, gitguard
 
 
-class GitError(Exception):
-    """A git command failed; str(exc) names the command and how it exited.
-
-    `returncode` is git's exit status, and None when git could not be run.
-    """
-
-    def __init__(self, message, returncode=None):
-        super().__init__(message)
-        self.returncode = returncode
+class GitError(command.CommandError):
+    """A git command failed; see `command.CommandError`."""
 
 
 class LayoutError(ValueError):
@@ -58,30 +54,17 @@ REPO_ENVIRONMENT = (
 )
 
 
-def git(cwd, *args, capture=False):
-    """Run git in `cwd`, returning its stdout stripped when `capture` is set.
+def git(cwd, *args, capture=False, quiet=False):
+    """Run git in `cwd` through `command.run`, its stdout stripped if captured.
 
-    Only a captured result comes back on stdout; everything git says reaches
-    the terminal on stderr, so a caller's own stdout holds only what it prints.
-    stdin is inherited too, for ssh and credential prompts. `REPO_ENVIRONMENT`
-    is dropped from the environment git is handed, so `cwd` alone decides which
-    repository the command lands in.
+    `REPO_ENVIRONMENT` is dropped from the environment git is handed, so `cwd`
+    alone decides which repository the command lands in.
     """
-    argv = ["git", "-C", cwd] + list(args)
     environment = {key: value for key, value in os.environ.items()
                    if key not in REPO_ENVIRONMENT}
-    try:
-        # Raw fd 2: a caller's `sys.stderr` may be a stream with no fileno.
-        completed = subprocess.run(
-            argv, text=True, env=environment,
-            stdout=subprocess.PIPE if capture else 2)
-    except OSError as exc:
-        raise GitError("could not run %s: %s"
-                       % (" ".join(argv), exc.strerror or exc))
-    if completed.returncode != 0:
-        raise GitError("%s exited %d" % (" ".join(argv), completed.returncode),
-                       completed.returncode)
-    return completed.stdout.strip() if capture else None
+    output = command.run(["git", "-C", cwd] + list(args), GitError,
+                         capture=capture, quiet=quiet, env=environment)
+    return output.strip() if capture else None
 
 
 def guess_clone_dir(url):
@@ -140,7 +123,7 @@ def remote_default_branch(git_dir):
     prefix = "refs/remotes/origin/"
     try:
         ref = git(git_dir, "symbolic-ref", "refs/remotes/origin/HEAD",
-                  capture=True)
+                  capture=True, quiet=True)
     except GitError:
         raise GitError("could not determine origin's default branch (it may "
                        "have no branches); pass --branch")
@@ -151,7 +134,85 @@ def remote_default_branch(git_dir):
 
 def local_default_branch(git_dir):
     """The branch `git_dir`'s HEAD names, born or not."""
-    return git(git_dir, "symbolic-ref", "--short", "HEAD", capture=True)
+    return git(git_dir, "symbolic-ref", "--short", "HEAD", capture=True,
+               quiet=True)
+
+
+FALLBACK_DEFAULT_BRANCHES = ("main", "master")
+
+Worktree = collections.namedtuple("Worktree", "path branch")
+
+Repository = collections.namedtuple("Repository", "git_dir root worktrees")
+
+
+def default_branch_candidates(git_dir):
+    """Branch names that may be the default, most authoritative first.
+
+    Origin's default leads; then the shared HEAD, which in a bare layout is the
+    default branch and in a checkout is the main worktree's own branch.
+    """
+    candidates = []
+    for probe in (remote_default_branch, local_default_branch):
+        try:
+            candidates.append(probe(git_dir))
+        except GitError:
+            pass
+    return candidates + list(FALLBACK_DEFAULT_BRANCHES)
+
+
+def common_dir(path):
+    """The git dir every worktree of `path`'s repository shares."""
+    if not os.path.isdir(path):
+        raise LayoutError("%s is not a directory" % path)
+    try:
+        return git(path, "rev-parse", "--path-format=absolute",
+                   "--git-common-dir", capture=True, quiet=True)
+    except GitError as exc:
+        if exc.returncode is None:
+            raise
+        raise GitError("%s is not inside a git repository" % path,
+                       exc.returncode)
+
+
+def list_worktrees(path):
+    """Every worktree of `path`'s repository as git lists them, main first.
+
+    `branch` is the short branch name, or None for a bare or detached entry.
+    """
+    listing = git(path, "worktree", "list", "--porcelain", "-z", capture=True)
+    entries = []
+    for field in listing.split("\0"):
+        if field.startswith("worktree "):
+            entries.append(Worktree(field[len("worktree "):], None))
+        elif field.startswith("branch refs/heads/") and entries:
+            branch = field[len("branch refs/heads/"):]
+            entries[-1] = entries[-1]._replace(branch=branch)
+    return entries
+
+
+def _root(git_dir, first):
+    """Where the repository lives, given the first worktree git lists."""
+    if os.path.realpath(first.path) != os.path.realpath(git_dir):
+        return first.path
+    try:
+        return git(git_dir, "rev-parse", "--show-toplevel", capture=True,
+                   quiet=True)
+    except GitError:
+        return first.path
+
+
+def find_repository(path):
+    """`path`'s repository: its shared git dir, root, and worktrees, main first.
+
+    The root is the first worktree git lists: the layout root of `clone` or
+    `init`, or an ordinary clone's checkout. When that entry is only the git
+    dir, the root is the checkout its `core.worktree` names, as a submodule's
+    does; a `--separate-git-dir` clone names none, so its git dir stays root.
+    Every path inside the repository finds the same root.
+    """
+    git_dir = common_dir(path)
+    listed = list_worktrees(path)
+    return Repository(git_dir, _root(git_dir, listed[0]), listed)
 
 
 def set_head(git_dir, branch):

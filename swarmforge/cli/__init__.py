@@ -2,13 +2,15 @@
 
 `bin/swarmforge` -- linked onto `PATH` by `install.sh` -- runs this package,
 and `python3 -m swarmforge.cli` is the same entry point. Two subcommands build
-the same layout, one from a remote and one empty:
+the same layout, one from a remote and one empty, and a third opens it:
 
     swarmforge clone URL [PATH] [--branch NAME]
     swarmforge init PATH [--branch NAME]
+    swarmforge tmux open [PATH] [--name NAME] [--detach]
 
-Both produce a bare repository in `PATH/.git` with the default branch checked
-out as the linked worktree `PATH/<branch>`, and print that worktree path.
+`clone` and `init` produce a bare repository in `PATH/.git` with the default
+branch checked out as the linked worktree `PATH/<branch>`, and print that
+worktree path.
 
 One module per concern:
 
@@ -16,9 +18,11 @@ One module per concern:
     args    argparse `type` callables the subcommands share
     clone   the `clone` subcommand
     init    the `init` subcommand
+    tmux    the `tmux` subcommand and its actions
 
 A subcommand module exposes `configure(parser)` and `run(options)`; the layout
-work itself lives in `swarmforge.worktrees`, which these call.
+work itself lives in `swarmforge.worktrees` and the tmux work in
+`swarmforge.tmux`, which these call.
 
 The package's public names are re-exported below, so a caller imports
 `swarmforge.cli` without knowing which module a name sits in. Each re-export is
