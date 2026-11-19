@@ -26,20 +26,12 @@ avoids both.
 
 import os
 import shutil
-import subprocess
 
-from swarmforge import gitguard
+from swarmforge import command, gitguard
 
 
-class GitError(Exception):
-    """A git command failed; str(exc) names the command and how it exited.
-
-    `returncode` is git's exit status, and None when git could not be run.
-    """
-
-    def __init__(self, message, returncode=None):
-        super().__init__(message)
-        self.returncode = returncode
+class GitError(command.CommandError):
+    """A git command failed; see `command.CommandError`."""
 
 
 class LayoutError(ValueError):
@@ -58,30 +50,17 @@ REPO_ENVIRONMENT = (
 )
 
 
-def git(cwd, *args, capture=False):
-    """Run git in `cwd`, returning its stdout stripped when `capture` is set.
+def git(cwd, *args, capture=False, quiet=False):
+    """Run git in `cwd` through `command.run`, its stdout stripped if captured.
 
-    Only a captured result comes back on stdout; everything git says reaches
-    the terminal on stderr, so a caller's own stdout holds only what it prints.
-    stdin is inherited too, for ssh and credential prompts. `REPO_ENVIRONMENT`
-    is dropped from the environment git is handed, so `cwd` alone decides which
-    repository the command lands in.
+    `REPO_ENVIRONMENT` is dropped from the environment git is handed, so `cwd`
+    alone decides which repository the command lands in.
     """
-    argv = ["git", "-C", cwd] + list(args)
     environment = {key: value for key, value in os.environ.items()
                    if key not in REPO_ENVIRONMENT}
-    try:
-        # Raw fd 2: a caller's `sys.stderr` may be a stream with no fileno.
-        completed = subprocess.run(
-            argv, text=True, env=environment,
-            stdout=subprocess.PIPE if capture else 2)
-    except OSError as exc:
-        raise GitError("could not run %s: %s"
-                       % (" ".join(argv), exc.strerror or exc))
-    if completed.returncode != 0:
-        raise GitError("%s exited %d" % (" ".join(argv), completed.returncode),
-                       completed.returncode)
-    return completed.stdout.strip() if capture else None
+    output = command.run(["git", "-C", cwd] + list(args), GitError,
+                         capture=capture, quiet=quiet, env=environment)
+    return output.strip() if capture else None
 
 
 def guess_clone_dir(url):
@@ -140,7 +119,7 @@ def remote_default_branch(git_dir):
     prefix = "refs/remotes/origin/"
     try:
         ref = git(git_dir, "symbolic-ref", "refs/remotes/origin/HEAD",
-                  capture=True)
+                  capture=True, quiet=True)
     except GitError:
         raise GitError("could not determine origin's default branch (it may "
                        "have no branches); pass --branch")
@@ -151,7 +130,8 @@ def remote_default_branch(git_dir):
 
 def local_default_branch(git_dir):
     """The branch `git_dir`'s HEAD names, born or not."""
-    return git(git_dir, "symbolic-ref", "--short", "HEAD", capture=True)
+    return git(git_dir, "symbolic-ref", "--short", "HEAD", capture=True,
+               quiet=True)
 
 
 def set_head(git_dir, branch):
