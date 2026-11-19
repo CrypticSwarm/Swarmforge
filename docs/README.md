@@ -4,7 +4,7 @@
 
 - [Installation](installation.md) — prerequisites, the install script, pinning an OpenCode release, several aliases against one checkout.
 - [Windows (WSL)](windows.md) — Ubuntu under WSL 2 with Docker Desktop, set up to run the installation steps.
-- [swarmforge CLI](cli.md) — `swarmforge clone` and `swarmforge init`, and the worktree layout they create.
+- [swarmforge CLI](cli.md) — `swarmforge clone` and `swarmforge init`, the worktree layout they create, and `swarmforge tmux open`.
 - [Git repos and worktrees](git-guard.md) — the read-only git mounts every session gets, what they stop, and what they do not.
 
 ## Harnesses

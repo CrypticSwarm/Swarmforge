@@ -4,8 +4,8 @@
 exposes `configure(parser)` and `run(options)` returning an exit code. Adding a
 subcommand is adding a module and an entry here.
 
-Exit codes: 2 for a usage error (argparse's own), 1 for a layout or git failure
-reported as one line rather than a traceback, 130 for an interrupt, 0
+Exit codes: 2 for a usage error (argparse's own), 1 for a layout, git or tmux
+failure reported as one line rather than a traceback, 130 for an interrupt, 0
 otherwise.
 """
 
@@ -13,13 +13,14 @@ import argparse
 import contextlib
 import sys
 
-from swarmforge import worktrees
+from swarmforge import command, worktrees
 
-from . import clone, init
+from . import clone, init, tmux
 
 COMMANDS = {
     "clone": clone,
     "init": init,
+    "tmux": tmux,
 }
 
 
@@ -33,7 +34,7 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="swarmforge",
         description="Create git repositories laid out as a bare repo with "
-                    "sibling worktrees.",
+                    "sibling worktrees, and open them in tmux.",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND",
                                        required=True)
@@ -62,7 +63,7 @@ def main(argv, out=sys.stdout, err=sys.stderr):
 
         try:
             return COMMANDS[options.command].run(options)
-        except (worktrees.GitError, worktrees.LayoutError) as exc:
+        except (command.CommandError, worktrees.LayoutError) as exc:
             err.write("swarmforge: %s\n" % exc)
             return 1
         except KeyboardInterrupt:
