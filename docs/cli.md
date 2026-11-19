@@ -1,6 +1,13 @@
 # swarmforge CLI
 
-`swarmforge`, the command [`install.sh`](../README.md) puts on your `PATH`, creates git repos laid out for worktrees.
+`swarmforge`, the command [`install.sh`](../README.md) puts on your `PATH`, checks
+setup and creates git repos laid out for worktrees.
+
+- `swarmforge doctor` reports readiness without changing the host; add `--json` for structured output.
+- `swarmforge setup` guides installation with confirmation before each action.
+- Both accept `--project`, `--checkout`, and repeated `--harness` options; details are in [Setup and doctor](installation.md#guided-setup-and-doctor).
+
+The repository commands:
 
 ```bash
 swarmforge clone git@github.com:owner/repo.git             # -> ./repo

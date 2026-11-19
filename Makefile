@@ -91,7 +91,7 @@ TONGS_LAYER_ARGS = \
 	$(if $(and $(strip $(SWARMFORGE_ORG_ASSETS_DIR)),$(wildcard $(SWARMFORGE_ORG_ASSETS_DIR)/tongs)),--org-tongs "$(SWARMFORGE_ORG_ASSETS_DIR)/tongs",) \
 	$(if $(and $(strip $(SWARMFORGE_REPO_TONGS_DIR)),$(wildcard $(SWARMFORGE_REPO_TONGS_DIR))),--repo-tongs "$(SWARMFORGE_REPO_TONGS_DIR)",)
 
-.PHONY: opencode_network build_harnesses build_broker gpu_stat clean test test-skills lint
+.PHONY: opencode_network build_harnesses build_broker gpu_stat clean test test-skills lint doctor setup
 
 # bin/git-guard prints the git-dir mounts per --target, one docker -v per line; its docstring has the why.
 define run_agent_container
@@ -191,7 +191,7 @@ endef
 # full. $(2)_MKDIRS is the one knob spliced verbatim at eval time, so its
 # entries must carry $$-escaped references.
 define harness_rules
-.PHONY: build_$(1) update_$(1) run_$(1) stop_$(1) name_$(1)
+.PHONY: build_$(1) update_$(1) run_$(1) stop_$(1) name_$(1) doctor-config_$(1)
 
 build_$(1):
 	docker build --target harness-runtime --build-arg AGENT=$(1)$(if $($(2)_EXTRA_BUILD_ARGS), $$($(2)_EXTRA_BUILD_ARGS)) --build-arg DEBIAN_TAG=$$(DEBIAN_TAG) --build-arg SWARMFORGE_HARNESS_INSTALL_BUST=$$(SWARMFORGE_HARNESS_INSTALL_BUST) -f "$$(SWARMFORGE_DIR)/anvil/Dockerfile" -t $$($(2)_IMG) "$$(SWARMFORGE_DIR)"
@@ -200,11 +200,30 @@ build_$(1):
 update_$(1):
 	$$(MAKE) build_$(1) SWARMFORGE_HARNESS_INSTALL_BUST=$$(shell date +%s)
 
-run_$(1): SWARMFORGE_USER_CONFIG_DIR ?= $$($(2)_USER_CONFIG_DIR)
-run_$(1): SWARMFORGE_ORG_CONFIG_DIR ?= $$($(2)_ORG_CONFIG_DIR)
-run_$(1): SWARMFORGE_REPO_CONFIG_DIR ?= $$($(2)_REPO_CONFIG_DIR)
-run_$(1): SWARMFORGE_CONFIG_DEST ?= $$($(2)_CONFIG_DEST)
-run_$(1): SWARMFORGE_CONFIG_RESET ?= $$($(2)_CONFIG_RESET)
+run_$(1) doctor-config_$(1): SWARMFORGE_USER_CONFIG_DIR ?= $$($(2)_USER_CONFIG_DIR)
+run_$(1) doctor-config_$(1): SWARMFORGE_ORG_CONFIG_DIR ?= $$($(2)_ORG_CONFIG_DIR)
+run_$(1) doctor-config_$(1): SWARMFORGE_REPO_CONFIG_DIR ?= $$($(2)_REPO_CONFIG_DIR)
+run_$(1) doctor-config_$(1): SWARMFORGE_CONFIG_DEST ?= $$($(2)_CONFIG_DEST)
+run_$(1) doctor-config_$(1): SWARMFORGE_CONFIG_RESET ?= $$($(2)_CONFIG_RESET)
+
+# Export resolved values without passing paths through shell syntax.
+doctor-config_$(1): export SWARMFORGE_DOCTOR_IMAGE = $$($(2)_IMG)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_DATA_DIR = $$(if $$($(2)_DATA_DIR),$$($(2)_DATA_DIR),$$(DATA_DIR))
+doctor-config_$(1): export SWARMFORGE_DOCTOR_HOME_DIR = $$($(2)_HOME_DIR)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_USER_CONFIG = $$(SWARMFORGE_USER_CONFIG_DIR)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_ORG_CONFIG = $$(SWARMFORGE_ORG_CONFIG_DIR)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_REPO_CONFIG = $$(SWARMFORGE_REPO_CONFIG_DIR)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_USER_ASSETS = $$(SWARMFORGE_USER_ASSETS_DIR)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_ORG_ASSETS = $$(SWARMFORGE_ORG_ASSETS_DIR)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_REPO_TONGS = $$(SWARMFORGE_REPO_TONGS_DIR)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_ORG_ROOT = $$(SWARMFORGE_ORG_CONFIG_ROOT)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_GITCONFIG = $$(GITCONFIG_FILE)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_SKILLS = $$(SHARED_SKILLS_DIR)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_COMMANDS = $$(SHARED_COMMAND_DIR)
+doctor-config_$(1): export SWARMFORGE_DOCTOR_ENV_FILE = $$(ENV_FILE)
+doctor-config_$(1):
+	@$$(PYTHON) -c 'import json,os; print(json.dumps({k[18:].lower(): v for k,v in os.environ.items() if k.startswith("SWARMFORGE_DOCTOR_")}))'
+
 run_$(1): opencode_network
 	$(if $($(2)_MKDIRS),@mkdir -p $(foreach dir,$($(2)_MKDIRS),"$(dir)"))
 	$$(call run_agent_container,$$($(2)_CTR),$$($(2)_RUN_ENV),$$($(2)_RUN_MOUNTS),$$($(2)_IMG),$$($(2)_RUN_ARGS),$$($(2)_WORKDIR_MODE),$(1))
@@ -273,3 +292,10 @@ test-skills: opencode_network
 	    --report-cost \
 	    $(if $(TEST_ENABLE_JUDGE),--enable-judge,) \
 	    $(if $(TEST_SKILL),--skill "$(TEST_SKILL)",)
+
+# These checks never depend on the network-creation target.
+doctor:
+	$(PYTHON) "$(SWARMFORGE_DIR)/bin/swarmforge" doctor --project "$(PROJECT_DIR)" $(DOCTOR_ARGS)
+
+setup:
+	$(PYTHON) "$(SWARMFORGE_DIR)/bin/swarmforge" setup --project "$(PROJECT_DIR)" $(SETUP_ARGS)

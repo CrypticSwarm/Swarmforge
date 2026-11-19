@@ -1,4 +1,4 @@
-"""The `swarmforge` command: git repositories laid out for worktrees.
+"""The `swarmforge` command: setup checks and repositories laid out for worktrees.
 
 `bin/swarmforge` -- linked onto `PATH` by `install.sh` -- runs this package,
 and `python3 -m swarmforge.cli` is the same entry point. Two subcommands build
@@ -13,9 +13,11 @@ out as the linked worktree `PATH/<branch>`, and print that worktree path.
 One module per concern:
 
     main    argument parsing, the COMMANDS registry, and exit codes
-    args    argparse `type` callables the subcommands share
+    args    argument types and option groups the subcommands share
     clone   the `clone` subcommand
     init    the `init` subcommand
+    doctor  read-only host readiness checks
+    setup   interactive setup actions
 
 A subcommand module exposes `configure(parser)` and `run(options)`; the layout
 work itself lives in `swarmforge.worktrees`, which these call.

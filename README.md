@@ -10,6 +10,20 @@ It emphasizes robustness, constraint-driven design, and interoperability over ad
 Check the [prerequisites](docs/installation.md#prerequisites) first.
 On Windows, set up [WSL](docs/windows.md) and run everything below inside it.
 
+For guided setup, run this from the checkout before installing the CLI:
+
+```bash
+python3 bin/swarmforge setup
+```
+
+The wizard checks host tools, lets you choose harnesses, and asks before adding
+shell integration, building missing images, or running a temporary mount test.
+For a read-only report, use `python3 bin/swarmforge doctor` (add `--json` for
+machine-readable output). Both also have `make setup` / `make doctor` targets.
+See [Setup and doctor](docs/installation.md#guided-setup-and-doctor) for scope and overrides.
+
+The manual installation steps remain available:
+
 1. Add the shell helper alias and link the `swarmforge` command:
 
 ```bash
