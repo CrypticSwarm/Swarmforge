@@ -32,6 +32,7 @@
 ## Working on Swarmforge
 
 - [Harness lifecycle](development/architecture.md) — what a harness directory holds and the phases every run walks.
+- [Setup requirements](development/setup-requirements.md) — source map, readiness checks, and remaining runtime validation.
 - [Testing](development/testing.md) — the unit suite, the linter, and the skill evals.
 
 ## Reference

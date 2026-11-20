@@ -124,6 +124,8 @@ What each target runs is in [Testing](../development/testing.md).
 
 | Variable | Default | Read by |
 | --- | --- | --- |
+| `DOCTOR_ARGS` | empty | `make doctor`, as CLI options such as `--harness codex --json` |
+| `SETUP_ARGS` | empty | `make setup`, as CLI options such as `--harness claude` |
 | `PYTHON` | `python3` | Every invocation: `make` derives `PROJECT_NAME` through it, and `make test` and the `run_*` launcher shims run on it. |
 | `RUFF` | `ruff` | `make lint`, as the path to the ruff binary. |
 | `MODEL` | empty | `make test-skills`, which requires it. |

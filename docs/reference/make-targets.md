@@ -56,6 +56,9 @@ Set `<PREFIX>_CTR` to name the container yourself; `run_<harness>`, `stop_<harne
 | `build_broker` | Builds `tongs/docker-broker` and tags it `$(BROKER_IMG)`, for a [broker tong](../tongs/broker.md). |
 | `opencode_network` | Creates the `$(NETWORK)` docker network if it is not there. Every `run_<harness>` target and `test-skills` depends on it, and it is the default goal. |
 | `gpu_stat` | `nvidia-smi`. |
+| `doctor` | Read-only readiness report; accepts `DOCTOR_ARGS`, such as `--harness codex --json`. |
+| `setup` | Interactive setup wizard; accepts `SETUP_ARGS`, such as `--harness claude`. |
+| `doctor-config_<harness>` | Prints resolved setup paths and image tag as JSON, without creating directories, networks, or containers. |
 
 ## Tests and lint
 

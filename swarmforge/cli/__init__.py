@@ -1,4 +1,4 @@
-"""The `swarmforge` command: git repositories laid out for worktrees.
+"""The `swarmforge` command: setup, readiness, worktree repositories and tmux.
 
 `bin/swarmforge` -- linked onto `PATH` by `install.sh` -- runs this package,
 and `python3 -m swarmforge.cli` is the same entry point. Two subcommands build
@@ -7,6 +7,8 @@ the same layout, one from a remote and one empty, and a third opens it:
     swarmforge clone URL [PATH] [--branch NAME]
     swarmforge init PATH [--branch NAME]
     swarmforge tmux open [PATH] [--name NAME] [--detach]
+    swarmforge doctor [--project PATH] [--harness NAME] [--json]
+    swarmforge setup [--project PATH] [--harness NAME]
 
 `clone` and `init` produce a bare repository in `PATH/.git` with the default
 branch checked out as the linked worktree `PATH/<branch>`, and print that
@@ -15,9 +17,11 @@ worktree path.
 One module per concern:
 
     main    argument parsing, the COMMANDS registry, and exit codes
-    args    argparse `type` callables the subcommands share
+    args    argument types and option groups the subcommands share
     clone   the `clone` subcommand
     init    the `init` subcommand
+    doctor  read-only host readiness checks
+    setup   interactive setup actions
     tmux    the `tmux` subcommand and its actions
 
 A subcommand module exposes `configure(parser)` and `run(options)`; the layout

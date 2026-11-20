@@ -11,20 +11,23 @@ otherwise.
 
 import argparse
 import contextlib
+import os
 import sys
 
 from swarmforge import command, worktrees
 
-from . import clone, init, tmux
+from . import clone, doctor, init, setup, tmux
 
 COMMANDS = {
     "clone": clone,
     "init": init,
+    "doctor": doctor,
+    "setup": setup,
     "tmux": tmux,
 }
 
 
-def build_parser():
+def build_parser(checkout=None):
     """The `swarmforge` parser, with one subparser per entry in `COMMANDS`.
 
     A subcommand's module docstring is its help text, so the two cannot drift;
@@ -33,8 +36,8 @@ def build_parser():
     """
     parser = argparse.ArgumentParser(
         prog="swarmforge",
-        description="Create git repositories laid out as a bare repo with "
-                    "sibling worktrees, and open them in tmux.",
+        description="Set up Swarmforge, check readiness, manage worktree "
+                    "repositories, and open them in tmux.",
     )
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND",
                                        required=True)
@@ -45,10 +48,11 @@ def build_parser():
             name, help=summary, description=module.__doc__.strip(),
             formatter_class=argparse.RawDescriptionHelpFormatter)
         module.configure(subparser)
+        subparser.set_defaults(checkout=checkout or os.getcwd())
     return parser
 
 
-def main(argv, out=sys.stdout, err=sys.stderr):
+def main(argv, out=sys.stdout, err=sys.stderr, checkout=None):
     """Parse `argv`, run the subcommand it names, and return its exit code.
 
     argparse writes help and usage to the process streams and exits, so both
@@ -57,7 +61,7 @@ def main(argv, out=sys.stdout, err=sys.stderr):
     """
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
-            options = build_parser().parse_args(argv)
+            options = build_parser(checkout).parse_args(argv)
         except SystemExit as exc:
             return exc.code or 0
 
