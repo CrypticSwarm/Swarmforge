@@ -214,6 +214,45 @@ class ValidationTests(unittest.TestCase):
             "t", self._base(mounts=["volume:models:/a", "volume:models:/b:ro"]))
         self.assertTrue(any("already mounted" in e for e in errors), errors)
 
+    def test_shared_tong_may_not_mount_session_state(self):
+        # A shared container is reused across sessions, so it would leak one into the next.
+        for mount, what in (("workspace:ro", "workspace"), ("workspace:/code:ro", "workspace"),
+                            ("tmux-socket", "tmux socket"), ("tmux-socket:ro", "tmux socket")):
+            errors = tongs.validate_tong("t", self._base(lifecycle="shared", mounts=[mount]))
+            self.assertTrue(
+                any("'shared' tong may not mount the %s" % what in e for e in errors), errors)
+
+    def test_shared_tong_may_mount_the_docker_socket(self):
+        self.assertEqual(
+            tongs.validate_tong("t", self._base(lifecycle="shared", mounts=["docker-socket"])), [])
+
+    def test_tmux_socket_mount_accepted_read_only(self):
+        for mount in ("tmux-socket", "tmux-socket:ro"):
+            self.assertEqual(tongs.validate_tong("t", self._base(mounts=[mount])), [], mount)
+
+    def test_tmux_socket_mount_rw_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["tmux-socket:rw"]))
+        self.assertTrue(any("always read-only" in e for e in errors), errors)
+
+    def test_tmux_socket_mount_target_rejected(self):
+        errors = tongs.validate_tong("t", self._base(mounts=["tmux-socket:/tmux"]))
+        self.assertTrue(any("only the 'workspace' and 'volume' mounts take a target path" in e for e in errors))
+
+    def test_tmux_launcher_env_as_a_secret_rejected(self):
+        # A FIFO-delivered secret is exported after `-e`, so it would beat the launcher.
+        for name in ("TMUX", "TMUX_PANE", "SWARMFORGE_SESSION_HANDLE"):
+            defn = self._base(mounts=["tmux-socket"], env={name: "${secret:op:r}"})
+            errors = tongs.validate_tong("t", defn)
+            self.assertTrue(
+                any("the launcher sets" in e and name in e for e in errors), (name, errors))
+
+    def test_tmux_launcher_env_accepted_unless_a_secret_on_a_tmux_tong(self):
+        for mounts, env in ((["tmux-socket"], {"TMUX_PANE": "%1"}),
+                            ([], {"TMUX": "${secret:op:r}"}),
+                            (["tmux-socket"], {"TOKEN": "${secret:op:r}"})):
+            defn = self._base(mounts=mounts, env=env)
+            self.assertEqual(tongs.validate_tong("t", defn), [], (mounts, env))
+
     def test_extra_aliases_accepted_on_network_facing_kinds(self):
         # A client matching a certificate CN dials the dotted name, not the canonical alias.
         defn = self._base(interface={

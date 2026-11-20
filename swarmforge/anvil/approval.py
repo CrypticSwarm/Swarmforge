@@ -1,13 +1,6 @@
 """The first-run approval gate for workspace-sourced tongs.
 
-The user, org, and Swarmforge-repo layers are installed deliberately and are
-trusted. The workspace is any repo you happened to clone, so a workspace-sourced
-tong -- which may request secrets, host mounts, the docker socket, or host
-GPUs -- is gated: its privilege summary is rendered and the user is asked to
-approve it before the anvil starts. Approval is keyed by workspace path, tong
-name, and a hash of the merged definition, so any change re-prompts, and
-persists in the user layer.
-
+The gate itself is described in `swarmforge.anvil` ("First-run approval").
 Deciding what a definition asks for and remembering the answer are the pure core's
 job; rendering the question and reading the reply are this module's.
 """
@@ -25,12 +18,11 @@ def render_privilege_summary(name, summary):
     """Human-readable block describing what a workspace tong requests.
 
     `summary` is the structured output of `tongs.privilege_summary`. Only the
-    privileges actually requested are shown, and docker-socket access -- the
-    broadest grant, since it is full control of the host's docker -- is always
-    called out explicitly so it cannot be approved unseen, as is a GPU request,
-    which grants the host's GPU devices. Every line passes through
-    `tongs.printable`, so a definition value cannot move the cursor, erase, or
-    forge a line of this block.
+    privileges actually requested are shown, and the two host-command grants --
+    the docker socket and the tmux socket -- each get a line of their own so
+    neither can be approved unseen, as does a GPU request. Every line passes
+    through `tongs.printable`, so a definition value cannot move the cursor,
+    erase, or forge a line of this block.
     """
     lines = ["Workspace tong %r requests approval:" % name]
     lines.append("  image:    %s" % (summary.get("image") or "(none declared)"))
@@ -56,6 +48,10 @@ def render_privilege_summary(name, summary):
         lines.append("  networks: %s" % ", ".join(str(n) for n in networks))
     if summary.get("socket"):
         lines.append("  docker socket: full host docker control")
+    if summary.get("tmux"):
+        lines.append(
+            "  tmux socket: every tmux server in your socket directory -- any "
+            "command on the host as you (read-only does not limit this)")
     if summary.get("gpus") is not None:
         lines.append("  gpus:     %s (host GPU access)" % summary["gpus"])
     return "\n".join(tongs.printable(line) for line in lines)

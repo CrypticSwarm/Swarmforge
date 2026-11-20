@@ -72,6 +72,18 @@ class ParseArgsTests(unittest.TestCase):
         self.assertTrue(opts.no_prompt)
         self.assertEqual(cmd, ["x"])
 
+    def test_tmux_options_come_from_the_environment(self):
+        opts, _ = launcher.parse_args(
+            ["--", "x"],
+            environ={"TMUX": "/tmp/tmux-1000/default,4242,3", "TMUX_PANE": "%7"},
+        )
+        self.assertEqual((opts.tmux, opts.tmux_pane), ("/tmp/tmux-1000/default,4242,3", "%7"))
+        opts, _ = launcher.parse_args(["--", "x"], environ={"TMUX": "", "TMUX_PANE": ""})
+        self.assertEqual((opts.tmux, opts.tmux_pane), (None, None))
+        with mock.patch.dict(os.environ, {"TMUX": "/tmp/tmux-1/s,1,0", "TMUX_PANE": "%1"}):
+            opts, _ = launcher.parse_args(["--", "x"])
+        self.assertEqual((opts.tmux, opts.tmux_pane), ("/tmp/tmux-1/s,1,0", "%1"))
+
     def test_parses_harness(self):
         opts, _ = launcher.parse_args(["--harness", "claude", "--", "x"])
         self.assertEqual(opts.harness, "claude")

@@ -79,6 +79,7 @@ class RenderPrivilegeSummaryTests(unittest.TestCase):
         self.assertNotIn("volume", text)
         self.assertNotIn("docker socket", text)
         self.assertNotIn("gpus", text)
+        self.assertNotIn("tmux socket", text)
 
     def test_escape_sequences_in_every_field_are_escaped(self):
         cursor_up_erase = "\x1b[1A\x1b[2K"
@@ -162,6 +163,17 @@ class RenderPrivilegeSummaryTests(unittest.TestCase):
         self.assertIn("  image:    5", text)
         self.assertIn("  mounts:   7, ['a']", text)
         self.assertIn("  networks: 8", text)
+
+    def test_calls_out_tmux_socket_on_its_own_line(self):
+        defn = dict(WORKSPACE_TONG, mounts=["tmux-socket"])
+        lines = launcher.render_privilege_summary(
+            "spawner", tongs.privilege_summary(defn)
+        ).splitlines()
+        self.assertIn(
+            "  tmux socket: every tmux server in your socket directory -- any "
+            "command on the host as you (read-only does not limit this)",
+            lines,
+        )
 
 
 class GateTests(unittest.TestCase):
